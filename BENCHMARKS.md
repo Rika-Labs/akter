@@ -1,6 +1,29 @@
 # Akter benchmarks
 
+## Owner-cache reads with a fresh fence (#497, 2026-10-10)
+
+The remaining work was freshness, not another eliminated flight: `ef1f12e16` already served certified local state-only reads in zero flights, but ADR 0115 allowed an undetected stale owner to answer tokenless reads. [ADR 0118](docs/decisions/0118-owner-cache-read-fencing.md) strengthens that boundary. Candidate `6b785e12` checks the primary generation tuple before reusing memory; a miss loads committed state in the same statement. Eligible reads now require **one flight**, including after ownership changes or while a foreign writer holds the generation row. This intentionally gives up the earlier zero-flight latency benefit.
+
+The local run used Bun 1.4.2, Effect 4.0.2 and an isolated Postgres 18.6-bookworm database server with `synchronous_commit=on` and logical WAL on a shared Apple M5 Max Mac (18 CPUs, 128 GiB). Both revisions ran public actor handles, without HTTP or injected delay, through a loopback TCP counting relay. The baseline was an archived `ef1f12e16` source bundle; the candidate changed only the read protocol and post-commit provenance. Each revision also ran an ordinary-read control with the internal `WarmTurnFastPath` test reference disabled, on a fresh database. Each cohort had one caller, 30 warm-up reads and 500 adjacent ordinary/cache pairs, alternating AB then BA order. State held a deterministic 32-byte or 64-KiB string; the query returned its independently checked length and whether `read.version` identified cached provenance, rather than returning the whole string.
+
+Revision order was candidate, baseline, baseline, candidate. The four measured windows spanned 01:51:57–01:55:44 UTC on October 11; sampled one-minute host load ranged from 11.61 to 20.66. Cells below are the median of the two per-run statistics, with min–max in brackets; percentiles are not pooled. The two candidate controls were interleaved with their cached reads, so their paired differences are more useful than comparisons between revisions under changing host load.
+
+| State  | Path                             |              p50 ms |              p99 ms | Foreground flights |
+| ------ | -------------------------------- | ------------------: | ------------------: | -----------------: |
+| 32 B   | Historical zero-flight snapshot  | 0.088 [0.074–0.103] | 0.297 [0.251–0.344] |                  0 |
+| 32 B   | Candidate ordinary database read | 0.580 [0.576–0.584] | 1.691 [1.644–1.739] |                  1 |
+| 32 B   | Candidate freshly checked cache  | 0.574 [0.553–0.594] | 1.930 [1.615–2.245] |                  1 |
+| 64 KiB | Historical zero-flight snapshot  | 0.147 [0.107–0.187] | 0.340 [0.274–0.406] |                  0 |
+| 64 KiB | Candidate ordinary database read | 0.969 [0.932–1.006] | 2.763 [2.657–2.869] |                  1 |
+| 64 KiB | Candidate freshly checked cache  | 0.759 [0.725–0.794] | 2.350 [1.738–2.961] |                  1 |
+
+For 64-KiB state, adjacent candidate cache-minus-database p50 differences were −0.195 and −0.212 ms, consistent with avoiding state transfer and decompression. For 32-byte state they were −0.017 and −0.003 ms, too small to establish a useful latency improvement. Candidate paired p99 differences were positive for both sizes in both repeats, so this does not establish a tail win. Historical zero-flight reads were faster than freshly fenced reads; correctness is the reason for that tradeoff, not a performance claim.
+
+The relay also counted occasional background traffic: one of 1,000 candidate small-cache reads counted two flights; all candidate large-cache reads counted one. The focused real-database conformance cases establish the single foreground flight independently and reject stale generation, same-generation state-only writes, tuple replacement, foreign uncommitted writes, staged local turns and mixed event capabilities. A two-runner case verifies read-your-writes from another entry runner and after owner shutdown/restart. The harness and all four raw sample files are retained locally under `~/.capy/work/akter-orch/s6-read/`; there is no provider, throughput, scale or production-SLO claim.
+
 ## Warm actor fast path (#719, 2026-10-09)
+
+The read protocol and zero-flight read figures in this historical section are superseded by the fresh-fence measurement above. The command fast path is unchanged.
 
 The primary evidence is protocol flights: an eligible warm command uses **1 instead of 2**, and a local state-only, version-qualified query uses **0 instead of 1**. The real-Postgres `warm fast path:` cases in `tooling/conformance/src/conformance/pipeline.ts` require these exact counts, alongside durable state/receipt assertions and stale-fence, receipt-race, expiry, lost-COMMIT-reply and unpublished-state failures. Removing one flight removes one configured 10 ms round-trip delay; it is not a promise about wall-clock tails on a saturated host.
 
