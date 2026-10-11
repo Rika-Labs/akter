@@ -6,6 +6,8 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process"
 
 import { configDirectory, runCliWith, startCliWith } from "../../testing.ts"
 
+const baseFetch = globalThis.fetch.bind(globalThis)
+
 const line = (id: string, text: string) => ({
   id,
   deploymentId: "deployment-a",
@@ -202,7 +204,7 @@ layer(BunServices.layer, { excludeTestServices: true })("akter logs over real HT
         const fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
           const request = { signal: init?.signal, settled: false }
           requests.push(request)
-          return globalThis.fetch(input, init).finally(() => {
+          return baseFetch(input, init).finally(() => {
             request.settled = true
           })
         }) as typeof globalThis.fetch
