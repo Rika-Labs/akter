@@ -62,6 +62,8 @@ The executable runtime runs embedded or served on Postgres or PGlite, with one r
 - `ActorTest.advance` selects running attempts only after acquiring the relay pass lock. A concurrent claim therefore registers before the lease snapshot, and the lease updates and clock jump occur before another local pass. This preserves the current attempts across a harness clock jump; it does not suppress retries after genuine lease loss or synchronize another runner's test clock.
 - Framework conformance, foundation fixtures, `clusterLayer`, `simulate`, `simulateCluster`, and seed readers live in the unpublished [`@akter/conformance` tooling workspace](../../tooling/conformance/README.md). They are not part of the app-developer `/testing` API.
 
+The testing fault point `beforeCommitSend` runs after final planning, immediately before sending a batch's staged writes and `COMMIT`. Unlike `beforeCommit`, it does not run in a speculative plan that still needs ordinary admission. Use it to hold database replies while allowing the commit to reach the server; warm commands send their guard and writes together, while ordinary commands have already received admission. A grouped batch reaches it before handing its writes to the group's commit, and PGlite reaches it before executing staged writes in its transaction. This is a testing seam, not a production commit acknowledgment.
+
 See the [protocol](../decisions/0007-foundation-command-protocol.md) and [reconciliation](../decisions/0013-m0-reconciliation.md) decisions. Support remains scoped by the [support matrix](../operations/support-matrix.md); public socket runners have three-process loopback evidence on Postgres, not provider or separate-host certification.
 
 ## Definitions
