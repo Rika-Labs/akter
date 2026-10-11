@@ -5,7 +5,7 @@
 **Owner role:** platform/runtime.
 **Change policy:** a change that alters a contract guarantee requires an ADR.
 
-The public distribution is one package, `@rikalabs/akter`, with four entries: `.`, `@rikalabs/akter/runtime`, `@rikalabs/akter/client`, and `@rikalabs/akter/testing`. Provider mechanics stay behind the runtime entry; browser contracts and clients never import SQL or Cluster internals.
+The public distribution is one package, `@rikalabs/akter`, with five entries: `.`, `@rikalabs/akter/runtime`, `@rikalabs/akter/client`, `@rikalabs/akter/testing`, and `@rikalabs/akter/cold-storage/s3`. Database provider mechanics stay behind the runtime entry; S3 provider mechanics are imported separately from `@rikalabs/akter/cold-storage/s3`. Browser contracts and clients never import SQL or Cluster internals.
 
 The database adapters are Postgres and embedded PGlite, within the [support matrix](../operations/support-matrix.md). They must preserve transaction scope, `SELECT ... FOR UPDATE` fencing, tenant scoping, pooling behavior, migrations, receipts, and restore semantics. Wire compatibility alone is not backend support.
 
