@@ -130,6 +130,20 @@ const ReadCounter = Actor.make("ReadCounter", {
   policy: { executionTimeout: "120 seconds", deliveryTimeout: "120 seconds" },
 })
 
+const Withdraw = Actor.command("Withdraw", {
+  payload: Schema.Literals(["sqlFailure", "declaredFailure", "success"]),
+  success: Schema.Finite,
+  error: WarmRejected,
+})
+
+const Ambient = Actor.make("Ambient", {
+  key: Schema.String,
+  state: Actor.state({
+    count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
+  }),
+  api: { Add, Withdraw },
+})
+
 const AddPayload = Schema.fromJsonString(Schema.Struct({ value: Schema.Finite }))
 
 /** The command whose next `afterCommit` a case's hook crashes, and the signal that it did. */
@@ -170,8 +184,38 @@ const actorsLive = (probe: Probe) =>
         routing_key bigint, tenant_id text, actor_id text, id text,
         PRIMARY KEY (routing_key, tenant_id, actor_id, id))`),
       )
+      yield* sql.unsafe(`CREATE TABLE pipeline_ambient_rows (
+        id text PRIMARY KEY, value integer NOT NULL CHECK (value > 0))`)
+      yield* sql.unsafe("CREATE SEQUENCE pipeline_ambient_deletes")
+      yield* sql.unsafe(`CREATE FUNCTION pipeline_ambient_deleted() RETURNS trigger
+        LANGUAGE plpgsql AS $$ BEGIN
+          PERFORM nextval('pipeline_ambient_deletes');
+          RETURN OLD;
+        END $$`)
+      yield* sql.unsafe(`CREATE TRIGGER pipeline_ambient_deleted BEFORE DELETE
+        ON pipeline_ambient_rows FOR EACH ROW EXECUTE FUNCTION pipeline_ambient_deleted()`)
 
       return Layer.mergeAll(
+        Ambient.toLayer({
+          Add: Effect.fnUntraced(function* (amount: number) {
+            probe.handled += 1
+            const turn = yield* Ambient.Turn
+            yield* turn.state.set({ count: turn.state.count + amount })
+            return turn.state.count
+          }),
+          Withdraw: Effect.fnUntraced(function* (failure) {
+            probe.handled += 1
+            const turn = yield* Ambient.Turn
+            yield* turn.state.set({ count: turn.state.count + 11 })
+            yield* sql`DELETE FROM pipeline_ambient_rows WHERE id = ${turn.id}`.pipe(Effect.orDie)
+            if (failure === "declaredFailure") return yield* WarmRejected.make({})
+            yield* sql`INSERT INTO pipeline_ambient_rows (id, value)
+              VALUES (${turn.id}, ${failure === "sqlFailure" ? -7 : turn.state.count})`.pipe(
+              Effect.orDie,
+            )
+            return turn.state.count
+          }),
+        }),
         ReadCounter.toLayer({
           Add: Effect.fnUntraced(function* (amount: number) {
             const turn = yield* ReadCounter.Turn
@@ -720,6 +764,201 @@ export const ownerCacheMultiXactConformance: ConformanceCase = {
 
 /** Pipeline cases: round trips per turn, statement grouping and order across admission, handler, and commit, and batching of the pipelined worker. */
 export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
+  {
+    name: "warm fast path: remembered ambient SQL skips repeated speculation without disabling SQL-free actors",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(environment, { warm: true, prepare: false }, (probe) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          const test = yield* ActorTest
+          const actor = yield* Ambient.get("ambient-remembered")
+          expect(yield* actor.Add(3)).toBe(3)
+          yield* sql`INSERT INTO pipeline_ambient_rows (id, value) VALUES (${actor.ref.id}, 19)`
+          const actors = yield* Actors
+          const firstId = yield* actors.mintCommandId
+          const beforeFirst = probe.handled
+          expect(yield* actor.Withdraw("success").pipe(Actor.commandId(firstId))).toBe(14)
+          expect(probe.handled - beforeFirst).toBe(2)
+          const secondId = yield* actors.mintCommandId
+          const beforeSecond = probe.handled
+          expect(yield* actor.Withdraw("success").pipe(Actor.commandId(secondId))).toBe(25)
+          expect(probe.handled - beforeSecond).toBe(1)
+          expect(
+            yield* sql`SELECT value FROM pipeline_ambient_rows WHERE id = ${actor.ref.id}`,
+          ).toEqual([{ value: 25 }])
+          expect(yield* test.inspect(actor.ref)).toMatchObject({
+            state: { count: 25 },
+            receipts: 3,
+          })
+          const plain = yield* Plain.get("ambient-free-control")
+          expect(yield* plain.Add(2)).toBe(2)
+          const freeId = yield* actors.mintCommandId
+          const beforeFree = probe.handled
+          expect(yield* flightsOf(probe, plain.Add(9).pipe(Actor.commandId(freeId)))).toMatchObject(
+            { value: 11, flights: 1 },
+          )
+          expect(probe.handled - beforeFree).toBe(1)
+          expect(yield* test.inspect(plain.ref)).toMatchObject({
+            state: { count: 11 },
+            receipts: 2,
+          })
+        }),
+      ),
+  },
+  {
+    name: "warm fast path: beforeCommit SQL reruns planning inside fenced admission",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) => {
+      let heldId: string | undefined
+      let planned = 0
+      let hookSql: SqlClient.SqlClient
+      const transactions: Array<string | null> = []
+      return withProbe(
+        environment,
+        {
+          warm: true,
+          prepare: false,
+          hooks: {
+            at: (point, request) =>
+              Effect.gen(function* () {
+                if (point !== "beforeCommit" || request.commandId !== heldId) return
+                planned += 1
+                const rows = yield* hookSql<{ xid: string | null }>`
+              SELECT pg_current_xact_id_if_assigned()::text AS xid`.pipe(Effect.orDie)
+                transactions.push(rows[0]!.xid)
+              }),
+          },
+        },
+        (probe) =>
+          Effect.gen(function* () {
+            hookSql = yield* SqlClient.SqlClient
+            const test = yield* ActorTest
+            const actor = yield* Ambient.get("ambient-hook")
+            expect(yield* actor.Add(3)).toBe(3)
+            heldId = yield* (yield* Actors).mintCommandId
+            const result = yield* flightsOf(probe, actor.Add(7).pipe(Actor.commandId(heldId)))
+            expect(result.value).toBe(10)
+            expect(planned).toBe(2)
+            expect(transactions.length).toBe(1)
+            expect(transactions[0]).not.toBe(null)
+            const sent = wire(Buffer.concat(result.sent))
+            expect(
+              increasing([
+                sent.indexOf("BEGIN"),
+                sent.indexOf("FOR UPDATE OF g"),
+                sent.indexOf("pg_current_xact_id_if_assigned"),
+                sent.indexOf("COMMIT"),
+              ]),
+            ).toBe(true)
+            expect(yield* test.inspect(actor.ref)).toMatchObject({
+              state: { count: 10 },
+              receipts: 2,
+            })
+          }),
+      )
+    },
+  },
+  ...(["sqlFailure", "declaredFailure"] as const).map(
+    (failure) =>
+      ({
+        name: `warm fast path: ambient SQL ${failure} rolls back business writes after fenced admission`,
+        requiresIndependentConnections: true,
+        timeoutMs: 60_000,
+        run: ({ expect, environment }) =>
+          withProbe(environment, { warm: true, prepare: false }, (probe) =>
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient
+              const test = yield* ActorTest
+              const actor = yield* Ambient.get(`ambient-${failure}`)
+              expect(yield* actor.Add(3)).toBe(3)
+              yield* sql`INSERT INTO pipeline_ambient_rows (id, value) VALUES (${actor.ref.id}, 19)`
+              const id = yield* (yield* Actors).mintCommandId
+              const result = yield* flightsOf(
+                probe,
+                actor.Withdraw(failure).pipe(Actor.commandId(id), Effect.exit),
+              )
+              expect(Exit.isFailure(result.value)).toBe(true)
+              expect(
+                yield* sql`SELECT value FROM pipeline_ambient_rows WHERE id = ${actor.ref.id}`,
+              ).toEqual([{ value: 19 }])
+              const sent = wire(Buffer.concat(result.sent))
+              expect(
+                increasing([
+                  sent.indexOf("BEGIN"),
+                  sent.indexOf("FOR UPDATE OF g"),
+                  sent.indexOf("SAVEPOINT durable_handler"),
+                  sent.indexOf("DELETE FROM pipeline_ambient_rows"),
+                ]),
+              ).toBe(true)
+              expect(yield* test.inspect(actor.ref)).toMatchObject({
+                state: { count: 3 },
+                receipts: failure === "declaredFailure" ? 2 : 1,
+              })
+              if (failure === "declaredFailure") {
+                const handled = probe.handled
+                const replay = yield* actor.Withdraw(failure).pipe(Actor.commandId(id), Effect.exit)
+                expect(replay).toEqual(result.value)
+                expect(probe.handled).toBe(handled)
+              }
+              expect(yield* actor.Add(7)).toBe(10)
+            }),
+          ),
+      }) satisfies ConformanceCase,
+  ),
+  {
+    name: "warm fast path: a stale generation never executes speculative ambient SQL writes",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(environment, { warm: true, prepare: false }, (probe, database) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          const test = yield* ActorTest
+          const actor = yield* Ambient.get("ambient-stale")
+          expect(yield* actor.Add(3)).toBe(3)
+          yield* sql`INSERT INTO pipeline_ambient_rows (id, value) VALUES (${actor.ref.id}, 19)`
+          const id = yield* (yield* Actors).mintCommandId
+          const context = yield* rival(database)
+          yield* Effect.gen(function* () {
+            const other = yield* SqlClient.SqlClient
+            yield* other.withTransaction(
+              Effect.gen(function* () {
+                yield* other`UPDATE actor_generations SET generation = generation + 1
+                  WHERE actor_type = 'Ambient' AND actor_id = ${actor.ref.id}`
+                yield* other`UPDATE actor_state SET value = ${compress("29")}
+                  WHERE actor_type = 'Ambient' AND actor_id = ${actor.ref.id} AND key = 'count'`
+              }),
+            )
+          }).pipe(Effect.provideContext(context))
+          const result = yield* flightsOf(
+            probe,
+            actor.Withdraw("success").pipe(Actor.commandId(id)),
+          )
+          expect(result.value).toBe(40)
+          expect(
+            yield* sql`SELECT value FROM pipeline_ambient_rows WHERE id = ${actor.ref.id}`,
+          ).toEqual([{ value: 40 }])
+          expect(
+            yield* sql`SELECT last_value::text, is_called FROM pipeline_ambient_deletes`,
+          ).toEqual([{ last_value: "1", is_called: true }])
+          const sent = wire(Buffer.concat(result.sent))
+          expect(
+            increasing([
+              sent.indexOf("BEGIN"),
+              sent.indexOf("FOR UPDATE OF g"),
+              sent.indexOf("DELETE FROM pipeline_ambient_rows"),
+            ]),
+          ).toBe(true)
+          expect(yield* test.inspect(actor.ref)).toMatchObject({
+            state: { count: 40 },
+            receipts: 2,
+          })
+        }),
+      ),
+  },
   ...[false, true].map(
     (freezeBeforeCommitVersion) =>
       ({
