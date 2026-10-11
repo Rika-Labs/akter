@@ -19,7 +19,6 @@ import type {
   StoredEvent,
   StreamInput,
 } from "../runtime/members.ts"
-import { ReadRequiresDatabase } from "../runtime/members.ts"
 import { Outcome } from "../runtime/request.ts"
 import { ownership } from "../tables/owned.ts"
 import type { Decoded, Handler, StateValue, StreamHandler } from "./codecs.ts"
@@ -104,7 +103,6 @@ const recordingRead = (context: AnyQueryContext, reads: ReadSet): AnyQueryContex
 
     return context.state
   },
-  version: context.version,
   cursor: context.cursor,
   events: (event, options) => {
     reads.events.add(event.identifier)
@@ -166,10 +164,9 @@ export const queriesOf = ({
 
       registered.set(member.tag, {
         watch,
-        run: Effect.fnUntraced(function* (request, rows, cursor, readEvents, reads, version) {
+        run: Effect.fnUntraced(function* (request, rows, cursor, readEvents, reads) {
           const { state } = yield* descriptor.state.decodeStored(rows)
           let open = true
-          let requiresDatabase = false
           const query = Symbol()
           const owner = Fiber.getCurrent()
 
@@ -216,22 +213,10 @@ export const queriesOf = ({
             caller: request.caller,
             principal: principal(request.caller),
             state: Object.freeze(state),
-            version,
             cursor,
-            get events() {
-              requiresDatabase ||= version !== undefined
-
-              return events
-            },
+            events,
             rows: access.rows as AnyQueryContext["rows"],
-            get group() {
-              if (version !== undefined) {
-                requiresDatabase = true
-                throw new ReadRequiresDatabase()
-              }
-
-              return access.group
-            },
+            group: access.group,
             blob: blob as AnyQueryContext["blob"],
             follow: () => Stream.die(new Error("read.follow is only available in stream handlers")),
             progress: () => Stream.die(new Error("Progress is only available in stream handlers")),
@@ -254,11 +239,6 @@ export const queriesOf = ({
               }),
             ),
             Effect.catchDefect((cause) => Effect.succeed(Outcome.cases.Defect.make({ cause }))),
-            Effect.map((outcome) =>
-              requiresDatabase
-                ? Outcome.cases.Defect.make({ cause: new ReadRequiresDatabase() })
-                : outcome,
-            ),
             Effect.ensuring(
               Effect.sync(() => {
                 open = false

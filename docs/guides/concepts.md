@@ -57,7 +57,7 @@ Commands are direct: the caller's handle sends the command to the actor's owner 
 
 ## Queries and reducers
 
-A **query** reads committed state and owned rows through `yield* X.Read`. It never activates the actor, takes its lock, or writes a receipt. A state-only query can use an already resident committed snapshot without a database round trip; `read.version` identifies it, and a newer minimum-version requirement falls through to the database. Cached reads are committed and read-your-writes, not globally latest. A **reducer** is a pure `reduce(state, payload)` transition that runs as a receipted turn on the server, and optimistically in the [Promise client](../api/03-typescript-sdk.md).
+A **query** reads committed state and owned rows through `yield* X.Read`. It never activates the actor, takes its lock, or writes a receipt. Every query reads the database, never a resident activation's memory, and honors the caller's minimum version for read-your-writes; it is committed, not globally latest. A **reducer** is a pure `reduce(state, payload)` transition that runs as a receipted turn on the server, and optimistically in the [Promise client](../api/03-typescript-sdk.md).
 
 ## Work after the turn
 

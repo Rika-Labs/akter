@@ -312,9 +312,6 @@ export interface WatchResult {
   readonly value: string
 }
 
-/** A cached query requested a database snapshot, so its entire read must run there instead. */
-export class ReadRequiresDatabase {}
-
 /** A query reads committed state; it never activates, fences, or receipts. */
 export interface RegisteredQuery {
   /** Whether the member is declared `watch: true`, so its handler needs nothing but `X.Read`. */
@@ -326,7 +323,6 @@ export interface RegisteredQuery {
     cursor: string,
     events: EventReader,
     reads?: ReadSet,
-    version?: string,
   ) => Effect.Effect<Outcome>
 }
 

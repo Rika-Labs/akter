@@ -1,5 +1,6 @@
 import { createServer, connect, type Socket, type AddressInfo } from "node:net"
 import { pgTable, text } from "drizzle-orm/pg-core"
+import { Pool } from "pg"
 import {
   Cause,
   Crypto,
@@ -119,6 +120,16 @@ const Plain = Actor.make("Plain", {
   policy: { coldAfter: 1 },
 })
 
+const ReadCounter = Actor.make("ReadCounter", {
+  key: Schema.String,
+  state: Actor.state({
+    count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
+  }),
+  events: [Changed],
+  api: { Add, Change, Snapshot },
+  policy: { executionTimeout: "120 seconds", deliveryTimeout: "120 seconds" },
+})
+
 const AddPayload = Schema.fromJsonString(Schema.Struct({ value: Schema.Finite }))
 
 /** The command whose next `afterCommit` a case's hook crashes, and the signal that it did. */
@@ -161,6 +172,28 @@ const actorsLive = (probe: Probe) =>
       )
 
       return Layer.mergeAll(
+        ReadCounter.toLayer({
+          Add: Effect.fnUntraced(function* (amount: number) {
+            const turn = yield* ReadCounter.Turn
+            yield* turn.state.set({ count: turn.state.count + amount })
+
+            return turn.state.count
+          }),
+          Change: Effect.fnUntraced(function* ({ amount }: { readonly amount: number }) {
+            const turn = yield* ReadCounter.Turn
+            yield* turn.state.set({ count: turn.state.count + amount })
+            yield* turn.emit(Changed.make({ count: turn.state.count }))
+
+            return turn.state.count
+          }),
+        }),
+        ReadCounter.toQueryLayer({
+          Snapshot: Effect.fnUntraced(function* () {
+            const read = yield* ReadCounter.Read
+
+            return { count: read.state.count, version: read.version ?? "", cursor: read.cursor }
+          }),
+        }),
         Meter.toLayer(
           Effect.succeed({
             Add: (amount: number) => add(probe, amount),
@@ -298,6 +331,7 @@ const relay = (url: URL, probe: Probe) =>
       let heldUpstream: Socket | undefined
       let heldBytes = Buffer.alloc(0)
       let resumeVersion: (() => void) | undefined
+      const resetReplies = new Set<() => void>()
 
       const server = createServer((client) => {
         if (refusing) return void client.destroy()
@@ -310,6 +344,10 @@ const relay = (url: URL, probe: Probe) =>
         let answered = true
         let losing = false
         let replies = Buffer.alloc(0)
+        const reset = () => {
+          replies = Buffer.alloc(0)
+        }
+        resetReplies.add(reset)
         let buffered = Buffer.alloc(0)
         const statementsOf = wireStatements()
 
@@ -328,6 +366,7 @@ const relay = (url: URL, probe: Probe) =>
           if (armed && chunk.includes("COMMIT")) {
             armed = false
             losing = true
+            replies = Buffer.alloc(0)
           }
 
           answered = false
@@ -352,6 +391,7 @@ const relay = (url: URL, probe: Probe) =>
                 upstream.write(buffered.subarray(0, offset))
                 heldBytes = buffered.subarray(offset)
                 heldUpstream = upstream
+                heldCommit = replies.includes(COMMIT_COMPLETE)
                 buffered = Buffer.alloc(0)
                 holdVersion = false
                 resumeVersion = () => {
@@ -374,9 +414,9 @@ const relay = (url: URL, probe: Probe) =>
           answered = true
 
           if (!losing) {
-            if (heldUpstream === upstream) {
+            if (holdVersion || heldUpstream === upstream) {
               replies = Buffer.concat([replies, chunk])
-              if (replies.includes(COMMIT_COMPLETE)) heldCommit = true
+              if (heldUpstream === upstream && replies.includes(COMMIT_COMPLETE)) heldCommit = true
             }
             return void client.write(chunk)
           }
@@ -391,6 +431,7 @@ const relay = (url: URL, probe: Probe) =>
         })
 
         const end = () => {
+          resetReplies.delete(reset)
           client.destroy()
           upstream.destroy()
         }
@@ -423,6 +464,7 @@ const relay = (url: URL, probe: Probe) =>
             },
             lostCommits: () => lost,
             holdVersionRead: () => {
+              for (const reset of resetReplies) reset()
               holdVersion = true
               heldCommit = false
             },
@@ -605,10 +647,146 @@ const gathered = Effect.fnUntraced(function* (keys: ReadonlyArray<string>) {
   }
 })
 
+/** A fresh server bounds how many compatible locks reach the committing turn's numeric xid. */
+export const ownerCacheMultiXactConformance: ConformanceCase = {
+  name: "owner cache reads: a MultiXact whose xmax equals a committed turn's xid cannot make a query read stale memory",
+  requiresIndependentConnections: true,
+  requiresFreshDatabase: true,
+  timeoutMs: 120_000,
+  run: ({ expect, environment }) =>
+    withProbe(environment, { warm: true, prepare: false }, (_probe, database, relayed) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient
+        const test = yield* ActorTest
+        const actor = yield* ReadCounter.get("read-multixact")
+        yield* Effect.addFinalizer(() => Effect.sync(relayed.releaseVersionRead))
+        expect(yield* actor.Add(0)).toBe(0)
+        expect(yield* actor.Change({ amount: 17, fail: false, defect: false })).toBe(17)
+        expect((yield* actor.Snapshot()).count).toBe(17)
+        const tuple = () => sql<{ xmin: string; xmax: string }>`SELECT xmin::text, xmax::text
+          FROM actor_generations WHERE tenant_id = ${actor.ref.tenant}
+            AND actor_type = ${actor.ref.actor} AND actor_id = ${actor.ref.id}`
+        const before = (yield* tuple())[0]!
+        const target = Number(before.xmax)
+        expect(target > 0 && target <= 4096).toBe(true)
+        const pool = yield* Effect.acquireRelease(
+          Effect.sync(() => new Pool({ connectionString: Redacted.value(database), max: 2 })),
+          (opened) => Effect.promise(() => opened.end()),
+        )
+        const checkout = Effect.acquireRelease(
+          Effect.promise(() => pool.connect()),
+          (client) =>
+            Effect.promise(() => client.query("ROLLBACK")).pipe(
+              Effect.andThen(Effect.sync(() => client.release())),
+            ),
+        )
+        const left = yield* checkout
+        const right = yield* checkout
+        const lock = `SELECT 1 FROM actor_generations WHERE tenant_id = $1
+          AND actor_type = $2 AND actor_id = $3 FOR SHARE`
+        const identity = [actor.ref.tenant, actor.ref.actor, actor.ref.id]
+        relayed.holdVersionRead()
+        const pending = yield* actor.Add(26).pipe(Effect.forkChild)
+        yield* Effect.sync(relayed.versionHeld).pipe(
+          Effect.repeat({ until: (held) => held, schedule: Schedule.spaced("10 millis") }),
+        )
+        expect((yield* test.inspect(actor.ref)).state).toEqual({ count: 43 })
+        yield* Effect.promise(() => left.query("BEGIN"))
+        yield* Effect.promise(() => left.query(lock, identity))
+        let collision = false
+        for (let attempt = 0; attempt <= target; attempt++) {
+          yield* Effect.promise(() => right.query("BEGIN"))
+          yield* Effect.promise(() => right.query(lock, identity))
+          const current = (yield* tuple())[0]!
+          if (Number(current.xmax) === target) {
+            collision = true
+            break
+          }
+          expect(Number(current.xmax) < target).toBe(true)
+          yield* Effect.promise(() => right.query("COMMIT"))
+        }
+        expect(collision).toBe(true)
+        const after = yield* actor.Snapshot()
+        expect(after).toEqual({ count: 43, cursor: "1", version: "" })
+        expect((yield* test.inspect(actor.ref)).state).toEqual({ count: 43 })
+        yield* Effect.promise(() => right.query("ROLLBACK"))
+        yield* Effect.promise(() => left.query("ROLLBACK"))
+        relayed.releaseVersionRead()
+        expect(yield* Fiber.join(pending)).toBe(43)
+        expect((yield* actor.Snapshot()).count).toBe(43)
+      }),
+    ),
+}
+
 /** Pipeline cases: round trips per turn, statement grouping and order across admission, handler, and commit, and batching of the pipelined worker. */
 export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
+  ...[false, true].map(
+    (freezeBeforeCommitVersion) =>
+      ({
+        name: freezeBeforeCommitVersion
+          ? "owner cache reads: freezing before a commit's version read cannot make a query read stale memory"
+          : "owner cache reads: freezing after a public COMMIT cannot make a query read stale memory",
+        requiresIndependentConnections: true,
+        timeoutMs: 60_000,
+        run: ({ expect, environment }) =>
+          withProbe(environment, { warm: true, prepare: false }, (_probe, _database, relayed) =>
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient
+              const test = yield* ActorTest
+              const plain = yield* ReadCounter.get(`read-freeze-${freezeBeforeCommitVersion}`)
+              const held = Effect.sync(relayed.versionHeld).pipe(
+                Effect.repeat({
+                  until: (reached) => reached,
+                  schedule: Schedule.spaced("10 millis"),
+                }),
+              )
+              yield* Effect.addFinalizer(() => Effect.sync(relayed.releaseVersionRead))
+              expect(yield* plain.Add(0)).toBe(0)
+
+              if (freezeBeforeCommitVersion) {
+                relayed.holdVersionRead()
+                const first = yield* plain.Add(17).pipe(Effect.forkChild)
+                yield* held
+                yield* sql.unsafe("VACUUM (FREEZE) actor_generations")
+                expect(
+                  yield* sql`SELECT xmax::text FROM actor_generations
+                    WHERE tenant_id = ${plain.ref.tenant} AND actor_type = ${plain.ref.actor}
+                      AND actor_id = ${plain.ref.id}`,
+                ).toEqual([{ xmax: "0" }])
+                relayed.releaseVersionRead()
+                expect(yield* Fiber.join(first)).toBe(17)
+              } else expect(yield* plain.Add(17)).toBe(17)
+
+              const initial = yield* plain.Snapshot()
+              expect(initial).toMatchObject({ count: 17, cursor: "0" })
+              relayed.holdVersionRead()
+              const second = yield* plain.Add(26).pipe(Effect.forkChild)
+              yield* held
+              expect((yield* test.inspect(plain.ref)).state).toEqual({ count: 43 })
+              const tuple = () => sql<{
+                generation: string
+                head: string
+                xmax: string
+              }>`SELECT generation::text, event_sequence::text AS head, xmax::text
+                FROM actor_generations WHERE tenant_id = ${plain.ref.tenant}
+                  AND actor_type = ${plain.ref.actor} AND actor_id = ${plain.ref.id}`
+              const early = yield* plain.Snapshot()
+              const before = yield* tuple()
+              expect(before.length).toBe(1)
+              yield* sql.unsafe("VACUUM (FREEZE) actor_generations")
+              expect(yield* tuple()).toEqual([{ ...before[0]!, xmax: "0" }])
+              expect(yield* plain.Snapshot()).toEqual({ count: 43, cursor: "0", version: "" })
+              expect(early.count).toBe(43)
+              expect((yield* test.inspect(plain.ref)).state).toEqual({ count: 43 })
+              relayed.releaseVersionRead()
+              expect(yield* Fiber.join(second)).toBe(43)
+              expect(yield* plain.Snapshot()).toEqual({ count: 43, cursor: "0", version: "" })
+            }),
+          ),
+      }) satisfies ConformanceCase,
+  ),
   {
-    name: "warm fast path: one commit flight, zero-flight versioned reads, and duplicate/conflict replay without another handler",
+    name: "warm fast path: one commit flight, database reads, and duplicate/conflict replay without another handler",
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -624,9 +802,9 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           const warm = yield* flightsOf(probe, plain.Add(7).pipe(Actor.commandId(id)))
           expect(warm).toMatchObject({ value: 10, flights: 1 })
           const read = yield* flightsOf(probe, plain.Snapshot())
-          expect(read.flights).toBe(0)
+          expect(read.flights).toBe(1)
           expect(read.value.count).toBe(10)
-          expect(BigInt(read.value.version) > 0n).toBe(true)
+          expect(read.value.version).toBe("")
           expect(yield* plain.Add(7).pipe(Actor.commandId(id))).toBe(10)
           const conflict = yield* plain.Add(13).pipe(Actor.commandId(id), Effect.result)
           expect(Result.isFailure(conflict)).toBe(true)
@@ -974,7 +1152,7 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: "warm fast path: reads exclude staged state, declared failures and SQL-aborted commits; event reads fall through",
+    name: "warm fast path: reads exclude staged state, declared failures and SQL-aborted commits",
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -997,7 +1175,8 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* Fiber.join(pending)).toBe(10)
           const committed = yield* plain.Snapshot()
           expect(committed.count).toBe(10)
-          expect(BigInt(committed.version) > BigInt(during.value.version)).toBe(true)
+          expect(during.value.version).toBe("")
+          expect(committed.version).toBe("")
           expect(committed.cursor).toBe("1")
           expect(yield* plain.ResilientHistory("events")).toEqual([10])
           expect(yield* plain.ResilientHistory("group")).toEqual([10])

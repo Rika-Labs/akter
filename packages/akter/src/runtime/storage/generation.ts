@@ -16,15 +16,12 @@ export interface ActivationCache {
   state: ReadonlyMap<string, string> | undefined
   /** Object material is not a committed database snapshot. */
   cold?: ColdMaterial | undefined
-  /** Published only after a command's transaction and post-commit version read succeeded. */
+  /** Published only after a command's transaction committed; only a later command's speculation reads it. */
   committed?: {
     readonly generation: string
     readonly state: ReadonlyMap<string, string>
     readonly created: boolean
     readonly head: string
-    readonly version: string
-    /** No missing actor commit has a token at or below this snapshot's version. */
-    readonly certified: boolean
     readonly now: number
     /** Older identities take receipt-aware admission, including after hint eviction. */
     replayBefore: number
