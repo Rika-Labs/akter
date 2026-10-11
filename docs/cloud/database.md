@@ -57,7 +57,24 @@ The probe also budgets database connections. The database-derived runner cap is:
 runner cap = floor((max_connections - in_use - 10) / 4)
 ```
 
-`max_connections` is the server's connection limit and `in_use` is its current usage. Akter reserves 10 connections and budgets 4 per runner (1 turn, 2 off-turn and 1 query session). For example, a limit of 100 with 17 connections in use leaves a cap of 18 runners. A cap of zero leaves no room for a runner; reduce competing connections or increase your database's capacity.
+`max_connections` is the server's connection limit and `in_use` is the sum of `pg_stat_database.numbackends` across the server, including the probe's measuring connection. Akter budgets 4 sessions per runner: 1 turn, 2 off-turn (including the coordination session) and 1 query. The fixed 10-session reserve retains the original platform sizing allowance: 3 superuser slots, 3 provider-internal slots and 4 maintenance/operator headroom slots. It is conservative, not a measurement of your provider's requirements; those slots are subtracted in addition to measured usage.
+
+### Choose capacity for your expected runner load
+
+A runner is a hosted compute process, not an actor or a fixed requests-per-second tier. Include runners in each region and old/new releases that overlap during rollout. Choose a database plan whose supported connection limit is at least **`in_use + 10 + 4 × target runners`**:
+
+| Expected runner load                           | Target runners, including overlap | Minimum `max_connections` | Example with 7 sessions in use |
+| ---------------------------------------------- | --------------------------------: | ------------------------- | -----------------------------: |
+| Development, no rollout overlap                |                                 1 | `in_use + 14`             |                             21 |
+| One serving runner plus one rollout runner     |                                 2 | `in_use + 18`             |                             25 |
+| Four serving runners plus one rollout runner   |                                 5 | `in_use + 30`             |                             37 |
+| Eight serving runners plus two rollout runners |                                10 | `in_use + 50`             |                             57 |
+
+These are connection minima, not memory/CPU or throughput recommendations. Measure your application's load to choose its runner count and database resources; application-owned pools need additional connections. At `max_connections = 25`, 7 in-use sessions allow 2 runners, but 8 allow only 1. A limit of 100 with 17 in use allows 18. Leave margin for changing usage rather than sizing exactly at the boundary.
+
+Before your first deploy, open **Database → Plan capacity before deploying** in the console. Run `SHOW max_connections` and `SELECT sum(numbackends) FROM pg_stat_database` on your Postgres server and enter the results to estimate the cap without deploying. The console distinguishes this estimate from the regional probe result. After a probe, **Database** and **Deployments** show the latest environment ceiling, not a count of spare runners. Saving or refreshing the connection does not run a new regional probe.
+
+To raise the ceiling, increase `max_connections` within your database provider's supported limit, upgrade to a larger **database provider plan**, or free competing database connections. Check your provider's memory guidance and restart requirements before changing the parameter. Upgrading your Akter plan does not increase your database's connection limit. Deploy again to remeasure; a cap of zero prevents migrations and runner starts.
 
 This is a connection ceiling, not a throughput guarantee. Akter handles runner orchestration, but your Postgres capacity and latency still bound the app's scale.
 
