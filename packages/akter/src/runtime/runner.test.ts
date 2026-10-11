@@ -1,9 +1,10 @@
 import { layerClientProtocol, layerSocketServer } from "@effect/platform-bun/BunClusterSocket"
-import { Effect, HashRing, Layer, Option, PrimaryKey } from "effect"
+import { Duration, Effect, HashRing, Layer, Option, PrimaryKey } from "effect"
 import { RunnerAddress, RunnerStorage, ShardingConfig } from "effect/cluster"
 import { Runner as ClusterRunner } from "effect/cluster/Runner"
 import { describe, expect, it } from "vitest"
 import { acquiredShards, Runner, RunnerWiring } from "./runner.ts"
+import { RunnerConfigurationError } from "./index.ts"
 
 const transport = Layer.merge(layerSocketServer, layerClientProtocol)
 const address = { host: "runner-a.internal", port: 4400 }
@@ -46,6 +47,84 @@ describe("production runner configuration", () => {
       Runner.socket({ address, transport, shardLockRefreshInterval: "0 millis" }),
     ).toThrow("shardLockRefreshInterval")
   })
+
+  it("refuses an entity termination timeout that outlasts the lock expiration minus its effective refresh", () => {
+    const socket =
+      (options: Omit<Parameters<typeof Runner.socket>[0], "address" | "transport">) => () =>
+        Runner.socket({ address, transport, ...options })
+    expect(socket({ entityTerminationTimeout: "25 seconds" })).not.toThrow()
+    expect(socket({ entityTerminationTimeout: "25001 millis" })).toThrow(RunnerConfigurationError)
+    expect(
+      socket({ shardLockRefreshInterval: "5 seconds", entityTerminationTimeout: "30 seconds" }),
+    ).not.toThrow()
+    expect(
+      socket({ shardLockRefreshInterval: "5 seconds", entityTerminationTimeout: "30001 millis" }),
+    ).toThrow(RunnerConfigurationError)
+    expect(
+      socket({ shardLockExpiration: "3 seconds", entityTerminationTimeout: "2 seconds" }),
+    ).not.toThrow()
+    expect(
+      socket({ shardLockExpiration: "3 seconds", entityTerminationTimeout: "2001 millis" }),
+    ).toThrow(RunnerConfigurationError)
+    expect(socket({ shardLockExpiration: "3 seconds" })).toThrow(RunnerConfigurationError)
+  })
+
+  it("reports the typed configuration error with capped refresh and refuses the default shutdown on short locks", () => {
+    try {
+      Runner.socket({ address, transport, shardLockExpiration: "3 seconds" })
+      expect.fail("An unsafe default entityTerminationTimeout was accepted")
+    } catch (error) {
+      expect(error).toBeInstanceOf(RunnerConfigurationError)
+      if (!(error instanceof RunnerConfigurationError)) throw error
+      expect(error._tag).toBe("RunnerConfigurationError")
+      expect(error.entityTerminationTimeoutMs).toBe(15000)
+      expect(error.shardLockExpirationMs).toBe(3000)
+      expect(error.effectiveRefreshIntervalMs).toBe(1000)
+      expect(error.message).toContain("entityTerminationTimeout (15000 ms)")
+      expect(error.message).toContain("(2000 ms)")
+    }
+    expect(() =>
+      Runner.socket({
+        address,
+        transport,
+        shardLockExpiration: "30 seconds",
+        shardLockRefreshInterval: "60 seconds",
+        entityTerminationTimeout: "20 seconds",
+      }),
+    ).not.toThrow()
+    expect(() =>
+      Runner.socket({
+        address,
+        transport,
+        shardLockExpiration: "30 seconds",
+        shardLockRefreshInterval: "60 seconds",
+        entityTerminationTimeout: "20001 millis",
+      }),
+    ).toThrow(RunnerConfigurationError)
+  })
+
+  it("keeps the accepted duration configuration unchanged in the runner layer", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const context = yield* Layer.build(
+          Runner.socket({
+            address,
+            transport,
+            shardLockExpiration: "30 seconds",
+            shardLockRefreshInterval: "60 seconds",
+            entityTerminationTimeout: "20 seconds",
+          }),
+        )
+        const { config } = yield* RunnerWiring.pipe(Effect.provideContext(context))
+        expect(Duration.toMillis(Duration.fromInputUnsafe(config.shardLockExpiration!))).toBe(30000)
+        expect(Duration.toMillis(Duration.fromInputUnsafe(config.shardLockRefreshInterval!))).toBe(
+          60000,
+        )
+        expect(Duration.toMillis(Duration.fromInputUnsafe(config.entityTerminationTimeout!))).toBe(
+          20000,
+        )
+      }).pipe(Effect.scoped),
+    ))
 
   it("is unready until every currently assigned shard is acquired, including a runner's private holder group", () =>
     Effect.runPromise(
