@@ -511,7 +511,7 @@ describe("migrations with Postgres", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const database = new URL(yield* Config.String("TEST_DATABASE_URL"))
-          const name = `migrations_${(yield* (yield* Crypto.Crypto).randomUUIDv4).replaceAll("-", "")}`
+          const name = `migrations_${(yield* (yield* Crypto.Crypto).randomUUIDv4()).replaceAll("-", "")}`
 
           const admin = yield* Effect.acquireRelease(
             Effect.sync(() => new Pool({ connectionString: database.href })),
@@ -603,7 +603,7 @@ describe("migrations with Postgres", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const database = new URL(yield* Config.String("TEST_DATABASE_URL"))
-          const name = `migrations_${(yield* (yield* Crypto.Crypto).randomUUIDv4).replaceAll("-", "")}`
+          const name = `migrations_${(yield* (yield* Crypto.Crypto).randomUUIDv4()).replaceAll("-", "")}`
 
           const admin = yield* Effect.acquireRelease(
             Effect.sync(() => new Pool({ connectionString: database.href })),

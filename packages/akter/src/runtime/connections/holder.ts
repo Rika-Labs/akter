@@ -1060,7 +1060,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
   const hold = (request: OpenRequest, type: HeldActorType) =>
     Effect.gen(function* () {
       const connection: Held = {
-        id: yield* crypto.randomUUIDv7.pipe(Effect.orDie),
+        id: yield* crypto.randomUUIDv7().pipe(Effect.orDie),
         ref: request.ref,
         key: actorKey(request.ref),
         member: request.member,

@@ -59,7 +59,7 @@ export const holderTransport = Effect.fnUntraced(function* (
   const config = yield* ShardingConfig.ShardingConfig
   const sharding = yield* Sharding.Sharding
   const crypto = yield* Crypto.Crypto
-  const epoch = yield* crypto.randomUUIDv7.pipe(Effect.orDie)
+  const epoch = yield* crypto.randomUUIDv7().pipe(Effect.orDie)
 
   const holder = Option.match(config.runnerAddress, {
     onNone: () => LOCAL,

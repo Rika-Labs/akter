@@ -237,7 +237,7 @@ const prepared = (
 ) =>
   Effect.gen(function* () {
     const crypto = yield* Crypto.Crypto
-    const uuid = (yield* crypto.randomUUIDv4.pipe(Effect.orDie)).replaceAll("-", "")
+    const uuid = (yield* crypto.randomUUIDv4().pipe(Effect.orDie)).replaceAll("-", "")
     const role = `durable_tenant_${uuid}`
     const viewOwner = `durable_views_${uuid}`
     const fresh: ConformanceDatabase = yield* environment.freshDatabase
@@ -713,7 +713,7 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
 
           for (const tenant of [home, abroad]) yield* populate(tenant)
 
-          const uuid = yield* (yield* Crypto.Crypto).randomUUIDv4.pipe(Effect.orDie)
+          const uuid = yield* (yield* Crypto.Crypto).randomUUIDv4().pipe(Effect.orDie)
           const inspector = `inspector_${uuid.replaceAll("-", "")}`
 
           const tenantsIn = (tenant: string) =>
