@@ -31,7 +31,7 @@ const withRows = <A, E>(
 ) =>
   Effect.gen(function* () {
     const url = new URL(yield* Config.String("TEST_DATABASE_URL"))
-    const name = `tags_${(yield* (yield* Crypto.Crypto).randomUUIDv4).replaceAll("-", "")}`
+    const name = `tags_${(yield* (yield* Crypto.Crypto).randomUUIDv4()).replaceAll("-", "")}`
 
     const admin = yield* Effect.acquireRelease(
       Effect.sync(() => new Pool({ connectionString: url.href })),

@@ -121,7 +121,7 @@ const mint = Effect.gen(function* () {
   const actors = yield* InternalActors
   const now = yield* actors.databaseNow
 
-  const uuid = yield* (yield* Crypto.Crypto).randomUUIDv4.pipe(Effect.orDie)
+  const uuid = yield* (yield* Crypto.Crypto).randomUUIDv4().pipe(Effect.orDie)
 
   return `v1.${now}.${now + actors.retryWindowMs}.${uuid}`
 })

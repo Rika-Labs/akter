@@ -244,7 +244,7 @@ export const coldTier = Effect.fnUntraced(function* (
       Effect.provideService(SqlClient.SqlClient, sql),
       Effect.provideService(FrameworkClock, clock),
     )
-    const intentId = yield* crypto.randomUUIDv4.pipe(Effect.orDie)
+    const intentId = yield* crypto.randomUUIDv4().pipe(Effect.orDie)
     const caller = yield* Schema.encodeEffect(CallerJson)(System.make({ source: "cold" })).pipe(
       Effect.orDie,
     )

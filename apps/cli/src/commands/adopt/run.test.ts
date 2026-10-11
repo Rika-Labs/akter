@@ -189,7 +189,7 @@ const provisioned = Effect.gen(function* () {
   if (backend !== "postgres") return { layer: ActorTest.layer({ as }), url: undefined }
 
   const base = new URL(yield* Config.String("TEST_DATABASE_URL"))
-  const name = `adopt_${(yield* (yield* Crypto.Crypto).randomUUIDv4).replaceAll("-", "")}`
+  const name = `adopt_${(yield* (yield* Crypto.Crypto).randomUUIDv4()).replaceAll("-", "")}`
 
   const admin = yield* Effect.acquireRelease(
     Effect.sync(() => new Pool({ connectionString: base.href })),
