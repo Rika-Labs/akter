@@ -29,6 +29,7 @@ import { whoamiCommand } from "./commands/cloud/whoami.ts"
 
 import { envCommand } from "./commands/cloud/env.ts"
 import { logsCommand } from "./commands/cloud/logs.ts"
+import { keysCommand } from "./commands/cloud/keys.ts"
 
 const group = <const Subcommands extends ReadonlyArray<Command.Command.SubcommandEntry>>(
   name: string,
@@ -100,6 +101,7 @@ export const akter = Command.make("akter").pipe(
         whoamiCommand,
         deployCommand,
         envCommand,
+        keysCommand,
         logsCommand,
       ],
     },

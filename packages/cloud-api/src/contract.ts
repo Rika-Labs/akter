@@ -12,6 +12,7 @@ import { AuditGroup, BillingGroup, UsageGroup } from "./groups/billing.ts"
 import { DeploymentsGroup } from "./groups/deployments.ts"
 import {
   DomainsGroup,
+  EnvironmentApiKeysGroup,
   EnvironmentVariablesGroup,
   IntegrationsGroup,
   ProjectsGroup,
@@ -34,6 +35,7 @@ export class CloudApi extends HttpApi.make("akter-cloud")
     InvitationsGroup,
     ApiKeysGroup,
     ProjectsGroup,
+    EnvironmentApiKeysGroup,
     EnvironmentVariablesGroup,
     DomainsGroup,
     RegionsGroup,

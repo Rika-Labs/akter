@@ -529,3 +529,13 @@ These commands use the stored Akter Cloud session. All take `--project <id>` (de
 - `akter env import [file]` imports a dotenv file atomically. `-` or no file reads piped stdin; the document is limited to 1 MiB. The result reports created and updated counts, not values.
 
 Changes apply to the next deployment. Set the customer's own Postgres URL with `akter env set DATABASE_URL`; it can be replaced or deleted like other customer variables. Removing it leaves the database `missing` and the next deployment is refused until it is set again. Rollback restores the original captured environment rather than current settings. Refused writes exit 1; input/configuration errors exit 2.
+
+## `akter keys`
+
+Manage [environment API keys](09-environment-api-keys.md) with the stored Akter Cloud session. Every command takes `--project <id>` (default `AKTER_PROJECT`) and `--env <production|staging|dev>` (default `production`). These are application credentials, not control-plane or operator credentials.
+
+- `akter keys create <name> [--tenant <tenant>]` requires a live deployment and project admin access. An omitted tenant selects `default`; a supplied tenant is 1–128 characters from `[A-Za-z0-9._:-]`. Stdout contains only the one-time secret and a newline, so it can be redirected to a securely permissioned file. Stderr identifies the created key and warns that the secret cannot be read again. Avoid putting stdout in CI logs or shared terminal transcripts.
+- `akter keys list` requires project read access and prints tab-separated id, name, tenant, UTC creation time and `active` or UTC revocation time. Revoked keys remain visible, and no secret is returned or printed. An environment without a live deployment lists no keys.
+- `akter keys revoke <keyId>` requires project admin access and prints confirmation only after the server returns success. Repeating revocation of an existing key is safe; an absent key is refused.
+
+Refused requests exit 1; invalid arguments, missing credentials and an unreachable API exit 2. Use the secret as `Authorization: Bearer` at the public environment host returned by `projects.getEndpoints`, not at the control-plane API.

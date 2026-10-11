@@ -105,6 +105,7 @@
               "api/06-cli",
               "api/07-cloud-logs",
               "api/08-cloud-usage",
+              "api/09-environment-api-keys",
               "api/generated-contracts"
             ]
           },

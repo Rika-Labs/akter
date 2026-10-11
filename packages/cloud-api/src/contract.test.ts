@@ -29,6 +29,7 @@ describe("CloudApi", () => {
         "billing",
         "deployments",
         "domains",
+        "environmentApiKeys",
         "environmentVariables",
         "integrations",
         "invitations",
@@ -120,6 +121,35 @@ describe("CloudApi", () => {
     const leaking = operations
       .filter(({ operation }) => JSON.stringify(operation.responses).includes('"secret"'))
       .map(({ method, path }) => `${method.toUpperCase()} ${path}`)
-    expect(leaking).toEqual(["POST /api/organizations/{organizationId}/api-keys"])
+    expect(leaking).toEqual([
+      "POST /api/organizations/{organizationId}/api-keys",
+      "POST /api/projects/{projectId}/environments/{environment}/api-keys",
+    ])
+  })
+
+  it("publishes environment-key operations with the cloud's read, write and empty-delete statuses", () => {
+    const path = "/api/projects/{projectId}/environments/{environment}/api-keys"
+    const read = spec.paths[path]?.get
+    const create = spec.paths[path]?.post
+    const revoke = spec.paths[`${path}/{keyId}`]?.delete
+    expect(read?.operationId).toBe("environmentApiKeys.list")
+    expect(create?.operationId).toBe("environmentApiKeys.create")
+    expect(revoke?.operationId).toBe("environmentApiKeys.revoke")
+    expect(Object.keys(read?.responses ?? {}).toSorted()).toEqual([
+      "200",
+      "401",
+      "403",
+      "404",
+      "501",
+      "503",
+    ])
+    for (const [operation, success] of [
+      [create, "200"],
+      [revoke, "204"],
+    ] as const)
+      expect(Object.keys(operation?.responses ?? {}).toSorted()).toEqual(
+        [success, "401", "403", "404", "409", "501", "503"].toSorted(),
+      )
+    expect(revoke?.responses["204"]?.content).toBeUndefined()
   })
 })
