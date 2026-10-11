@@ -61,16 +61,20 @@ runner cap = floor((max_connections - in_use - 10) / 4)
 
 ### Choose capacity for your expected runner load
 
-A runner is a hosted compute process, not an actor or a fixed requests-per-second tier. Include runners in each region and old/new releases that overlap during rollout. Choose a database plan whose supported connection limit is at least **`in_use + 10 + 4 × target runners`**:
+A runner is a hosted compute process, not an actor or a fixed requests-per-second tier. The minimum **at one probe** is `in_use + 10 + 4 × total admitted runners`. Measured `in_use` includes existing hosted sessions; their runners also continue to occupy admission claims. Each deploy remeasures before starting replacements, so sizing before the first deploy must account for the sessions those incumbents will add to the next probe.
 
-| Expected runner load                           | Target runners, including overlap | Minimum `max_connections` | Example with 7 sessions in use |
-| ---------------------------------------------- | --------------------------------: | ------------------------- | -----------------------------: |
-| Development, no rollout overlap                |                                 1 | `in_use + 14`             |                             21 |
-| One serving runner plus one rollout runner     |                                 2 | `in_use + 18`             |                             25 |
-| Four serving runners plus one rollout runner   |                                 5 | `in_use + 30`             |                             37 |
-| Eight serving runners plus two rollout runners |                                10 | `in_use + 50`             |                             57 |
+For pre-first-deploy planning, let **baseline** mean server sessions in use before Akter starts, including the measuring session. Budget **`baseline + 10 + 4 × incumbent runners + 4 × total runners during overlap`**. Assuming other usage stays constant and incumbent pools reach their four-session bound:
 
-These are connection minima, not memory/CPU or throughput recommendations. Measure your application's load to choose its runner count and database resources; application-owned pools need additional connections. At `max_connections = 25`, 7 in-use sessions allow 2 runners, but 8 allow only 1. A limit of 100 with 17 in use allows 18. Leave margin for changing usage rather than sizing exactly at the boundary.
+| Expected runner load                        | Incumbents / total during overlap | Minimum at this probe | Minimum before first deploy | Example with baseline 7 |
+| ------------------------------------------- | --------------------------------- | --------------------- | --------------------------- | ----------------------: |
+| Development, no rollout overlap             | 0 / 1                             | `in_use + 14`         | `baseline + 14`             |                      21 |
+| One serving runner plus one replacement     | 1 / 2                             | `in_use + 18`         | `baseline + 22`             |                      29 |
+| Four serving runners plus one replacement   | 4 / 5                             | `in_use + 30`         | `baseline + 46`             |                      53 |
+| Eight serving runners plus two replacements | 8 / 10                            | `in_use + 50`         | `baseline + 82`             |                      89 |
+
+For example, baseline 7 and `max_connections = 25` initially give a cap of 2. Once the first runner uses four sessions, the replacement probe sees 11 in use and returns cap 1; the incumbent's claim occupies it, so the replacement cannot start. Use at least **29** instead: the first probe allows 3, and the replacement probe still allows 2. At 28, that replacement cap falls back to 1. The four- and eight-serving examples budget partial replacement overlap; if a release replaces all regions together, include all its new runners, not just one or two.
+
+These are connection minima, not memory/CPU or throughput recommendations. Measure your application's load to choose its runner count and database resources; application-owned pools need additional connections. A limit of 100 with 17 currently in use allows 18 at that probe, not necessarily at the next one. Leave margin for changing usage rather than sizing exactly at the boundary.
 
 Before your first deploy, open **Database → Plan capacity before deploying** in the console. Run `SHOW max_connections` and `SELECT sum(numbackends) FROM pg_stat_database` on your Postgres server and enter the results to estimate the cap without deploying. The console distinguishes this estimate from the regional probe result. After a probe, **Database** and **Deployments** show the latest environment ceiling, not a count of spare runners. Saving or refreshing the connection does not run a new regional probe.
 
