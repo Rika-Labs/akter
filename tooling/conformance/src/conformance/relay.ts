@@ -1374,8 +1374,11 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
           const { owner, other } = yield* ownerAndOther(yield* refOf("partitioned"))
           fixture.provider = (attempt) =>
             attempt.attempt === 1 ? Effect.never : Effect.succeed(attempt.key)
-          fixture.hook = (point) =>
-            point === "beforeRenew" ? Effect.die(new Error("Database unreachable")) : Effect.void
+          fixture.hook = (point) => {
+            if (point === "beforeRenew") return Effect.die(new Error("Database unreachable"))
+            if (point === "beforeExecute") return Effect.sleep("200 millis")
+            return Effect.void
+          }
 
           yield* perform(owner, "partitioned")
           yield* eventually(
@@ -1384,9 +1387,9 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
             "the local deadline",
           )
           const [first] = fixture.attempts
-          const ran = first!.endedAt! - first!.startedAt
-
           const [held] = yield* outboxRows(other)
+          const leaseMs = Duration.toMillis(Duration.fromInputUnsafe(SHORT_LEASE.lease))
+          const ran = first!.endedAt! - (Number(held!.due) - leaseMs)
           expect(ran >= 2900 && ran < 4000).toBe(true)
           expect(fixture.attempts.length).toBe(1)
           expect(held).toMatchObject({ kind: "job", attempts: 1, ambiguous: true })
