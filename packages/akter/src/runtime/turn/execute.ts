@@ -548,7 +548,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
     role === undefined ? "-" : `+${encodeURIComponent(tenant)}`,
   ].join(":")
 
-  /** Receipt probes stay per command so a retained small-history plan cannot scan the actor's growing history. */
+  /** Receipt probes stay per command and replan as history grows; an empty-table cached scan would otherwise run once per member. */
   const admit = (
     batch: ReadonlyArray<Delivery>,
     canonicals: ReadonlyArray<string>,
@@ -630,7 +630,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
             LIMIT 1
           ) r ON true
           ${cursorJoin}
-          ORDER BY c.ordinal`,
+          ORDER BY c.ordinal`.unprepared,
         (rows) => {
           admissions = rows
         },
@@ -1624,6 +1624,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                       (g.now + ${identityOffset} >= ${issuedAt} AND g.now + ${identityOffset} < ${expiresAt}))
                 ) THEN 1 ELSE 0 END AS accepted,
                 (SELECT set_config('durable.admitted_at_ms', now::text, true) FROM checked) AS now`
+                .unprepared
 
               const flight = [
                 begin,

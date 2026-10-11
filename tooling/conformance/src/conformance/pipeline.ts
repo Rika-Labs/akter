@@ -584,6 +584,30 @@ const flightsOf = <A, E, R>(probe: Probe, effect: Effect.Effect<A, E, R>) =>
 
 const wire = (flight: Buffer) => flight.toString("latin1")
 
+/** Parse messages prove which statements the driver caches instead of inferring preparation from SQL text. */
+const parsedStatements = (flights: ReadonlyArray<Buffer>) => {
+  const bytes = Buffer.concat(flights)
+  const statements: Array<{ readonly name: string; readonly sql: string }> = []
+  let offset = 0
+  while (offset + 5 <= bytes.length) {
+    if (bytes[offset] === 0) {
+      offset += bytes.readInt32BE(offset)
+      continue
+    }
+    const end = offset + 1 + bytes.readInt32BE(offset + 1)
+    if (bytes[offset] === 0x50) {
+      const nameEnd = bytes.indexOf(0, offset + 5)
+      const sqlEnd = bytes.indexOf(0, nameEnd + 1)
+      statements.push({
+        name: bytes.subarray(offset + 5, nameEnd).toString("utf8"),
+        sql: bytes.subarray(nameEnd + 1, sqlEnd).toString("utf8"),
+      })
+    }
+    offset = end
+  }
+  return statements
+}
+
 /** Positions of `fragments` in `flight`, in the order given; -1 when absent. */
 const positions = (flight: Buffer, fragments: ReadonlyArray<string>) =>
   fragments.map((fragment) => wire(flight).indexOf(fragment))
@@ -732,6 +756,28 @@ export const ownerCacheMultiXactConformance: ConformanceCase = {
 /** Pipeline cases: round trips per turn, statement grouping and order across admission, handler, and commit, and batching of the pipelined worker. */
 export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
   {
+    name: "pipeline: warm receipt guards replan instead of retaining an empty-history scan",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(environment, { warm: true }, (probe) =>
+        Effect.gen(function* () {
+          const plain = yield* Plain.get("warm-receipt-plan")
+          expect(yield* plain.Add(0)).toBe(0)
+          const first = probe.sent.length
+          expect(yield* plain.Add(3)).toBe(3)
+          expect(yield* plain.Add(17)).toBe(20)
+          const guards = parsedStatements(probe.sent.slice(first)).filter(
+            ({ sql }) =>
+              sql.includes("WITH locked AS MATERIALIZED") &&
+              sql.includes("NOT EXISTS (SELECT 1 FROM actor_receipts"),
+          )
+          expect(guards.map(({ name }) => name)).toEqual(["", ""])
+          expect(probe.handled).toBe(3)
+        }),
+      ),
+  },
+  {
     name: "pipeline: a retained batch-admission plan probes receipt identities instead of scanning growing history",
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
@@ -742,10 +788,11 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
         {
           observeStatement: (statement) => observed.push(statement),
         },
-        (_probe, database) =>
+        (probe, database) =>
           Effect.gen(function* () {
             const plain = yield* Plain.get("history-plan")
             const first = yield* holding(plain.Add(0))
+            const sent = probe.sent.length
             const waiting = yield* enqueue(
               Array.from({ length: 32 }, () => Effect.orDie(plain.Add(1))),
             )
@@ -754,6 +801,11 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
             expect(yield* Effect.forEach(waiting, Fiber.join)).toEqual(
               Array.from({ length: 32 }, (_, index) => index + 1),
             )
+            const admissions = parsedStatements(probe.sent.slice(sent)).filter(
+              ({ sql }) =>
+                sql.includes("WITH locked AS MATERIALIZED") && sql.includes("actor_receipts"),
+            )
+            expect(admissions.map(({ name }) => name)).toEqual([""])
             const admission = observed.find(
               ({ sql, params }) =>
                 sql.includes("WITH locked AS MATERIALIZED") &&
@@ -823,7 +875,7 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
               }
               visit(plans[0]!.Plan)
               expect(plans[0]!.Plan["Actual Rows"]).toBe(32)
-          expect(receipts.length > 0).toBe(true)
+              expect(receipts.length > 0).toBe(true)
               const read = receipts.reduce(
                 (total, node) =>
                   total +
