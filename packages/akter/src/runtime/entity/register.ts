@@ -531,6 +531,468 @@ export const registerActor = Effect.fnUntraced(function* (
     { restarts: number | undefined; handler: Scope.Closeable | undefined; alone: Set<string> }
   >()
 
+  interface Current {
+    readonly scope: Scope.Closeable
+    readonly owned: Effect.Success<ReturnType<typeof ownedOf>>
+    readonly activated: Exit.Exit<Effect.Success<ReturnType<Registration["activate"]>>, unknown>
+    engine: Effect.Success<ReturnType<typeof activationEngine>> | undefined
+  }
+
+  /**
+   * Mutable activation data, passed to the worker wiring shared by this actor
+   * type. The initial build fills `current` before any handler or worker runs.
+   */
+  interface Worker {
+    readonly memory: {
+      restarts: number | undefined
+      handler: Scope.Closeable | undefined
+      alone: Set<string>
+    }
+    readonly entityId: string
+    readonly tenant: string
+    readonly id: string
+    readonly shard: string | undefined
+    readonly handler: Scope.Closeable
+    readonly built: Context.Context<never>
+    current: Current
+    /** A lost singleton lease or incomplete restart refuses all work until Cluster rebuilds. */
+    refused: RetryTurn | undefined
+    readonly mailbox: ReturnType<typeof activationMailbox<Waiting>>
+    phase: ActivationDiagnosis["worker"]
+    taken: Array<Waiting>
+    readonly labelled: WeakMap<ReadonlyArray<Waiting>, ReadonlyArray<string>>
+  }
+
+  const policy = registration.policy
+  const statements = registration.tables.length > 0 || registration.blobs.length > 0
+
+  const start = Effect.fnUntraced(function* (
+    worker: Pick<Worker, "handler" | "shard" | "entityId" | "tenant" | "id" | "refused">,
+  ) {
+    const scope = yield* Scope.fork(worker.handler)
+
+    if (lease !== undefined)
+      yield* lease.holds(worker.shard!).pipe(
+        Effect.repeat({ schedule: Schedule.spaced(lease.interval), until: (held) => !held }),
+        Effect.andThen(
+          Effect.sync(() => {
+            worker.refused = leaseLostDefect
+          }),
+        ),
+        Effect.andThen(Effect.forkDetach(Scope.close(scope, Exit.void))),
+        Effect.forkIn(scope),
+      )
+
+    const owned = yield* ownedOf(worker.entityId).pipe(Scope.provide(scope))
+
+    const activated = yield* registration
+      .activate(ActorRef.make({ tenant: worker.tenant, actor: registration.name, id: worker.id }))
+      .pipe(Scope.provide(scope), Effect.exit)
+
+    if (Exit.isFailure(activated))
+      yield* Effect.logError("Actor activation failed", activated.cause).pipe(
+        Effect.annotateLogs({ actor: registration.name, id: worker.id, tenant: worker.tenant }),
+      )
+
+    const started: Current = { scope, owned, activated, engine: undefined }
+
+    return started
+  })
+
+  const restart = (worker: Worker, batch: ReadonlyArray<Waiting>, cause: Cause.Cause<unknown>) =>
+    Effect.sync(() => {
+      worker.refused ??= restartIncomplete
+    }).pipe(
+      Effect.andThen(
+        Effect.forEach(
+          batch,
+          (entry) =>
+            entry.request.external !== true
+              ? Deferred.failCause(entry.reply, Cause.die(Cause.squash(cause)))
+              : Deferred.fail(
+                  entry.reply,
+                  DeliveryFailed.make({
+                    error: ActorError.make({
+                      reason: ActorUnavailable.make({ cause: Cause.squash(cause) }),
+                    }),
+                    admitted: entry.admitted === true,
+                  }),
+                ),
+          { discard: true },
+        ),
+      ),
+      Effect.andThen(Effect.interrupt),
+    )
+
+  const restartActivation = (
+    worker: Worker,
+    batch: ReadonlyArray<Waiting>,
+    orphan: ReadonlyArray<Waiting>,
+    cause: Cause.Cause<unknown>,
+  ) =>
+    Effect.gen(function* () {
+      const failures = worker.memory.restarts ?? 0
+
+      worker.phase = "restarting"
+      worker.memory.restarts = failures + 1
+      yield* Scope.close(worker.current.scope, Exit.void)
+      yield* Effect.sleep(restartDelay(failures))
+
+      if (lease !== undefined && !(yield* lease.holds(worker.shard!))) {
+        worker.refused = leaseLostDefect
+
+        return yield* Effect.die(leaseLostDefect)
+      }
+
+      worker.current = yield* start(worker).pipe(Effect.provideContext(worker.built))
+      worker.mailbox.requeue(orphan)
+
+      const unavailable = ActorError.make({
+        reason: ActorUnavailable.make({ cause: Cause.squash(cause) }),
+      })
+
+      yield* Effect.forEach(
+        batch,
+        (entry) =>
+          entry.request.external !== true
+            ? Deferred.fail(entry.reply, unavailable)
+            : Deferred.fail(
+                entry.reply,
+                DeliveryFailed.make({ error: unavailable, admitted: entry.admitted === true }),
+              ),
+        { discard: true },
+      )
+    }).pipe(
+      Effect.uninterruptible,
+      Effect.catchCause((failed) => restart(worker, [...batch, ...orphan], failed)),
+    )
+
+  const resolve = (worker: Worker, batch: Array<Waiting>) => {
+    const { activated } = worker.current
+
+    if (Exit.isSuccess(activated))
+      for (const entry of batch)
+        entry.command =
+          activated.value.get(entry.request.command) ??
+          workflowRoutes.get(entry.request.command) ??
+          entry.command
+
+    return batch
+  }
+
+  const following = Effect.fnUntraced(function* (worker: Worker) {
+    if (
+      worker.refused !== undefined ||
+      !gate.open ||
+      Exit.isFailure(worker.current.activated) ||
+      Exit.isFailure(yield* Effect.exit(writable))
+    )
+      return undefined
+
+    const batch = resolve(worker, worker.mailbox.take())
+
+    worker.taken.push(...batch)
+
+    return batch.length > 0 ? batch : undefined
+  })
+
+  /**
+   * The one owner of an ended batch's publication, in this order: wake the
+   * relay and running job attempts for obligations the commit made due or
+   * cancelled; record the batch's outcomes; end the transient progress of
+   * commands and jobs the batch settled; send its broadcasts, feed frames
+   * and watch updates to connections; then, per command in delivery order,
+   * run its `afterCommit` point, kick the workflow execution it started or
+   * resumed, and answer its caller. These steps follow the commit but are
+   * not atomic with it or with each other. A failure part-way stops the run
+   * as committed, so every command left unanswered is restarted and
+   * resolves through its receipt; a lost broadcast is not replayed.
+   */
+  const publish = Effect.fnUntraced(function* (
+    worker: Worker,
+    batch: ReadonlyArray<Waiting>,
+    done: Done,
+  ) {
+    const { owned } = worker.current
+    const outbox = yield* OutboxRuntime
+
+    if (done.wake) yield* outbox.wake
+
+    if (done.cancelled) yield* outbox.cancelled
+
+    const labels = done.settled.map((settled, index) =>
+      Result.isSuccess(settled) ? outcomeOf(settled.success, done.replays.has(index)) : "rejected",
+    )
+
+    worker.labelled.set(batch, labels)
+    yield* Effect.annotateCurrentSpan({ "actor.generation": done.generation })
+
+    if (batch.length === 1 && Result.isSuccess(done.settled[0]!))
+      yield* Effect.annotateCurrentSpan({
+        "turn.replayed": done.replays.has(0),
+        "turn.outcome": labels[0]!,
+      })
+
+    yield* countWritten(done)
+    const live = recorder()
+
+    if (live !== undefined && done.written.receipts > 0)
+      recordLive(live, batch, done, yield* Clock.currentTimeMillis)
+
+    if (owner.hasProgress) {
+      for (const [index, settled] of done.settled.entries())
+        if (Result.isSuccess(settled) && !Outcome.guards.Defect(settled.success))
+          yield* owner.closeProgress(owned, batch[index]!.request.commandId)
+
+      for (const jobId of done.cancelledJobs) yield* owner.closeProgress(owned, jobId)
+    }
+
+    if (owner.hasConnections || owner.hasStreams) {
+      for (const { request } of batch) yield* (yield* TurnHooks).at("beforeFlush", request)
+
+      const feeds = yield* Effect.forEach(done.committed, owner.feedBroadcasts)
+      const watches = yield* owner.watchBroadcasts(owned, done.wrote, done.version)
+
+      yield* owner.flush(owned, [...done.broadcasts, ...feeds.flat(), ...watches], done.head)
+    }
+
+    for (const [index, settled] of done.settled.entries()) {
+      const entry = batch[index]!
+
+      if (Result.isFailure(settled)) {
+        yield* Deferred.fail(entry.reply, settled.failure)
+        continue
+      }
+
+      const outcome = settled.success
+      worker.memory.restarts = 0
+
+      if (!Outcome.guards.Defect(outcome)) {
+        yield* (yield* TurnHooks).at("afterCommit", entry.request)
+
+        const kicked = workflowRoutes.has(entry.request.command)
+          ? yield* kickedExecution({ request: entry.request, outcome })
+          : undefined
+
+        if (kicked !== undefined) {
+          worker.phase = "workflow kick"
+          worker.current.engine ??= yield* activationEngine({
+            registration,
+            ref: entry.request.ref,
+            routingKey: routingKeyOf(entry.request.ref),
+            cache: worker.current.owned.cache,
+            scope: worker.current.scope,
+            deliveryMs: policy.deliveryMs,
+          })
+          yield* worker.current.engine.kick(kicked.executionId, kicked.interrupt)
+          worker.phase = "turn"
+        }
+      }
+
+      const executed: Executed = done.replays.has(index)
+        ? { outcome, version: done.version, endedAtMs: done.endedAtMs, replayed: true }
+        : { outcome, version: done.version, endedAtMs: done.endedAtMs }
+
+      yield* Deferred.succeed(entry.reply, executed)
+    }
+  })
+
+  /** Records a finished batch's turn outcomes and duration, or the defect that ended it. */
+  const observed = Effect.fnUntraced(function* (
+    worker: Worker,
+    batch: ReadonlyArray<Waiting>,
+    started: number,
+    exit: Exit.Exit<unknown, unknown>,
+  ) {
+    const { request } = batch[0]!
+    const lone = batch.length === 1
+    const labels = worker.labelled.get(batch)
+    const elapsed = (yield* Clock.currentTimeMillis) - started
+
+    if (labels === undefined && Exit.isFailure(exit)) {
+      if (Cause.hasInterruptsOnly(exit.cause)) return
+
+      if (!retryable(exit.cause) && !lone) return
+
+      const deterministic = !retryable(exit.cause)
+
+      if (deterministic) yield* recordDefect(request, exit.cause)
+
+      yield* count(
+        Metrics.turns,
+        { ...typeAttributes, outcome: deterministic ? "defect" : "retried" },
+        batch.length,
+      )
+      yield* record(Metrics.turnDuration, typeAttributes, elapsed)
+
+      return
+    }
+
+    for (const label of labels ?? [])
+      yield* count(Metrics.turns, { ...typeAttributes, outcome: label }, 1)
+
+    yield* record(Metrics.turnDuration, typeAttributes, elapsed)
+  })
+
+  const observe =
+    (worker: Worker, batch: ReadonlyArray<Waiting>) =>
+    <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      Effect.flatMap(Clock.currentTimeMillis, (started) =>
+        Effect.forEach(
+          batch,
+          ({ request: queued }) =>
+            queued.queuedAtMs === undefined
+              ? Effect.void
+              : record(
+                  Metrics.mailboxAge,
+                  typeAttributes,
+                  Math.max(0, started - queued.queuedAtMs),
+                ),
+          { discard: true },
+        ).pipe(
+          Effect.andThen(effect),
+          Effect.onExit((exit) => observed(worker, batch, started, exit)),
+          withinTurnSpan(batch),
+        ),
+      )
+
+  const run = (worker: Worker, batch: ReadonlyArray<Waiting>, pipelining: boolean) => {
+    const { owned } = worker.current
+
+    return executeBatches(
+      {
+        first: batch,
+        next: pipelining ? following(worker) : Effect.undefined,
+        prepare: owner.prepare(owned),
+        committed: (batch, done) => publish(worker, batch, done),
+        publishesUnderLock: (batch) =>
+          batch.some(({ request }) => workflowRoutes.has(request.command)),
+        observe: (batch) => observe(worker, batch),
+      },
+      owned.cache,
+      owned.key,
+      policy,
+      registration.mintable,
+      parentPlacement(registration.placement)?.parent,
+      statements,
+      waited,
+      owner.hasConnections ? owner.list(owned) : undefined,
+      registration.cron,
+      accounting,
+    )
+  }
+
+  const recover: (
+    worker: Worker,
+    stopped: Stopped<Waiting>,
+  ) => Effect.Effect<void, SqlError.SqlError, Entity.CurrentAddress | Sharding.Sharding> =
+    Effect.fnUntraced(function* (worker, { batch, orphan, cause, committed, poolRefused }) {
+      if (poolRefused === true) {
+        worker.mailbox.requeue(orphan ?? [])
+        yield* Effect.forEach(batch, (entry) => Deferred.fail(entry.reply, overloaded("runner")), {
+          discard: true,
+        })
+
+        return
+      }
+
+      if (committed || retryable(cause)) {
+        if (!committed && batch.length > 1)
+          worker.mailbox.isolate(batch.map(({ request }) => request.commandId))
+
+        if (committed || worker.refused !== undefined)
+          return yield* restart(worker, [...batch, ...(orphan ?? [])], cause)
+
+        return yield* restartActivation(worker, batch, orphan ?? [], cause)
+      }
+
+      worker.mailbox.requeue(orphan ?? [])
+
+      if (batch.length === 1) {
+        const { request } = batch[0]!
+        const defect = Cause.squash(cause)
+
+        yield* Effect.logError("Deterministic actor defect", Cause.die(defect)).pipe(
+          Effect.annotateLogs({
+            actor: request.ref.actor,
+            id: request.ref.id,
+            tenant: request.ref.tenant,
+            command: request.command,
+            commandId: request.commandId,
+          }),
+        )
+
+        worker.memory.restarts = 0
+
+        yield* Deferred.succeed(batch[0]!.reply, {
+          outcome: Outcome.cases.Defect.make({ cause: defect }),
+        })
+
+        return
+      }
+
+      yield* Effect.logDebug("Turn batch failed; running its commands one at a time", cause)
+
+      for (const entry of batch) {
+        const stopped = yield* run(worker, resolve(worker, [entry]), false)
+
+        if (stopped !== undefined) yield* recover(worker, stopped)
+      }
+    }, Effect.provideContext(services))
+
+  const turnBatch = Effect.fnUntraced(function* (worker: Worker, batch: ReadonlyArray<Waiting>) {
+    if (worker.refused !== undefined)
+      return yield* restart(worker, batch, Cause.die(worker.refused))
+
+    yield* writable
+
+    const stopped = yield* run(worker, batch, true)
+
+    if (stopped !== undefined) yield* recover(worker, stopped)
+  })
+
+  const work = Effect.fnUntraced(function* (worker: Worker) {
+    while (true) {
+      worker.phase = "idle"
+      worker.taken = []
+      yield* worker.mailbox.await
+      const batch = resolve(worker, worker.mailbox.take())
+
+      if (batch.length === 0) continue
+
+      worker.phase = "turn"
+      worker.taken = [...batch]
+
+      if (Exit.isFailure(worker.current.activated)) {
+        const { cause } = worker.current.activated
+
+        yield* Effect.forEach(
+          batch,
+          (entry) =>
+            Deferred.succeed(entry.reply, {
+              outcome: Outcome.cases.Defect.make({ cause: Cause.squash(cause) }),
+            }),
+          { discard: true },
+        )
+
+        continue
+      }
+
+      yield* gate.run(turnBatch(worker, batch)).pipe(
+        Effect.catchIf(Schema.is(ActorError), (error) =>
+          Effect.forEach(worker.taken, (entry) => Deferred.fail(entry.reply, error), {
+            discard: true,
+          }),
+        ),
+        Effect.provideContext(batch[0]!.context),
+        Effect.catchCauseIf(
+          (cause) => !Cause.hasInterruptsOnly(cause),
+          (cause) => restart(worker, batch, cause),
+        ),
+      )
+    }
+  }, Effect.provideContext(services))
+
   const register = sharding.registerEntity(
     entity,
     Effect.gen(function* () {
@@ -563,479 +1025,56 @@ export const registerActor = Effect.fnUntraced(function* (
 
       if (lease !== undefined && !(yield* lease.holds(shard!))) return yield* leaseLost
 
-      interface Current {
-        readonly scope: Scope.Closeable
-        readonly owned: Effect.Success<ReturnType<typeof ownedOf>>
-        readonly activated: Exit.Exit<Effect.Success<ReturnType<Registration["activate"]>>, unknown>
-        engine: Effect.Success<ReturnType<typeof activationEngine>> | undefined
-      }
-
-      /**
-       * Why this handler refuses all work: its singleton lease is lost, or an
-       * in-place restart failed and the worker ended. Set once, never cleared;
-       * Cluster builds a new handler for the next delivery.
-       */
-      let refused: RetryTurn | undefined
-
       const handler = yield* Scope.fork(activation)
 
       memory.handler = handler
 
       yield* residentWhile(entityId, tenant, id).pipe(Scope.provide(handler))
 
-      const start = Effect.gen(function* () {
-        const scope = yield* Scope.fork(handler)
-
-        if (lease !== undefined)
-          yield* lease.holds(shard!).pipe(
-            Effect.repeat({ schedule: Schedule.spaced(lease.interval), until: (held) => !held }),
-            Effect.andThen(
-              Effect.sync(() => {
-                refused = leaseLostDefect
-              }),
-            ),
-            Effect.andThen(Effect.forkDetach(Scope.close(scope, Exit.void))),
-            Effect.forkIn(scope),
-          )
-
-        const owned = yield* ownedOf(entityId).pipe(Scope.provide(scope))
-
-        const activated = yield* registration
-          .activate(ActorRef.make({ tenant, actor: registration.name, id }))
-          .pipe(Scope.provide(scope), Effect.exit)
-
-        if (Exit.isFailure(activated))
-          yield* Effect.logError("Actor activation failed", activated.cause).pipe(
-            Effect.annotateLogs({ actor: registration.name, id, tenant }),
-          )
-
-        const started: Current = { scope, owned, activated, engine: undefined }
-
-        return started
+      const starting = {
+        memory,
+        entityId,
+        tenant,
+        id,
+        shard,
+        handler,
+        built: yield* Effect.context<never>(),
+        refused: undefined as RetryTurn | undefined,
+      }
+      const worker: Worker = Object.assign(starting, {
+        current: yield* start(starting),
+        mailbox: activationMailbox<Waiting>(memory.alone),
+        phase: "idle" as const,
+        taken: [] as Array<Waiting>,
+        labelled: new WeakMap<ReadonlyArray<Waiting>, ReadonlyArray<string>>(),
       })
-
-      const built = yield* Effect.context<never>()
-      let current = yield* start
 
       yield* Effect.addFinalizer(() => Scope.close(handler, Exit.void))
+      yield* work(worker).pipe(Effect.forkIn(handler))
 
-      const policy = registration.policy
-      const statements = registration.tables.length > 0 || registration.blobs.length > 0
-
-      const mailbox = activationMailbox<Waiting>(memory.alone)
-      let phase: ActivationDiagnosis["worker"] = "idle"
-
-      const restart = (batch: ReadonlyArray<Waiting>, cause: Cause.Cause<unknown>) =>
-        Effect.sync(() => {
-          refused ??= restartIncomplete
-        }).pipe(
-          Effect.andThen(
-            Effect.forEach(
-              batch,
-              (entry) =>
-                entry.request.external !== true
-                  ? Deferred.failCause(entry.reply, Cause.die(Cause.squash(cause)))
-                  : Deferred.fail(
-                      entry.reply,
-                      DeliveryFailed.make({
-                        error: ActorError.make({
-                          reason: ActorUnavailable.make({ cause: Cause.squash(cause) }),
-                        }),
-                        admitted: entry.admitted === true,
-                      }),
-                    ),
-              { discard: true },
-            ),
-          ),
-          Effect.andThen(Effect.interrupt),
-        )
-
-      const restartActivation = (
-        batch: ReadonlyArray<Waiting>,
-        orphan: ReadonlyArray<Waiting>,
-        cause: Cause.Cause<unknown>,
-      ) =>
-        Effect.gen(function* () {
-          const failures = memory.restarts ?? 0
-
-          phase = "restarting"
-          memory.restarts = failures + 1
-          yield* Scope.close(current.scope, Exit.void)
-          yield* Effect.sleep(restartDelay(failures))
-
-          if (lease !== undefined && !(yield* lease.holds(shard!))) {
-            refused = leaseLostDefect
-
-            return yield* Effect.die(leaseLostDefect)
-          }
-
-          current = yield* start.pipe(Effect.provideContext(built))
-          mailbox.requeue(orphan)
-
-          const unavailable = ActorError.make({
-            reason: ActorUnavailable.make({ cause: Cause.squash(cause) }),
-          })
-
-          yield* Effect.forEach(
-            batch,
-            (entry) =>
-              entry.request.external !== true
-                ? Deferred.fail(entry.reply, unavailable)
-                : Deferred.fail(
-                    entry.reply,
-                    DeliveryFailed.make({ error: unavailable, admitted: entry.admitted === true }),
-                  ),
-            { discard: true },
-          )
-        }).pipe(
-          Effect.uninterruptible,
-          Effect.catchCause((failed) => restart([...batch, ...orphan], failed)),
-        )
-
-      const resolve = (batch: Array<Waiting>) => {
-        const { activated } = current
-
-        if (Exit.isSuccess(activated))
-          for (const entry of batch)
-            entry.command =
-              activated.value.get(entry.request.command) ??
-              workflowRoutes.get(entry.request.command) ??
-              entry.command
-
-        return batch
-      }
-
-      let taken: Array<Waiting> = []
-
-      const following = Effect.gen(function* () {
-        if (
-          refused !== undefined ||
-          !gate.open ||
-          Exit.isFailure(current.activated) ||
-          Exit.isFailure(yield* Effect.exit(writable))
-        )
-          return undefined
-
-        const batch = resolve(mailbox.take())
-
-        taken.push(...batch)
-
-        return batch.length > 0 ? batch : undefined
+      const diagnose = () => ({
+        worker: worker.phase,
+        mailbox: worker.mailbox.size(),
+        batch: worker.taken.length,
       })
 
-      const labelled = new WeakMap<ReadonlyArray<Waiting>, ReadonlyArray<string>>()
-
-      /**
-       * The one owner of an ended batch's publication, in this order: wake the
-       * relay and running job attempts for obligations the commit made due or
-       * cancelled; record the batch's outcomes; end the transient progress of
-       * commands and jobs the batch settled; send its broadcasts, feed frames
-       * and watch updates to connections; then, per command in delivery order,
-       * run its `afterCommit` point, kick the workflow execution it started or
-       * resumed, and answer its caller. These steps follow the commit but are
-       * not atomic with it or with each other. A failure part-way stops the run
-       * as committed, so every command left unanswered is restarted and
-       * resolves through its receipt; a lost broadcast is not replayed.
-       */
-      const publish = Effect.fnUntraced(function* (batch: ReadonlyArray<Waiting>, done: Done) {
-        const { owned } = current
-        const outbox = yield* OutboxRuntime
-
-        if (done.wake) yield* outbox.wake
-
-        if (done.cancelled) yield* outbox.cancelled
-
-        const labels = done.settled.map((settled, index) =>
-          Result.isSuccess(settled)
-            ? outcomeOf(settled.success, done.replays.has(index))
-            : "rejected",
-        )
-
-        labelled.set(batch, labels)
-        yield* Effect.annotateCurrentSpan({ "actor.generation": done.generation })
-
-        if (batch.length === 1 && Result.isSuccess(done.settled[0]!))
-          yield* Effect.annotateCurrentSpan({
-            "turn.replayed": done.replays.has(0),
-            "turn.outcome": labels[0]!,
-          })
-
-        yield* countWritten(done)
-        const live = recorder()
-
-        if (live !== undefined && done.written.receipts > 0)
-          recordLive(live, batch, done, yield* Clock.currentTimeMillis)
-
-        if (owner.hasProgress) {
-          for (const [index, settled] of done.settled.entries())
-            if (Result.isSuccess(settled) && !Outcome.guards.Defect(settled.success))
-              yield* owner.closeProgress(owned, batch[index]!.request.commandId)
-
-          for (const jobId of done.cancelledJobs) yield* owner.closeProgress(owned, jobId)
-        }
-
-        if (owner.hasConnections || owner.hasStreams) {
-          for (const { request } of batch) yield* (yield* TurnHooks).at("beforeFlush", request)
-
-          const feeds = yield* Effect.forEach(done.committed, owner.feedBroadcasts)
-          const watches = yield* owner.watchBroadcasts(owned, done.wrote, done.version)
-
-          yield* owner.flush(owned, [...done.broadcasts, ...feeds.flat(), ...watches], done.head)
-        }
-
-        for (const [index, settled] of done.settled.entries()) {
-          const entry = batch[index]!
-
-          if (Result.isFailure(settled)) {
-            yield* Deferred.fail(entry.reply, settled.failure)
-            continue
-          }
-
-          const outcome = settled.success
-          memory.restarts = 0
-
-          if (!Outcome.guards.Defect(outcome)) {
-            yield* (yield* TurnHooks).at("afterCommit", entry.request)
-
-            const kicked = workflowRoutes.has(entry.request.command)
-              ? yield* kickedExecution({ request: entry.request, outcome })
-              : undefined
-
-            if (kicked !== undefined) {
-              phase = "workflow kick"
-              current.engine ??= yield* activationEngine({
-                registration,
-                ref: entry.request.ref,
-                routingKey: routingKeyOf(entry.request.ref),
-                cache: current.owned.cache,
-                scope: current.scope,
-                deliveryMs: policy.deliveryMs,
-              })
-              yield* current.engine.kick(kicked.executionId, kicked.interrupt)
-              phase = "turn"
-            }
-          }
-
-          const executed: Executed = done.replays.has(index)
-            ? { outcome, version: done.version, endedAtMs: done.endedAtMs, replayed: true }
-            : { outcome, version: done.version, endedAtMs: done.endedAtMs }
-
-          yield* Deferred.succeed(entry.reply, executed)
-        }
-      })
-
-      /** Records a finished batch's turn outcomes and duration, or the defect that ended it. */
-      const observed = Effect.fnUntraced(function* (
-        batch: ReadonlyArray<Waiting>,
-        started: number,
-        exit: Exit.Exit<unknown, unknown>,
-      ) {
-        const { request } = batch[0]!
-        const lone = batch.length === 1
-        const labels = labelled.get(batch)
-        const elapsed = (yield* Clock.currentTimeMillis) - started
-
-        if (labels === undefined && Exit.isFailure(exit)) {
-          if (Cause.hasInterruptsOnly(exit.cause)) return
-
-          if (!retryable(exit.cause) && !lone) return
-
-          const deterministic = !retryable(exit.cause)
-
-          if (deterministic) yield* recordDefect(request, exit.cause)
-
-          yield* count(
-            Metrics.turns,
-            { ...typeAttributes, outcome: deterministic ? "defect" : "retried" },
-            batch.length,
-          )
-          yield* record(Metrics.turnDuration, typeAttributes, elapsed)
-
-          return
-        }
-
-        for (const label of labels ?? [])
-          yield* count(Metrics.turns, { ...typeAttributes, outcome: label }, 1)
-
-        yield* record(Metrics.turnDuration, typeAttributes, elapsed)
-      })
-
-      const observe =
-        (batch: ReadonlyArray<Waiting>) =>
-        <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-          Effect.flatMap(Clock.currentTimeMillis, (started) =>
-            Effect.forEach(
-              batch,
-              ({ request: queued }) =>
-                queued.queuedAtMs === undefined
-                  ? Effect.void
-                  : record(
-                      Metrics.mailboxAge,
-                      typeAttributes,
-                      Math.max(0, started - queued.queuedAtMs),
-                    ),
-              { discard: true },
-            ).pipe(
-              Effect.andThen(effect),
-              Effect.onExit((exit) => observed(batch, started, exit)),
-              withinTurnSpan(batch),
-            ),
-          )
-
-      const run = (batch: ReadonlyArray<Waiting>, pipelining: boolean) => {
-        const { owned } = current
-
-        return executeBatches(
-          {
-            first: batch,
-            next: pipelining ? following : Effect.undefined,
-            prepare: owner.prepare(owned),
-            committed: publish,
-            publishesUnderLock: (batch) =>
-              batch.some(({ request }) => workflowRoutes.has(request.command)),
-            observe,
-          },
-          owned.cache,
-          owned.key,
-          policy,
-          registration.mintable,
-          parentPlacement(registration.placement)?.parent,
-          statements,
-          waited,
-          owner.hasConnections ? owner.list(owned) : undefined,
-          registration.cron,
-          accounting,
-        )
-      }
-
-      const recover: (
-        stopped: Stopped<Waiting>,
-      ) => Effect.Effect<void, SqlError.SqlError, Entity.CurrentAddress | Sharding.Sharding> =
-        Effect.fnUntraced(function* ({ batch, orphan, cause, committed, poolRefused }) {
-          if (poolRefused === true) {
-            mailbox.requeue(orphan ?? [])
-            yield* Effect.forEach(
-              batch,
-              (entry) => Deferred.fail(entry.reply, overloaded("runner")),
-              {
-                discard: true,
-              },
-            )
-
-            return
-          }
-
-          if (committed || retryable(cause)) {
-            if (!committed && batch.length > 1)
-              mailbox.isolate(batch.map(({ request }) => request.commandId))
-
-            if (committed || refused !== undefined)
-              return yield* restart([...batch, ...(orphan ?? [])], cause)
-
-            return yield* restartActivation(batch, orphan ?? [], cause)
-          }
-
-          mailbox.requeue(orphan ?? [])
-
-          if (batch.length === 1) {
-            const { request } = batch[0]!
-            const defect = Cause.squash(cause)
-
-            yield* Effect.logError("Deterministic actor defect", Cause.die(defect)).pipe(
-              Effect.annotateLogs({
-                actor: request.ref.actor,
-                id: request.ref.id,
-                tenant: request.ref.tenant,
-                command: request.command,
-                commandId: request.commandId,
-              }),
-            )
-
-            memory.restarts = 0
-
-            return yield* Deferred.succeed(batch[0]!.reply, {
-              outcome: Outcome.cases.Defect.make({ cause: defect }),
-            })
-          }
-
-          yield* Effect.logDebug("Turn batch failed; running its commands one at a time", cause)
-
-          for (const entry of batch) {
-            const stopped = yield* run(resolve([entry]), false)
-
-            if (stopped !== undefined) yield* recover(stopped)
-          }
-        }, Effect.provideContext(services))
-
-      const turnBatch = Effect.fnUntraced(function* (batch: ReadonlyArray<Waiting>) {
-        if (refused !== undefined) return yield* restart(batch, Cause.die(refused))
-
-        yield* writable
-
-        const stopped = yield* run(batch, true)
-
-        if (stopped !== undefined) yield* recover(stopped)
-      })
-
-      yield* Effect.gen(function* () {
-        while (true) {
-          phase = "idle"
-          taken = []
-          yield* mailbox.await
-          const batch = resolve(mailbox.take())
-
-          if (batch.length === 0) continue
-
-          phase = "turn"
-          taken = [...batch]
-
-          if (Exit.isFailure(current.activated)) {
-            const { cause } = current.activated
-
-            yield* Effect.forEach(
-              batch,
-              (entry) =>
-                Deferred.succeed(entry.reply, {
-                  outcome: Outcome.cases.Defect.make({ cause: Cause.squash(cause) }),
-                }),
-              { discard: true },
-            )
-
-            continue
-          }
-
-          yield* gate.run(turnBatch(batch)).pipe(
-            Effect.catchIf(Schema.is(ActorError), (error) =>
-              Effect.forEach(taken, (entry) => Deferred.fail(entry.reply, error), {
-                discard: true,
-              }),
-            ),
-            Effect.provideContext(batch[0]!.context),
-            Effect.catchCauseIf(
-              (cause) => !Cause.hasInterruptsOnly(cause),
-              (cause) => restart(batch, cause),
-            ),
-          )
-        }
-      }).pipe(Effect.provideContext(services), Effect.forkIn(handler))
-
-      const diagnose = () => ({ worker: phase, mailbox: mailbox.size(), batch: taken.length })
-
-      workers.set(entityId, diagnose)
-      building.delete(entityId)
+      workers.set(worker.entityId, diagnose)
+      building.delete(worker.entityId)
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
-          if (workers.get(entityId) === diagnose) workers.delete(entityId)
+          if (workers.get(worker.entityId) === diagnose) workers.delete(worker.entityId)
         }),
       )
 
       return entity.of({
         Wake: () =>
-          Effect.suspend(() => (refused === undefined ? Effect.void : Effect.die(refused))),
+          Effect.suspend(() =>
+            worker.refused === undefined ? Effect.void : Effect.die(worker.refused),
+          ),
         Execute: ({ payload }) => {
-          if (refused !== undefined) return Effect.die(refused)
+          if (worker.refused !== undefined) return Effect.die(worker.refused)
 
-          const { activated } = current
+          const { activated } = worker.current
 
           if (Exit.isFailure(activated))
             return Effect.succeed<Executed>({
@@ -1056,9 +1095,9 @@ export const registerActor = Effect.fnUntraced(function* (
             queued: false,
           }
 
-          mailbox.offer(entry)
+          worker.mailbox.offer(entry)
 
-          return Rpc.fork(awaitReply(entry, mailbox))
+          return Rpc.fork(awaitReply(entry, worker.mailbox))
         },
       })
     }),
