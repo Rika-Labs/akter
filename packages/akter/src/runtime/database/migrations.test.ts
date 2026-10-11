@@ -55,12 +55,219 @@ const schemaKeys = (sql: SqlClient.SqlClient) => sql<{
 
 const expectedIds = [
   1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 27, 29,
-  30, 31, 32, 33, 34,
+  30, 31, 32, 33, 34, 35,
 ]
+
+/** Populated pre-upgrade rows and renamed constraints reject name guesses, data rewrites and broad FK removal. */
+const hotTableUpgrade = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient
+  yield* migrator(Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0035")))
+  yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id, generation)
+    VALUES (-9137, 'hot-tenant', 'Counter', 'kept', 23)`
+  yield* sql`INSERT INTO actor_state (routing_key, tenant_id, actor_type, actor_id, key, value)
+    VALUES (-9137, 'hot-tenant', 'Counter', 'kept', 'count', decode('1731', 'hex'))`
+  yield* sql`INSERT INTO actor_receipts (routing_key, tenant_id, actor_type, actor_id,
+    command_id, command, payload_hash, caller_key, outcome, expires_at_ms)
+    VALUES (-9137, 'hot-tenant', 'Counter', 'kept', 'retained-command', 'Add', 'hash',
+      'caller', '{"value":47}', 987654321)`
+  const foreignKeys = yield* sql<{ table_name: string; name: string }>`
+    SELECT c.relname AS table_name, k.conname AS name FROM pg_constraint k
+    JOIN pg_class c ON c.oid = k.conrelid
+    WHERE k.contype = 'f' AND k.confrelid = 'actor_generations'::regclass
+      AND k.conrelid IN ('actor_state'::regclass, 'actor_receipts'::regclass)`
+  expect(foreignKeys).toHaveLength(2)
+  for (const fk of foreignKeys) {
+    yield* sql`ALTER TABLE ${sql(fk.table_name)} RENAME CONSTRAINT ${sql(fk.name)}
+      TO ${sql(`${fk.table_name}_generation_exact`)}`
+  }
+  yield* sql`CREATE TABLE upgrade_labels (key text PRIMARY KEY)`
+  yield* sql`INSERT INTO upgrade_labels VALUES ('count')`
+  yield* sql`ALTER TABLE actor_state ADD CONSTRAINT retained_label_fk
+    FOREIGN KEY (key) REFERENCES upgrade_labels`
+})
+
+/** Physical tuples, catalogs and isolation policies must survive metadata-only maintenance unchanged. */
+const hotTableSnapshot = (sql: SqlClient.SqlClient) =>
+  Effect.all({
+    state: sql`SELECT *, ctid::text, xmin::text FROM actor_state`,
+    receipts: sql`SELECT *, ctid::text, xmin::text FROM actor_receipts`,
+    generations: sql`SELECT *, ctid::text, xmin::text FROM actor_generations`,
+    constraints: sql`SELECT conrelid::regclass::text AS table_name, conname,
+      pg_get_constraintdef(oid) AS definition FROM pg_constraint
+      WHERE connamespace = 'public'::regnamespace
+        AND conname NOT IN ('actor_state_generation_exact', 'actor_receipts_generation_exact')
+      ORDER BY conrelid::regclass::text, conname`,
+    indexes: schemaKeys(sql),
+    policies: sql`SELECT * FROM pg_policies WHERE schemaname = 'public' ORDER BY tablename, policyname`,
+    rls: sql`SELECT relname, relrowsecurity, relforcerowsecurity FROM pg_class
+      WHERE oid IN ('actor_state'::regclass, 'actor_receipts'::regclass) ORDER BY relname`,
+  })
+
+const generationForeignKeys = (sql: SqlClient.SqlClient) => sql`
+  SELECT conname FROM pg_constraint WHERE contype = 'f'
+    AND conrelid IN ('actor_state'::regclass, 'actor_receipts'::regclass)
+    AND confrelid = 'actor_generations'::regclass ORDER BY conname`
 
 describe("migrations with Postgres", () => {
   const runtime = ManagedRuntime.make(BunCrypto.layer)
   afterAll(() => runtime.dispose())
+
+  it("upgrades populated hot tables by exact catalog identity, preserving rows, keys, RLS and other foreign keys", () =>
+    runtime.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const url = yield* disposableDatabase({
+            url: yield* Config.Redacted("TEST_DATABASE_URL"),
+          })
+          const client = yield* Layer.build(Database.postgres({ url }))
+          yield* Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
+            yield* hotTableUpgrade
+            const before = yield* hotTableSnapshot(sql)
+            expect(yield* generationForeignKeys(sql)).toHaveLength(2)
+            yield* migrator(migrations)
+            expect(yield* generationForeignKeys(sql)).toEqual([])
+            expect(yield* hotTableSnapshot(sql)).toEqual(before)
+            expect(
+              yield* sql`SELECT migration_id::int, name FROM actor_migrations WHERE migration_id = 35`,
+            ).toEqual([{ migration_id: 35, name: "hot_table_foreign_keys" }])
+            expect(
+              yield* sql`SELECT tgname FROM pg_trigger WHERE tgisinternal
+              AND tgrelid IN ('actor_state'::regclass, 'actor_receipts'::regclass)
+              AND tgconstraint IN (SELECT oid FROM pg_constraint WHERE confrelid = 'actor_generations'::regclass)`,
+            ).toEqual([])
+            expect(yield* migrator(migrations)).toEqual([])
+            expect(yield* hotTableSnapshot(sql)).toEqual(before)
+          }).pipe(Effect.provideContext(client))
+        }),
+      ),
+    ))
+
+  it("rolls back the first hot-table FK drop when the second catalog identity is missing, then retries safely", () =>
+    runtime.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const url = yield* disposableDatabase({
+            url: yield* Config.Redacted("TEST_DATABASE_URL"),
+          })
+          const client = yield* Layer.build(Database.postgres({ url }))
+          yield* Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
+            yield* hotTableUpgrade
+            yield* sql`ALTER TABLE actor_receipts DROP CONSTRAINT actor_receipts_generation_exact`
+            const before = yield* hotTableSnapshot(sql)
+            const failure = yield* migrator(migrations).pipe(Effect.exit)
+            expect(Exit.isFailure(failure) && Cause.pretty(failure.cause)).toContain(
+              "Expected exactly one generation foreign key on actor_receipts; found 0",
+            )
+            expect(yield* generationForeignKeys(sql)).toEqual([
+              { conname: "actor_state_generation_exact" },
+            ])
+            expect(
+              yield* sql`SELECT migration_id FROM actor_migrations WHERE migration_id = 35`,
+            ).toEqual([])
+            expect(yield* hotTableSnapshot(sql)).toEqual(before)
+            yield* sql`ALTER TABLE actor_receipts ADD CONSTRAINT actor_receipts_generation_exact
+              FOREIGN KEY (routing_key, tenant_id, actor_type, actor_id) REFERENCES actor_generations`
+            yield* migrator(migrations)
+            expect(yield* generationForeignKeys(sql)).toEqual([])
+            expect(yield* hotTableSnapshot(sql)).toEqual(before)
+          }).pipe(Effect.provideContext(client))
+        }),
+      ),
+    ))
+
+  for (const release of [true, false]) {
+    it(
+      release
+        ? "gives way after a bounded hot-table lock wait and retries once the blocker commits"
+        : "exhausts bounded hot-table lock retries without a partial drop or migration record",
+      { timeout: 100_000 },
+      () =>
+        runtime.runPromise(
+          Effect.scoped(
+            Effect.gen(function* () {
+              const url = yield* disposableDatabase({
+                url: yield* Config.Redacted("TEST_DATABASE_URL"),
+              })
+              const client = yield* Layer.build(Database.postgres({ url }))
+              const pool = yield* Effect.acquireRelease(
+                Effect.sync(() => new Pool({ connectionString: Redacted.value(url) })),
+                (pool) => Effect.promise(() => pool.end()),
+              )
+              const blocker = yield* Effect.acquireRelease(
+                Effect.promise(() => pool.connect()),
+                (blocker) =>
+                  Effect.promise(() => blocker.query("ROLLBACK")).pipe(
+                    Effect.andThen(Effect.sync(() => blocker.release())),
+                  ),
+              )
+              yield* Effect.gen(function* () {
+                const sql = yield* SqlClient.SqlClient
+                yield* hotTableUpgrade
+                const before = yield* hotTableSnapshot(sql)
+                yield* Effect.promise(() =>
+                  blocker.query("BEGIN; LOCK TABLE actor_receipts IN ACCESS SHARE MODE"),
+                )
+                const started = performance.now()
+                const upgrade = yield* migrator(migrations).pipe(Effect.exit, Effect.forkChild)
+                const waiting = () =>
+                  Effect.promise(() =>
+                    pool.query<{ started: string }>(
+                      "SELECT query_start::text AS started FROM pg_stat_activity WHERE datname = $1 AND wait_event_type = 'Lock' AND query LIKE 'ALTER TABLE%actor_receipts%'",
+                      [new URL(Redacted.value(url)).pathname.slice(1)],
+                    ),
+                  )
+                const first = yield* waiting().pipe(
+                  Effect.filterOrFail(
+                    (result) => result.rows.length === 1,
+                    () => "not waiting",
+                  ),
+                  Effect.retry({ times: 200, schedule: Schedule.spaced("25 millis") }),
+                )
+                yield* waiting().pipe(
+                  Effect.filterOrFail(
+                    (result) =>
+                      result.rows.length === 1 &&
+                      result.rows[0]!.started !== first.rows[0]!.started,
+                    () => "not retried",
+                  ),
+                  Effect.retry({ times: 200, schedule: Schedule.spaced("25 millis") }),
+                )
+                expect(performance.now() - started).toBeGreaterThanOrEqual(2_000)
+                if (release) yield* Effect.promise(() => blocker.query("COMMIT"))
+                const result = yield* Fiber.join(upgrade)
+                const elapsed = performance.now() - started
+                if (release) {
+                  expect(Exit.isSuccess(result)).toBe(true)
+                  expect(yield* generationForeignKeys(sql)).toEqual([])
+                  expect(
+                    yield* sql`SELECT migration_id::int FROM actor_migrations WHERE migration_id = 35`,
+                  ).toEqual([{ migration_id: 35 }])
+                } else {
+                  expect(Exit.isFailure(result) && Cause.pretty(result.cause)).toContain(
+                    "lock timeout",
+                  )
+                  expect(elapsed).toBeGreaterThanOrEqual(62_000)
+                  expect(elapsed).toBeLessThan(90_000)
+                  yield* Effect.promise(() => blocker.query("COMMIT"))
+                  expect(yield* generationForeignKeys(sql)).toHaveLength(2)
+                  expect(
+                    yield* sql`SELECT migration_id FROM actor_migrations WHERE migration_id = 35`,
+                  ).toEqual([])
+                  yield* migrator(migrations)
+                  expect(yield* generationForeignKeys(sql)).toEqual([])
+                }
+                expect(yield* hotTableSnapshot(sql)).toEqual(before)
+                expect(yield* sql`SELECT current_setting('lock_timeout') AS timeout`).toEqual([
+                  { timeout: "0" },
+                ])
+              }).pipe(Effect.provideContext(client))
+            }),
+          ),
+        ),
+    )
+  }
 
   it("starts six Actors.layer runners together on a completely fresh database", () =>
     runtime.runPromise(
