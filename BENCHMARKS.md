@@ -58,7 +58,7 @@ The initial hot profile averaged 28.2 commands per receipt transaction, with
 78% of batches at the 32-command cap. A separate diagnostic counted exactly
 seven turn statements per batch and about 1.35 physical writes/flights per
 batch, because following admission chains behind the previous commit. The
-corrected lookup's diagnostic again counted seven statements and 1.35 flights
+rejected replanning lookup's diagnostic again counted seven statements and 1.35 flights
 per batch. The 10,000-key cohort instead uses alpha.6's warm single-command
 one-flight path, so it does not form cross-actor commit groups.
 
@@ -77,19 +77,17 @@ admission reads 1,000 → 10,000 → 100,000 receipt rows, taking
 0.164 → 1.173 → 10.940 ms. A lateral complete-key lookup with `LIMIT 1` keeps
 32 primary-key probes and 64–96 buffer hits, taking 0.089–0.122 ms. A second
 empty-table control is essential: a lateral lookup alone can retain an empty
-scan and later read 32 × 100,000 rows. The corrected implementation therefore
+scan and later read 32 × 100,000 rows. The first implementation therefore
 uses statement-specific unprepared execution for ordinary admission and the
-warm receipt guard. In the empty-history control at 100,000 receipts, the
-corrected lookup uses 32 index searches/96 buffer hits and takes 0.122 ms,
-against 30.298 ms for the original retained scan and 184.265 ms for the
-lateral-only prototype. This is a local mechanism reproduction, not an
-obtained physical plan from the hosted provider.
+warm receipt guard. That replanning implementation is rejected: its many-key
+database CPU cost below is unacceptable. It is not a ship candidate or proof
+that a retained empty-history plan is safe. These are local mechanism
+reproductions, not obtained physical plans from the hosted provider.
 
-The real-database regression captures the runner's actual 32-command SQL,
-checks its unnamed Parse message, and tests retained-plan growth at
-1k/10k/100k. It reads exactly 32 retained receipts at each boundary. The original
-implementation fails by reading 1,033 receipts at the first boundary. A
-separate wire regression checks that repeated warm guards also replan.
+The initial real-database regression captured the runner's actual 32-command
+SQL and tested retained-plan growth at 1k/10k/100k. Its unnamed-Parse assertions
+and incomplete empty-table coverage have been replaced by the stricter
+prepared-plan regressions below.
 Generation locking, database clocks, caller/command/payload receipt checks,
 transaction boundaries and reply-after-commit remain unchanged.
 
@@ -97,7 +95,7 @@ Cells below are medians of three alternating pairs (before/after,
 after/before, before/after), not pooled percentiles. The candidate's code is
 `d8ef447e8`, branch `refactor/receipt-admission-lookup`.
 
-| Cohort / measurement                  |           Before | Corrected lookup |
+| Cohort / measurement                  |           Before | Rejected replans |
 | ------------------------------------- | ---------------: | ---------------: |
 | One key commands/s                    |          1,611.2 |          1,984.1 |
 | One key p50 / p99 ms                  | 31.594 / 104.424 |  30.964 / 57.916 |
@@ -108,12 +106,105 @@ after/before, before/after), not pooled percentiles. The candidate's code is
 | 10,000 keys app / main CPU ms/command |    0.435 / 0.402 |    0.443 / 0.415 |
 | 10,000 keys database CPU ms/command   |            0.158 |            0.238 |
 
-The hot median improves 23% in throughput and cuts database CPU 86%, but the
+The rejected implementation's hot median improves 23% in throughput and cuts database CPU 86%, but the
 baseline range is wide (1,555–1,952 commands/s): one baseline repeat picked a
 cheap plan. Replanning has a real cost on the already-indexed many-key cohort:
 about 2% lower median throughput and 50% more database CPU. This tradeoff is
 reported rather than presented as a universal speedup. A provider repeat after
 a framework release remains necessary; this task changes no production system.
+
+#### Prepared composite point probes
+
+Both receipt statements now remain named/prepared. The existing transaction
+settings add local `enable_seqscan=off`, without another statement or flight.
+That setting alone still allowed an empty-history plan to choose the expiry
+index on `actor_type`. Inclusive lower and upper bounds on the same complete,
+non-null receipt primary-key tuple express point equality while making that
+secondary index ineligible. Every ordinary command drives a lateral `LIMIT 1`
+probe, and the warm guard uses the same predicate. The materialized generation
+`FOR UPDATE` fence is separate and unchanged. No index or migration is added.
+The planner flag covers the framework-owned transaction, including its other
+statements, and resets at commit/rollback; application SQL planning is a review
+consideration, not a session-global change.
+
+The real-Postgres cases force generic planning in the runtime's turn sessions
+and assert one named Parse across two executions. They also prepare the actual
+captured ordinary and warm SQL on an empty analyzed receipt table, execute it
+with `force_generic_plan`, grow to exactly 100,000 receipts without analysis,
+then analyze and execute again. History spans both sides of the missing keys.
+Every plan has complete-key conditions, N index probes for N commands, zero
+filtered history rows and bounded buffers. Later asymmetric receipt hits check
+each ordinary result position and make the warm guard abort. The tests reject
+both the original sequential scan and the former replanning implementation.
+
+| Prepared statement    | Phase                  | Primary-key probes | Buffer hits | Execution ms |
+| --------------------- | ---------------------- | -----------------: | ----------: | -----------: |
+| Ordinary, 32 commands | Empty                  |                 32 |          64 |        0.118 |
+| Ordinary, 32 commands | Grown without analysis |                 32 |          96 |        0.152 |
+| Ordinary, 32 commands | After analysis         |                 32 |          96 |        0.135 |
+| Warm guard, 1 command | Empty                  |                  1 |           2 |        0.088 |
+| Warm guard, 1 command | Grown without analysis |                  1 |           3 |        0.069 |
+| Warm guard, 1 command | After analysis         |                  1 |           3 |        0.055 |
+
+Actual SQL, parameters and complete `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+EXECUTE` output are retained outside the repository in `prepared-plans.json`.
+This is local PG18.6 evidence, not provider certification.
+
+The prepared runtime at `f30be3f02` was measured in three alternating pairs
+against each of the original and rejected-replanning controls. Each table
+cell below is a per-run median, not a pooled percentile.
+
+| Comparison | Cohort      | Control commands/s | Prepared commands/s | Control p99 ms | Prepared p99 ms | Control DB CPU ms/command | Prepared DB CPU ms/command |
+| ---------- | ----------- | -----------------: | ------------------: | -------------: | --------------: | ------------------------: | -------------------------: |
+| Original   | One key     |            1,612.8 |             1,939.8 |         84.873 |          60.979 |                     0.101 |                      0.025 |
+| Original   | 10,000 keys |            1,966.8 |             2,131.5 |        122.373 |         106.441 |                     0.199 |                      0.194 |
+| Replanning | One key     |            1,870.3 |             1,935.5 |         65.311 |          61.717 |                     0.037 |                      0.028 |
+| Replanning | 10,000 keys |            2,046.0 |             1,884.2 |        113.537 |         137.509 |                     0.267 |                      0.207 |
+
+The hot median meets the contemporaneous replanning throughput/p99 control,
+but the required many-key database CPU gate of at most 0.17 ms/command is
+**not established**. The first original/prepared many-key pair measured
+0.162/0.166, while later controls measured about 0.20. All repeats are retained;
+the favorable pair is not selected as acceptance evidence. The prepared
+candidate is not ready to ship on these results.
+
+A further guard-only experiment reused the fenced actor key and reduced its
+parameters from 22 to 13. It passed full checks and the same generic-plan
+proofs, but another three-pair comparison against both controls did not
+demonstrate a many-key benefit: original/prepared medians were 0.242/0.330
+ms database CPU, and replanning/prepared medians were 0.314/0.250. Original
+control repeats ranged up to 0.448, and app CPU also varied sharply. Observed
+host contention is a limitation, not proof that it explains every regression.
+That extra statement reshaping was reverted rather than shipped. Its raw
+`prepared-key-*` results are kept separately from the retained candidate's
+`prepared-*` results. A quiet measurement window or a decision about the
+absolute gate is still required; no release or production change was made.
+
+### Same-runner Cluster/RPC work (read-only)
+
+Local delivery already defaults to no serialization:
+`runtime/runner.ts:27–30` sets `LocalRequestSerialization=false`, and
+`runtime/layer.ts:1630` passes it to Cluster. Effect's `cluster/Sharding.ts:1383`
+uses `RpcClient.makeNoSerialization`; `cluster/Runners.ts:370–373` directly
+hands over the local envelope. Replies pass the existing exit object through
+`cluster/internal/entityManager.ts:282–308` and `Sharding.ts:1554–1561` without
+a codec. The production socket harness has no override; ActorTest deliberately
+enables serialization, so that test path is not the profiled served path.
+
+`rpc/RpcClient.js:114` is the callback at `rpc/RpcClient.ts:401–433`, with a map
+entry and send fiber. `rpc/RpcServer.ts:242–365` dispatches the handler, wraps
+its exit, creates a scope and forks a request fiber. Akter then queues its own
+mailbox entry/Deferred at `runtime/entity/register.ts:1090–1100`. A bypass
+could remove some of that plumbing but must retain ownership, duplicate,
+capacity, cancellation/rebuild and reply-after-commit guarantees. None is
+implemented here.
+
+The nearest-self Cluster/RPC budget is about 5.8 µs per hot command (2.6%) and
+9.0 µs per many-key command (1.9%). Only part could disappear; additional
+Effect scheduling cost is unresolved. A few microseconds and low-single-digit
+CPU savings is a reasonable hypothesis, not a measured win. The 36–40%
+inclusive RPC frames contain nested handler/fiber work and are not removable
+codec CPU.
 
 ### Reuse duplicate canonical hashes within one batch
 
@@ -124,6 +215,7 @@ member's own receipt, caller and command. A unit test uses independent SHA-256
 vectors and a delegating real crypto service; the Postgres regression proves
 that asymmetric repeated payloads share two digest calls, keep independent
 receipts in one transaction, and hash again in a later admission.
+Its separate diff is four files, 115 insertions and four deletions.
 
 | One-key measurement, median of three alternating pairs |          Before |      Hash reuse |
 | ------------------------------------------------------ | --------------: | --------------: |
@@ -154,13 +246,21 @@ unpublished. Removing schema boundary checks, generation fences, receipt
 access checks, required SQL fibers, or public spans/log attributes is not an
 acceptable performance shortcut. No contract-visible behavior changes.
 
-Both shipped runtime branches passed `bun run typecheck`, `bun run lint`,
+Both prior runtime candidate branches passed `bun run typecheck`, `bun run lint`,
 `bun run format:check`, the full `bun run test`, and the real-Postgres
 `test:integration:postgres --project postgres:conformance` suite, including
 turns, batches, groups, receipts and failure paths. The lookup branch passed
 347 Postgres cases and the hash branch 346; each had 11 unavailable
 provider/replica cases, which are unknown rather than support evidence. No PR,
 release, production change or cloud-repository change was made.
+
+The prepared replacement also passed all of those commands: the full root
+run completed nine Turbo tasks, its conformance task passed 630 cases with
+258 unavailable cases, and the real-Postgres run passed 347 with 11 unavailable
+cases. Skips are unknown. Static and correctness passes do not satisfy the
+unmet performance gate above. The runtime diff remains confined to receipt
+admission SQL and transaction settings; no speculative eligibility, handler
+execution or entity-registration changes are included.
 
 ## Partial storage hot-path tuning (#496, 2026-10-10)
 

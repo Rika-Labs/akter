@@ -1611,15 +1611,13 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
               const guard = sql<{ now: string }>`
                 WITH locked AS MATERIALIZED (
-                  SELECT g.routing_key, g.tenant_id, g.actor_type, g.actor_id,
-                    g.generation, g.created, g.event_sequence,
+                  SELECT g.generation, g.created, g.event_sequence,
                     to_jsonb(g)->>'cold_ref' AS cold_ref
                   FROM actor_generations g
                   WHERE ${rowOf({ sql, actor: { key: routingKey, ref }, alias: "g" })}
                   FOR UPDATE OF g
                 ), checked AS MATERIALIZED (
-                  SELECT *, ${request.commandId}::text AS command_id,
-                    floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS now
+                  SELECT *, floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS now
                   FROM locked
                 )
                 SELECT 1 / CASE WHEN EXISTS (
@@ -1627,11 +1625,9 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                   WHERE g.generation = ${committed.generation} AND g.created = ${committed.created}
                     AND g.event_sequence = ${committed.head}
                     AND g.cold_ref IS NULL
-                    AND NOT EXISTS (SELECT 1 FROM LATERAL (
-                      SELECT 1 FROM actor_receipts r
-                      WHERE ${receiptPoint(sql`(g.routing_key, g.tenant_id, g.actor_type, g.actor_id, g.command_id)`)}
-                      LIMIT 1
-                    ) receipt)
+                    AND NOT EXISTS (SELECT 1 FROM actor_receipts r
+                      WHERE ${receiptPoint(sql`(${routingKey}::bigint, ${tenant}::text,
+                        ${actor}::text, ${id}::text, ${request.commandId}::text)`)})
                     AND (${request.external !== true} OR
                       (g.now + ${identityOffset} >= ${issuedAt} AND g.now + ${identityOffset} < ${expiresAt}))
                 ) THEN 1 ELSE 0 END AS accepted,
