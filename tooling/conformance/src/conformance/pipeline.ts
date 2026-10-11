@@ -765,6 +765,49 @@ export const ownerCacheMultiXactConformance: ConformanceCase = {
 /** Pipeline cases: round trips per turn, statement grouping and order across admission, handler, and commit, and batching of the pipelined worker. */
 export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
   {
+    name: "warm fast path: remembered ambient SQL skips repeated speculation without disabling SQL-free actors",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(environment, { warm: true, prepare: false }, (probe) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          const test = yield* ActorTest
+          const actor = yield* Ambient.get("ambient-remembered")
+          expect(yield* actor.Add(3)).toBe(3)
+          yield* sql`INSERT INTO pipeline_ambient_rows (id, value) VALUES (${actor.ref.id}, 19)`
+          const actors = yield* Actors
+          const firstId = yield* actors.mintCommandId
+          const beforeFirst = probe.handled
+          expect(yield* actor.Withdraw("success").pipe(Actor.commandId(firstId))).toBe(14)
+          expect(probe.handled - beforeFirst).toBe(2)
+          const secondId = yield* actors.mintCommandId
+          const beforeSecond = probe.handled
+          expect(yield* actor.Withdraw("success").pipe(Actor.commandId(secondId))).toBe(25)
+          expect(probe.handled - beforeSecond).toBe(1)
+          expect(
+            yield* sql`SELECT value FROM pipeline_ambient_rows WHERE id = ${actor.ref.id}`,
+          ).toEqual([{ value: 25 }])
+          expect(yield* test.inspect(actor.ref)).toMatchObject({
+            state: { count: 25 },
+            receipts: 3,
+          })
+          const plain = yield* Plain.get("ambient-free-control")
+          expect(yield* plain.Add(2)).toBe(2)
+          const freeId = yield* actors.mintCommandId
+          const beforeFree = probe.handled
+          expect(yield* flightsOf(probe, plain.Add(9).pipe(Actor.commandId(freeId)))).toMatchObject(
+            { value: 11, flights: 1 },
+          )
+          expect(probe.handled - beforeFree).toBe(1)
+          expect(yield* test.inspect(plain.ref)).toMatchObject({
+            state: { count: 11 },
+            receipts: 2,
+          })
+        }),
+      ),
+  },
+  {
     name: "warm fast path: beforeCommit SQL reruns planning inside fenced admission",
     requiresIndependentConnections: true,
     timeoutMs: 60_000,

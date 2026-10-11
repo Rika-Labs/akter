@@ -1582,6 +1582,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           const speculative: Send = () =>
             Effect.suspend(() => {
               attemptedSql = true
+              cache.ambientSql = true
               return Effect.die(new Error("Speculative SQL requires fenced admission"))
             })
           const ordinary = () => {
@@ -1884,6 +1885,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
             snapshot.generation === cache.generation &&
             snapshot.state === cache.state &&
             !statements &&
+            cache.ambientSql !== true &&
             waited.size === 0 &&
             connections === undefined &&
             !run.publishesUnderLock(batch) &&
@@ -2000,7 +2002,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
   const turns = yield* Effect.serviceOption(TurnConnections)
 
   const groups =
-    statements || waited.size > 0
+    statements || cache.ambientSql === true || waited.size > 0
       ? undefined
       : Option.getOrUndefined(yield* Effect.serviceOption(TurnGroups))
 

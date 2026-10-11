@@ -14,6 +14,8 @@ import type { ColdMaterial } from "./cold-tier.ts"
 export interface ActivationCache {
   generation: string | undefined
   state: ReadonlyMap<string, string> | undefined
+  /** A conservative speculation skip hint, retained when generation/state authority is forgotten. */
+  ambientSql?: boolean
   /** Object material is not a committed database snapshot. */
   cold?: ColdMaterial | undefined
   /** Published only after a command's transaction committed; only a later command's speculation reads it. */
