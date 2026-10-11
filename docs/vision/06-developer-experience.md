@@ -35,12 +35,13 @@ export const CounterLive = Counter.toLayer(
 )
 ```
 
-There is one package, `@rikalabs/akter`, with four entries:
+There is one package, `@rikalabs/akter`, with five entries:
 
 - `@rikalabs/akter` for browser-safe declarations: `Actor.make`, members, `Intent`, identity, and `ActorError` (and `Fleet`, once [ADR 0056](../decisions/0056-fleet-views.md) is built);
 - `@rikalabs/akter/runtime` for `Actors.layer`, `Actors.serve`, `Auth`, topology, database, and migrations;
 - `@rikalabs/akter/client` for the browser-safe Promise client;
-- `@rikalabs/akter/testing` for `ActorTest`.
+- `@rikalabs/akter/testing` for `ActorTest`;
+- `@rikalabs/akter/cold-storage/s3` for separately imported S3 provider mechanics through `S3ColdStorage.make`.
 
 ## Defaults that guide correct code
 

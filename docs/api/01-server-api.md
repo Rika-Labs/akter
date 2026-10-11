@@ -372,15 +372,16 @@ Designs from the M4 ADRs, accepted 2026-09-28. Hosted ingress, embedded PGlite a
 
 ### Cold object storage
 
-`ColdStorage` and its types are runtime-only exports. `ColdStorage.memory()` returns a create-only in-memory store. `ColdStorage.filesystem(directory)` is an Effect requiring platform `FileSystem` and `Path`; it atomically publishes complete local files and is for tests/local use, not replicated durability. `ColdStorage.s3({ bucket, ...S3ClientConfig, encryption?, encryptionKey? })` is a scoped Effect that releases its SDK client with the application scope. Configure `endpoint` and `forcePathStyle` for compatible stores. Credentials use the SDK's normal provider chain; `encryption` is `"AES256"` or `"aws:kms"`, and omission uses bucket encryption. Restrict access to the private deployment prefix.
+`ColdStorage` and its types are runtime-only exports. `ColdStorage.memory()` returns a create-only in-memory store. `ColdStorage.filesystem(directory)` is an Effect requiring platform `FileSystem` and `Path`; it atomically publishes complete local files and is for tests/local use, not replicated durability. Import `S3ColdStorage` and `S3ColdStorageOptions` separately from `@rikalabs/akter/cold-storage/s3`; `S3ColdStorage.make({ bucket, ...S3ClientConfig, encryption?, encryptionKey? })` is a scoped Effect that releases its SDK client with the application scope. This replaces alpha.6's `ColdStorage.s3` and runtime-exported `S3ColdStorageOptions`. The root and runtime entries do not import the AWS/Smithy SDK, so applications without the S3 adapter do not bundle it. Configure `endpoint` and `forcePathStyle` for compatible stores. Credentials use the SDK's normal provider chain; `encryption` is `"AES256"` or `"aws:kms"`, and omission uses bucket encryption. Restrict access to the private deployment prefix.
 
 ```ts
-import { Actors, ColdStorage, Database } from "@rikalabs/akter/runtime"
+import { S3ColdStorage } from "@rikalabs/akter/cold-storage/s3"
+import { Actors, Database } from "@rikalabs/akter/runtime"
 import { Effect, Layer, Redacted } from "effect"
 
 const Runtime = Layer.unwrap(
   Effect.gen(function* () {
-    const store = yield* ColdStorage.s3({ bucket: "private-actor-state", region: "us-east-1" })
+    const store = yield* S3ColdStorage.make({ bucket: "private-actor-state", region: "us-east-1" })
     return Actors.layer({
       coldStorage: { store, backupRetention: "7 days", grace: "24 hours" },
     }).pipe(Layer.provide(Database.postgres({ url: Redacted.make(databaseUrl) })))

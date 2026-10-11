@@ -7,6 +7,7 @@
     "src/node-postgres.ts",
     "src/release/smoke.ts",
     "src/pack.ts",
+    "src/pack.test.ts",
     "src/release/version.ts",
     "src/release/version.test.ts"
   ]

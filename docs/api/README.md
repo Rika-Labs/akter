@@ -21,6 +21,6 @@ This is the accepted API design, not a claim that every interface is implemented
 - [Versioning](versioning.md)
 - [Post-foundation API sketches](post-foundation-sketches.md) — illustrative proposals, not implemented interfaces
 
-The framework is one `@rikalabs/akter` distribution with four entries: `.`, `/runtime`, `/client`, and `/testing`. The root owns declarations and served composition; runtime construction is `Actors.layer` from `/runtime`; browsers use `/client`; tests use `ActorTest` from `/testing`.
+The framework is one `@rikalabs/akter` distribution with five entries: `.`, `/runtime`, `/client`, `/testing`, and `/cold-storage/s3`. The root owns declarations and served composition; runtime construction is `Actors.layer` from `/runtime`; browsers use `/client`; tests use `ActorTest` from `/testing`; S3 provider mechanics are imported separately from `@rikalabs/akter/cold-storage/s3` as `S3ColdStorage.make`.
 
 `ActorTest.layer({ as })` runs the real turn, serialization, and storage path. A bound actor exposes inspection, raw-row seeding, a System-caller handle, turn and job controls, and fault injection. In-memory PGlite is the default database; a real Postgres server is required for lock-sensitive tests. `/testing` also supplies database fixtures, cleanup/content sweeps, and `checkBatchLaw`. The framework's conformance corpus, multi-runner harness, and deterministic simulations live in the unpublished [`tooling/conformance` workspace](../../tooling/conformance/README.md), not the app-developer API.

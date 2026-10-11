@@ -91,6 +91,7 @@ const consumerMain = (
 ) => `import { ${engine === "bun" ? "BunCrypto" : "NodeCrypto"} as PlatformCrypto } from "@effect/platform-${engine}"
 const cryptoLayer = PlatformCrypto.layer
 import { Actor, User } from "@rikalabs/akter"
+import { S3ColdStorage, type S3ColdStorageOptions } from "@rikalabs/akter/cold-storage/s3"
 import { Actors, Database } from "@rikalabs/akter/runtime"
 import { Effect, Layer, Schema } from "effect"
 
@@ -118,6 +119,8 @@ const live = CounterLive.pipe(
 )
 
 const program = Effect.gen(function* () {
+  const store = yield* S3ColdStorage.make({ bucket: "smoke", region: "us-east-1" } satisfies S3ColdStorageOptions)
+  if (typeof store.get !== "function") throw new Error("S3 cold storage export is invalid")
   const counter = yield* Counter.get("smoke").pipe(
     Actor.tenant("smoke"),
     Actor.as(User.make({ subject: "smoke" })),

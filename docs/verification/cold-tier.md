@@ -46,6 +46,8 @@ The real-Postgres `warm fast path: offloaded state` case in [`pipeline.ts`](../.
 
 ## Storage and latency boundaries
 
+The S3 adapter is a separate `@rikalabs/akter/cold-storage/s3` export, exposing `S3ColdStorage.make` and `S3ColdStorageOptions` instead of alpha.6's runtime `ColdStorage.s3`. [`pack.test.ts`](../../.github/src/pack.test.ts) bundles a root actor declaration and `Actors.layer()` without cold storage using `Bun.build`, with splitting disabled for both Bun and Node targets. Its metafile assertions reject any AWS/Smithy input and require the actual runtime implementation to remain. The test failed before isolation and passes afterwards; a lazy import still included the SDK. No esbuild dev dependency is declared. [ADR 0120](../decisions/0120-s3-adapter-entry.md) records the measured choice. Tarball checks validate the JS/declaration export targets; both release smoke runtimes import the published subpath and construct/release its scoped client without provider I/O. The MinIO drill imports the new public path and remains the provider-operation evidence.
+
 [`runtime/storage/cold-storage.test.ts`](../../packages/akter/src/runtime/storage/cold-storage.test.ts) checks memory and filesystem create-only concurrent publication, complete bytes, copying, prefix listing, idempotent deletion and filesystem path escape refusal. Filesystem process-kill evidence proves no partial publication, not power-loss or replicated storage durability.
 
 [`crash/drills/cold-storage.test.ts`](../../tooling/conformance/src/conformance/crash/drills/cold-storage.test.ts) uses one private disposable MinIO container/bucket. It proves conditional concurrent PUT, immutable reuse, paginated listing of 1,003 objects, credential refusal, idempotent DELETE/missing GET, paused-server receipt replay and retryable query outage, then successful complete cold wake. It also compares plain/cold wakes and GET alone; [published local measurements](../../BENCHMARKS.md#local-cold-wake-versus-plain-wake-2026-10-09) explicitly include extra admission overhead. MinIO compatibility does not certify AWS S3, R2, regional networking, SSE/KMS permissions or provider replication.
@@ -58,6 +60,7 @@ Set `TEST_DATABASE_URL` to a disposable-database-capable Postgres 18.6 server; n
 
 ```sh
 bun --bun node_modules/vitest/vitest.mjs run \
+  .github/src/pack.test.ts \
   tooling/conformance/src/conformance/postgres/cold-tier.test.ts \
   tooling/conformance/src/conformance/postgres/cold-garbage.test.ts \
   tooling/conformance/src/conformance/postgres/cold-compatibility.test.ts \
