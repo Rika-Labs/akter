@@ -533,12 +533,19 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
       DO UPDATE SET applied = greatest(actor_subscription_cursors.applied, EXCLUDED.applied)
       WHERE actor_subscription_cursors.epoch = 0`)
 
-  /** Transaction-local planning keeps full-key receipt probes indexed even when their named plan first sees empty history. */
   const timeouts = sql`set_config('lock_timeout', ${`${policy.lockWaitMs}ms`}, true),
       set_config('statement_timeout', ${`${policy.executionMs}ms`}, true),
-      set_config('enable_seqscan', 'off', true),
       set_config('durable.turn', 'on', true)
       ${role === undefined ? sql.literal("") : sql`, ${tenantSettings({ sql, role, tenant })}`}`
+
+  /** The volatile subquery saves the current planner flag before changing it; only the following receipt statement uses the restriction. */
+  const receiptPlanning = Effect.asVoid(sql`
+    SELECT set_config('enable_seqscan', 'off', true)
+    FROM (SELECT set_config('durable.receipt_seqscan', current_setting('enable_seqscan'), true) AS value) previous
+    WHERE previous.value IS NOT NULL`)
+
+  const restoreReceiptPlanning = Effect.asVoid(sql`
+    SELECT set_config('enable_seqscan', current_setting('durable.receipt_seqscan'), true)`)
 
   /**
    * Turns that set the same transaction settings, which a group sets once for
@@ -612,6 +619,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                   ON CONFLICT DO NOTHING`)
               : Effect.asVoid(sql`SELECT ${timeouts}`),
           ]),
+      receiptPlanning,
       Effect.map(
         sql<Admission>`
           WITH locked AS MATERIALIZED (
@@ -642,6 +650,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           admissions = rows
         },
       ),
+      restoreReceiptPlanning,
       ...(cold
         ? [
             Effect.map(
@@ -1636,6 +1645,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
               const flight = [
                 begin,
                 Effect.asVoid(sql`SELECT ${timeouts}`),
+                receiptPlanning,
                 Effect.map(guard, (rows) => {
                   startedAtMs = Number(rows[0]!.now)
                   if (request.external === true) batch[0]!.admitted = true
@@ -1648,6 +1658,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                     }),
                   ),
                 ),
+                restoreReceiptPlanning,
                 ...plan.writes,
                 Effect.map(control("COMMIT"), (result) => {
                   tag = result.command
