@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Option, Redacted, Schema } from "effect"
+import { Context, DateTime, Effect, Layer, Option, Redacted, Schema } from "effect"
 import { Runners, RunnerStorage, Sharding } from "effect/cluster"
 import { SqlClient } from "effect/sql"
 import { Actor, Intent } from "../../../../../packages/akter/src/index.ts"
@@ -144,13 +144,6 @@ export const openCold = Effect.fnUntraced(function* (
   const test = Context.get(context, ActorTest)
   const tier = Context.get(context, ColdTier)
   const ledger = (id: string) => ColdLedger.get(id).pipe(Effect.provideContext(context))
-  const cold = Effect.fnUntraced(function* (id: string) {
-    const handle = yield* ledger(id)
-    yield* handle.Seed()
-    yield* test.hibernate(handle.ref)
-    yield* test.advance(2)
-    return handle
-  })
   const pointer = (id: string) =>
     sql<{
       cold_ref: string | null
@@ -162,6 +155,24 @@ export const openCold = Effect.fnUntraced(function* (
     WHERE tenant_id = ${test.tenant} AND actor_type = 'ColdLedger' AND actor_id = ${id}`.pipe(
       Effect.map(([row]) => row!),
     )
+  /** A failed object operation retains warm rows; drive its durable due time before returning a cold fixture. */
+  const cold = Effect.fnUntraced(function* (id: string) {
+    const handle = yield* ledger(id)
+    yield* handle.Seed()
+    yield* test.hibernate(handle.ref)
+    yield* test.advance(2)
+    while ((yield* pointer(id)).cold_ref === null) {
+      const [retry] = yield* sql<{ due: string }>`SELECT due_at_ms::text AS due FROM actor_outbox
+        WHERE tenant_id = ${test.tenant} AND actor_type = 'ColdLedger' AND actor_id = ${id}
+          AND kind = 'cold'`
+      if (retry === undefined)
+        return yield* Effect.die(
+          new Error(`Cold fixture ${id} has no pointer or durable cold work`),
+        )
+      yield* test.advance(Math.max(0, Number(retry.due) - DateTime.toEpochMillis(yield* test.now)))
+    }
+    return handle
+  })
   const claim = (id: string) =>
     sql<ColdClaim>`UPDATE actor_outbox SET attempts = attempts + 1,
     due_at_ms = floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint + 60000

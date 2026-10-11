@@ -35,6 +35,81 @@ const database = disposableDatabase({
 const snapshot = { total: 17, untouched: 43, first: "A|BC", second: "DZ" }
 
 describe("cold tier with real Postgres", () => {
+  it("returns a cold fixture only after a timed-out first PUT is durably retried", () =>
+    harness.runPromise(
+      Effect.gen(function* () {
+        const base = ColdStorage.memory()
+        const retrying = yield* Deferred.make<void>()
+        const upload = yield* Deferred.make<void>()
+        const returned = yield* Deferred.make<void>()
+        let uploads = 0
+        let snapshots = 0
+        let interrupted = false
+        const store = {
+          ...base,
+          put: (key: string, bytes: Uint8Array) =>
+            Effect.suspend(() => {
+              uploads++
+              return uploads === 1
+                ? Effect.never.pipe(
+                    Effect.onInterrupt(() =>
+                      Effect.sync(() => {
+                        interrupted = true
+                      }),
+                    ),
+                  )
+                : base.put(key, bytes)
+            }),
+        }
+        const { cold, pointer, sql, test } = yield* openCold(yield* database, store, {
+          periodic: false,
+          at: (point) =>
+            Effect.gen(function* () {
+              if (point !== "afterSnapshot") return
+              snapshots++
+              if (snapshots !== 2) return
+              yield* Deferred.succeed(retrying, undefined)
+              yield* Deferred.await(upload)
+            }),
+        })
+        const preparing = yield* cold("fixture-retry").pipe(
+          Effect.tap(() => Deferred.succeed(returned, undefined)),
+          Effect.forkScoped,
+        )
+        yield* Effect.race(Deferred.await(retrying), Fiber.join(preparing).pipe(Effect.asVoid))
+        expect(interrupted).toBe(true)
+        expect(yield* Deferred.isDone(returned)).toBe(false)
+        expect(snapshots).toBe(2)
+        expect(uploads).toBe(1)
+        expect((yield* pointer("fixture-retry")).cold_ref).toBeNull()
+        expect(
+          yield* sql`SELECT attempts, last_error LIKE '%Cold object operation timed out%' AS timed_out
+            FROM actor_outbox WHERE kind = 'cold'`,
+        ).toEqual([{ attempts: 2, timed_out: true }])
+        expect(yield* sql`SELECT count(*)::int AS n FROM actor_state`).toEqual([{ n: 2 }])
+        expect(yield* sql`SELECT count(*)::int AS n FROM actor_blobs`).toEqual([{ n: 3 }])
+        yield* Deferred.succeed(upload, undefined)
+        const actor = yield* Fiber.join(preparing)
+        expect(uploads).toBe(2)
+        expect((yield* pointer("fixture-retry")).cold_ref).toEqual(expect.any(String))
+        expect(yield* test.inspect(actor.ref)).toMatchObject({
+          generation: "1",
+          state: {},
+          receipts: 1,
+          events: 1,
+          outbox: 1,
+          blobs: { archive: 0 },
+        })
+        expect(yield* sql`SELECT kind, command FROM actor_outbox`).toEqual([
+          { kind: "intent", command: "Ping" },
+        ])
+        expect(yield* actor.Read()).toEqual(snapshot)
+        expect(yield* actor.Add(7)).toBe(24)
+        expect(yield* actor.Read()).toEqual({ ...snapshot, total: 24 })
+        expect((yield* pointer("fixture-retry")).cold_ref).toBeNull()
+      }).pipe(Effect.scoped),
+    ))
+
   it("offloads through the relay without a turn, reads through without activation, and restores every key and chunk after a declared failure", () =>
     harness.runPromise(
       Effect.gen(function* () {
