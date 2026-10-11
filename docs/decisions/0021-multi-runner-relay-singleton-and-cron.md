@@ -393,6 +393,10 @@ Failure-matrix rows (added in this change): **Cron tick crashes after its receip
 
 Benchmark: `cron`. Tick lateness (`deliver time − scheduled_at_ms`) at p50, p99, and max, with 10^5 actors declaring a per-minute cron over 1, 2, and 4 runners, plus relay scan time beside those rows.
 
+## Testing correction (2026-10-10)
+
+`ActorTest.advance` already preserves running attempts by extending their leases before its synthetic outbox-clock jump. The running-attempt snapshot must be evaluated after the relay pass semaphore is acquired, not when the extension effect is constructed: a pass can register a newly claimed attempt while the extension waits for that semaphore. The correction in `runtime/turn/relay.ts` changes only this harness entry point, not production claim, renewal, retry or fencing rules. The deterministic real-database case and its scope are recorded in [relay clock-jump verification](../verification/relay-clock-jumps.md).
+
 ## Revisit conditions
 
 - Idle scanning becomes visible: more than 32 runners, or the claim scan above 5% of a relay connection ([open question 7](#open-questions-and-recommended-defaults)).

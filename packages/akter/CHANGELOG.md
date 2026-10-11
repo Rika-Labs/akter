@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fixes `ActorTest.advance` missing an attempt claimed while its lease extension waits for the relay pass lock. The running-attempt snapshot now happens under that lock, preventing a synthetic clock jump from manufacturing lease loss and duplicate same-ID attempts. Production claim, renewal, retry and fencing semantics are unchanged; see [verification](https://docs.akter.dev/verification/relay-clock-jumps).
 - **Breaking:** `Runner.socket` now throws the exported `RunnerConfigurationError` synchronously when `entityTerminationTimeout` exceeds `shardLockExpiration - min(shardLockRefreshInterval, shardLockExpiration / 3)`. Previously accepted unsafe configurations are refused, including a 3-second expiration with the omitted 15-second default termination timeout. Set an explicit timeout within the bound, or raise expiration to satisfy it; the ordinary defaults remain valid. See the [alpha upgrade notes](https://docs.akter.dev/operations/alpha-upgrades).
 
 ## 0.1.0-alpha.5 (2026-10-09)
