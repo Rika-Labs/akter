@@ -310,6 +310,7 @@ const withCluster = <A, E>(
       yield* reset(fixture)
       const database = yield* environment.freshDatabase
       const spans = settings.spans
+      const beforeStatement = settings.beforeStatement
 
       const cluster = clusterLayer({
         database,
@@ -322,7 +323,15 @@ const withCluster = <A, E>(
             : (runnerEffects(fixture, runner) as Layer.Layer<never, never, RunnerServices>),
         relay: settings.relay,
         executors: settings.executors,
-      })
+      }).pipe(
+        Layer.provide(
+          beforeStatement === undefined
+            ? Layer.empty
+            : Layer.succeed(Statement.CurrentTransformer, (statement) =>
+                beforeStatement(statement).pipe(Effect.as(statement)),
+              ),
+        ),
+      )
 
       const context = yield* Layer.build(
         spans === undefined
@@ -355,13 +364,6 @@ const withCluster = <A, E>(
             }),
         }),
         Effect.provideService(WarmTurnFastPath, settings.warm ?? true),
-        Effect.provide(
-          settings.beforeStatement === undefined
-            ? Layer.empty
-            : Layer.succeed(Statement.CurrentTransformer, (statement) =>
-                settings.beforeStatement!(statement).pipe(Effect.as(statement)),
-              ),
-        ),
       )
 
       return yield* body.pipe(Effect.provideContext(context))
