@@ -18,7 +18,7 @@ import {
   Tracer,
 } from "effect"
 import type { Scope } from "effect"
-import { SqlClient } from "effect/sql"
+import { SqlClient, Statement } from "effect/sql"
 import { retryPoolRefusal } from "../../../../packages/akter/src/runtime/database/bounded.ts"
 import {
   Actor,
@@ -49,7 +49,7 @@ import {
 } from "../../../../packages/akter/src/testing/actor-test.ts"
 import { enqueue, holding } from "./batches.ts"
 import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
-import { SERVED_COMMAND, wireStatements } from "./statements.ts"
+import { type RecordedStatement, SERVED_COMMAND, wireStatements } from "./statements.ts"
 
 const marks = Actor.table(pgTable("pipeline_marks", { id: text("id").primaryKey() }))
 
@@ -497,6 +497,8 @@ const withProbe = <A, E>(
     readonly tracer?: Tracer.Tracer
     /** The turn pool's size, when a case needs sessions to be scarce. */
     readonly turnSessions?: number
+    /** Observes the actual compiled statements used by the runner. */
+    readonly observeStatement?: (statement: RecordedStatement) => void
   },
   body: (
     probe: Probe,
@@ -542,6 +544,15 @@ const withProbe = <A, E>(
                       },
                 ),
                 Layer.succeed(WarmTurnFastPath, options.warm === true),
+                options.observeStatement === undefined
+                  ? Layer.empty
+                  : Layer.succeed(Statement.CurrentTransformer, (statement) =>
+                      Effect.sync(() => {
+                        const [sql, params] = statement.compile()
+                        options.observeStatement!({ sql, params })
+                        return statement
+                      }),
+                    ),
                 options.everyPool === true
                   ? Layer.succeed(ClusterMember, { tenant: "pipeline", connect: stream })
                   : Layer.empty,
@@ -720,6 +731,118 @@ export const ownerCacheMultiXactConformance: ConformanceCase = {
 
 /** Pipeline cases: round trips per turn, statement grouping and order across admission, handler, and commit, and batching of the pipelined worker. */
 export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
+  {
+    name: "pipeline: a retained batch-admission plan probes receipt identities instead of scanning growing history",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) => {
+      const observed: Array<RecordedStatement> = []
+      return withProbe(
+        environment,
+        {
+          observeStatement: (statement) => observed.push(statement),
+        },
+        (_probe, database) =>
+          Effect.gen(function* () {
+            const plain = yield* Plain.get("history-plan")
+            const first = yield* holding(plain.Add(0))
+            const waiting = yield* enqueue(
+              Array.from({ length: 32 }, () => Effect.orDie(plain.Add(1))),
+            )
+            yield* first.release
+            expect(yield* Fiber.join(first.fiber)).toBe(0)
+            expect(yield* Effect.forEach(waiting, Fiber.join)).toEqual(
+              Array.from({ length: 32 }, (_, index) => index + 1),
+            )
+            const admission = observed.find(
+              ({ sql, params }) =>
+                sql.includes("WITH locked AS MATERIALIZED") &&
+                sql.includes("actor_receipts") &&
+                params.length === 100,
+            )
+            if (admission === undefined)
+              return yield* Effect.die(
+                new Error("The runner did not execute a 32-command admission"),
+              )
+            const pool = yield* Effect.acquireRelease(
+              Effect.sync(
+                () =>
+                  new Pool({
+                    connectionString: Redacted.value(database),
+                    max: 1,
+                  }),
+              ),
+              (pool) => Effect.promise(() => pool.end()),
+            )
+            const connection = yield* Effect.acquireRelease(
+              Effect.promise(() => pool.connect()),
+              (connection) => Effect.sync(() => connection.release()),
+            )
+            const query = (text: string, params?: ReadonlyArray<unknown>) =>
+              Effect.promise(() =>
+                connection.query(text, params === undefined ? undefined : [...params]),
+              )
+            yield* query("ALTER TABLE actor_receipts SET (autovacuum_enabled = false)")
+            const seed = (from: number, to: number) =>
+              query(
+                `INSERT INTO actor_receipts
+          (routing_key, tenant_id, actor_type, actor_id, command_id, command, payload_hash,
+            caller_key, outcome, expires_at_ms, started_at_ms, committed_at_ms)
+          SELECT routing_key, tenant_id, actor_type, actor_id, 'plan-history-' || n, command,
+            payload_hash, caller_key, outcome, expires_at_ms, started_at_ms, committed_at_ms
+          FROM (SELECT * FROM actor_receipts WHERE actor_type = $1 AND actor_id = $2 AND tenant_id = $3 LIMIT 1) base
+          CROSS JOIN generate_series($4::integer, $5::integer) AS history(n)`,
+                [plain.ref.actor, plain.ref.id, plain.ref.tenant, from, to],
+              )
+            yield* seed(1, 1000)
+            yield* query("ANALYZE actor_receipts")
+            yield* query("ANALYZE actor_generations")
+            yield* query("SET plan_cache_mode = 'force_generic_plan'")
+            yield* query(`PREPARE bounded_admission AS ${admission.sql}`)
+            const parameters = admission.params
+              .map((value) => `'${String(value).replaceAll("'", "''")}'`)
+              .join(",")
+            interface Node {
+              readonly "Relation Name"?: string
+              readonly "Actual Rows": number
+              readonly "Actual Loops": number
+              readonly "Rows Removed by Filter"?: number
+              readonly "Rows Removed by Index Recheck"?: number
+              readonly "Index Cond"?: string
+              readonly Plans?: ReadonlyArray<Node>
+            }
+            for (const history of [1000, 10000, 100000]) {
+              if (history !== 1000) yield* seed(history === 10000 ? 1001 : 10001, history)
+              const plans = (yield* query(
+                `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) EXECUTE bounded_admission(${parameters})`,
+              )).rows[0]!["QUERY PLAN"] as ReadonlyArray<{ readonly Plan: Node }>
+              const receipts: Array<Node> = []
+              const visit = (node: Node) => {
+                if (node["Relation Name"] === "actor_receipts") receipts.push(node)
+                for (const child of node.Plans ?? []) visit(child)
+              }
+              visit(plans[0]!.Plan)
+              expect(plans[0]!.Plan["Actual Rows"]).toBe(32)
+          expect(receipts.length > 0).toBe(true)
+              const read = receipts.reduce(
+                (total, node) =>
+                  total +
+                  node["Actual Loops"] *
+                    (node["Actual Rows"] +
+                      (node["Rows Removed by Filter"] ?? 0) +
+                      (node["Rows Removed by Index Recheck"] ?? 0)),
+                0,
+              )
+              expect(read).toBe(32)
+              expect(receipts.every((node) => node["Index Cond"]?.includes("command_id"))).toBe(
+                true,
+              )
+            }
+            yield* query("DEALLOCATE bounded_admission")
+          }),
+      )
+    },
+  },
   ...[false, true].map(
     (freezeBeforeCommitVersion) =>
       ({

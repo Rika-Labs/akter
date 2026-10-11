@@ -548,6 +548,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
     role === undefined ? "-" : `+${encodeURIComponent(tenant)}`,
   ].join(":")
 
+  /** Receipt probes stay per command so a retained small-history plan cannot scan the actor's growing history. */
   const admit = (
     batch: ReadonlyArray<Delivery>,
     canonicals: ReadonlyArray<string>,
@@ -621,8 +622,13 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
             ${cursorColumns}
           FROM locked g
           CROSS JOIN ${values}
-          LEFT JOIN actor_receipts r ON r.routing_key = g.routing_key AND r.tenant_id = g.tenant_id
-            AND r.actor_type = g.actor_type AND r.actor_id = g.actor_id AND r.command_id = c.command_id
+          LEFT JOIN LATERAL (
+            SELECT r.caller_key, r.command, r.payload_hash, r.outcome
+            FROM actor_receipts r
+            WHERE r.routing_key = g.routing_key AND r.tenant_id = g.tenant_id
+              AND r.actor_type = g.actor_type AND r.actor_id = g.actor_id AND r.command_id = c.command_id
+            LIMIT 1
+          ) r ON true
           ${cursorJoin}
           ORDER BY c.ordinal`,
         (rows) => {
