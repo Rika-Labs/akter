@@ -51,7 +51,7 @@ export type { Options } from "./layer.ts"
 
 export { ColdStorage, ColdStorageError } from "./storage/cold-storage.ts"
 
-export type { ColdObject, S3ColdStorageOptions } from "./storage/cold-storage.ts"
+export type { ColdObject } from "./storage/cold-storage.ts"
 
 export type { ColdStorageOptions } from "./storage/cold-tier.ts"
 

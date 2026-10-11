@@ -44,7 +44,7 @@
     "test:node:units": "node node_modules/vitest/vitest.mjs run packages/akter/src/client/clock.test.ts packages/akter/src/client/optimistic.test.ts packages/akter/src/client/report.test.ts packages/akter/src/client/offline/queue.test.ts packages/akter/src/runtime/storage/platform.test.ts packages/akter/src/identity/digest.test.ts packages/akter/src/serve/origin.test.ts packages/akter/src/runtime/database/flock.test.ts tooling/conformance/src/conformance/crash/pglite-node.test.ts tooling/conformance/src/conformance/postgres/database.test.ts packages/akter/src/runtime/peering/transport.test.ts",
     "test:node:core": "bun run test:node:conformance && bun run test:node:units",
     "test:node": "bun run test:node:core && SMOKE_RUNTIME=node bun run pack:smoke",
-    "lint:root": "oxlint --type-aware --deny-warnings --threads 1 *.ts .github/src/verify.ts .github/src/policy.ts .github/src/verify.test.ts .github/src/replica.ts .github/src/node-postgres.ts .github/src/release/smoke.ts .github/src/release/version.ts",
+    "lint:root": "oxlint --type-aware --deny-warnings --threads 1 *.ts .github/src/verify.ts .github/src/policy.ts .github/src/verify.test.ts .github/src/replica.ts .github/src/node-postgres.ts .github/src/pack.test.ts .github/src/release/smoke.ts .github/src/release/version.ts",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "check": "bun run lint:directives && bun run lint:structure && bun run format:check && GOMAXPROCS=1 turbo run lint lint:root typecheck test build --concurrency=100% && bun run pack:check",

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Breaking:** the S3-compatible cold-storage adapter moves from `ColdStorage.s3` in `@rikalabs/akter/runtime` to `S3ColdStorage.make` in `@rikalabs/akter/cold-storage/s3`. Import `S3ColdStorageOptions` from the new subpath too. Cold storage first shipped in alpha.6; its object format, options and storage behavior are unchanged. Root/runtime bundles without the S3 adapter no longer include AWS/Smithy modules, including Bun builds with splitting disabled.
+
 ## 0.1.0-alpha.6 (2026-10-11)
 
 The framework and CLI release together on the `alpha` and `latest` npm dist-tags. This release adds SQL migrations `0034_cold_tier` and `0035_hot_table_foreign_keys` and an opt-in cold-object format. Rolling-upgrade safety from alpha.5 is **not established**; back up and rehearse a stopped-runner upgrade using the [alpha upgrade notes](https://docs.akter.dev/operations/alpha-upgrades) and [migration procedure](https://docs.akter.dev/operations/02-migrations).

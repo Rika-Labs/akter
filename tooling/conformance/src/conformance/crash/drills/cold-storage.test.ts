@@ -1,8 +1,8 @@
 import { BunServices } from "@effect/platform-bun"
+import { S3ColdStorage } from "@rikalabs/akter/cold-storage/s3"
 import { Config, Console, Effect, Exit, FileSystem, ManagedRuntime, Schema, Stream } from "effect"
 import { afterAll, describe, expect, it } from "vitest"
 import { Actor } from "../../../../../../packages/akter/src/index.ts"
-import { ColdStorage } from "../../../../../../packages/akter/src/runtime/storage/cold-storage.ts"
 import { disposableDatabase } from "../../../../../../packages/akter/src/testing/database.ts"
 import { openCold } from "../../postgres/cold-tier.ts"
 import { minio } from "./cold-storage.ts"
@@ -36,7 +36,7 @@ describe("S3-compatible cold objects with MinIO and Postgres", () => {
           yield* store.delete("adapter/one")
           yield* store.delete("adapter/one")
           expect(Exit.isFailure(yield* store.get("adapter/one").pipe(Effect.exit))).toBe(true)
-          const denied = yield* ColdStorage.s3({
+          const denied = yield* S3ColdStorage.make({
             ...config,
             bucket,
             credentials: { accessKeyId: "denied", secretAccessKey: "invalid-test-key" },

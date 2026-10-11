@@ -39,6 +39,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./runtime": "./src/runtime/index.ts",
+    "./cold-storage/s3": "./src/cold-storage/s3.ts",
     "./client": "./src/client/index.ts",
     "./testing": "./src/testing/index.ts"
   },
@@ -56,6 +57,10 @@
       "./client": {
         "types": "./dist/client/index.d.ts",
         "default": "./dist/client/index.js"
+      },
+      "./cold-storage/s3": {
+        "types": "./dist/cold-storage/s3.d.ts",
+        "default": "./dist/cold-storage/s3.js"
       },
       "./testing": {
         "types": "./dist/testing/index.d.ts",

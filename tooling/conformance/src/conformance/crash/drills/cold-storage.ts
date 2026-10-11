@@ -1,7 +1,7 @@
 import { CreateBucketCommand, ListBucketsCommand, S3Client } from "@aws-sdk/client-s3"
+import { S3ColdStorage } from "@rikalabs/akter/cold-storage/s3"
 import { Config, Effect } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
-import { ColdStorage } from "../../../../../../packages/akter/src/runtime/storage/cold-storage.ts"
 import { freePort, until } from "./failover.ts"
 
 /** A private, disposable S3 server; no shared bucket, volume, or credentials are used. */
@@ -57,6 +57,6 @@ export const minio = Effect.fnUntraced(function* () {
   )
   const bucket = "cold-test"
   yield* Effect.tryPromise(() => client.send(new CreateBucketCommand({ Bucket: bucket })))
-  const store = yield* ColdStorage.s3({ ...config, bucket })
+  const store = yield* S3ColdStorage.make({ ...config, bucket })
   return { store, config, bucket, docker, id }
 })

@@ -28,7 +28,7 @@ Dependency direction is `apps → packages → nothing app-ward`. Production cod
 
 ## The framework package
 
-`@rikalabs/akter` ships one distribution with four subpath entries: `.` (`src/index.ts`), `./client`, `./runtime` and `./testing`. The root and `client/` entries never import SQL or cluster modules; `runtime/` and `testing/` do. `X.toLayer` and `X.get` reach the runtime only through the `Actors` tag. Folders under `src/` are named for the responsibility they own; the source tree, not this page, lists them.
+`@rikalabs/akter` ships one distribution with five entries: `.` (`src/index.ts`), `./client`, `./runtime`, `./testing` and `./cold-storage/s3`. The root and `client/` entries never import SQL or cluster modules; `runtime/` and `testing/` do. Only `./cold-storage/s3` imports the S3 SDK; the root and runtime entries do not reach it. `X.toLayer` and `X.get` reach the runtime only through the `Actors` tag. Folders under `src/` are named for the responsibility they own; the source tree, not this page, lists them.
 
 `./testing` contains application testing: `ActorTest`, cleanup/content sweeps, database fixtures, batch-law checks, and fault controls. The complete conformance suite, foundation fixtures, and cluster/simulation helpers live in the private `@akter/conformance` tooling workspace, which owns their Vitest configurations and imports framework internals for verification. It is not published or imported by production framework code.
 
