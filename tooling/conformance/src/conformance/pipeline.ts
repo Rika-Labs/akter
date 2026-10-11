@@ -617,8 +617,10 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           const test = yield* ActorTest
           const plain = yield* Plain.get("read-in-flight")
           expect(yield* plain.Add(17)).toBe(17)
+          expect((yield* plain.Snapshot()).count).toBe(17)
           const id = yield* (yield* Actors).mintCommandId
           const pause = yield* test.pauseNext("beforeCommit", { commandId: id })
+          yield* Effect.addFinalizer(() => pause.release)
           const pending = yield* plain
             .Change({ amount: 26, fail: false, defect: false })
             .pipe(Actor.commandId(id), Effect.forkChild)
@@ -672,9 +674,11 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const plain = yield* Plain.get("read-revision")
           expect(yield* plain.Add(17)).toBe(17)
+          expect((yield* plain.Snapshot()).count).toBe(17)
           const context = yield* rival(database)
           const locked = yield* Deferred.make<void>()
           const release = yield* Deferred.make<void>()
+          yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined))
           const pending = yield* Effect.gen(function* () {
             const sql = yield* SqlClient.SqlClient
             yield* sql.withTransaction(

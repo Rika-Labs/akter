@@ -113,6 +113,25 @@ export const committedReads = ({
         snapshot?: NonNullable<ActivationCache["committed"]>,
       ): Effect.Effect<Outcome, ActorError | SqlError.SqlError> =>
         Effect.gen(function* () {
+          const verified =
+            snapshot === undefined
+              ? client.literal("false")
+              : client`generation = ${snapshot.generation} AND created = ${snapshot.created}
+                  AND event_sequence = ${snapshot.head} AND cold_ref IS NULL
+                  AND xmin::text || ':' || xmax::text || ':' ||
+                    floor(pg_snapshot_xmax(pg_current_snapshot())::text::numeric / 4294967296)::text
+                    = ${snapshot.fence}`
+          const generation = client`
+              SELECT event_sequence::text AS head, NULL AS key, NULL::bytea AS value,
+                cold_ref, cold_digest, cold_state_version, ${verified} AS cached
+              FROM actor_generations
+              WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
+                AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}`
+          const stateRows = client`
+              SELECT NULL, key, value, NULL, NULL, NULL, false
+              FROM actor_state
+              WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
+                AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}`
           const rows = yield* client<{
             head: string | null
             key: string | null
@@ -121,28 +140,13 @@ export const committedReads = ({
             cold_digest: string | null
             cold_state_version: number | null
             cached: boolean
-          }>`
-              WITH generation AS MATERIALIZED (
-              SELECT event_sequence::text AS head, NULL AS key, NULL::bytea AS value,
-                cold_ref, cold_digest, cold_state_version,
-                ${snapshot !== undefined} AND generation = ${snapshot?.generation ?? "0"}
-                  AND created = ${snapshot?.created ?? false}
-                  AND event_sequence = ${snapshot?.head ?? "0"} AND cold_ref IS NULL
-                  AND xmin::text || ':' || xmax::text || ':' ||
-                    floor(pg_snapshot_xmax(pg_current_snapshot())::text::numeric / 4294967296)::text
-                    = ${snapshot?.fence ?? ""} AS cached
-              FROM actor_generations
-              WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
-                AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id})
-              SELECT * FROM generation
-              UNION ALL
-              SELECT NULL, key, value, NULL, NULL, NULL, false
-              FROM actor_state
-              WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
-                AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}
-                AND NOT EXISTS (SELECT 1 FROM generation WHERE cached)`.pipe(
-            withTenant(request.ref.tenant),
-          )
+          }>`${
+            snapshot === undefined
+              ? client`${generation} UNION ALL ${stateRows}`
+              : client`WITH generation AS MATERIALIZED (${generation})
+                  SELECT * FROM generation UNION ALL ${stateRows}
+                  AND NOT EXISTS (SELECT 1 FROM generation WHERE cached)`
+          }`.pipe(withTenant(request.ref.tenant))
 
           if (snapshot !== undefined && rows.some((row) => row.cached)) {
             const answer = yield* query.run(
@@ -230,7 +234,7 @@ export const committedReads = ({
           snapshot.state === cache!.state &&
           (minVersion === undefined || BigInt(snapshot.version) >= BigInt(minVersion))
         ) {
-          return yield* read(primary, snapshot)
+          return yield* read(local, snapshot)
         }
 
         if (owned || replica === undefined) return yield* read(local)
