@@ -497,6 +497,8 @@ const withProbe = <A, E>(
     readonly tracer?: Tracer.Tracer
     /** The turn pool's size, when a case needs sessions to be scarce. */
     readonly turnSessions?: number
+    /** Observes real digest inputs without substituting their cryptographic result. */
+    readonly observeDigest?: (bytes: Uint8Array) => void
   },
   body: (
     probe: Probe,
@@ -551,7 +553,21 @@ const withProbe = <A, E>(
         )
 
         return yield* body(probe, database, relayed).pipe(Effect.provideContext(context))
-      }).pipe(Effect.scoped, Effect.provideService(Crypto.Crypto, crypto)),
+      }).pipe(
+        Effect.scoped,
+        Effect.provideService(
+          Crypto.Crypto,
+          options.observeDigest === undefined
+            ? crypto
+            : Crypto.Crypto.of({
+                ...crypto,
+                digest: (algorithm, bytes) => {
+                  options.observeDigest!(bytes)
+                  return crypto.digest(algorithm, bytes)
+                },
+              }),
+        ),
+      ),
     ),
   )
 
@@ -720,6 +736,47 @@ export const ownerCacheMultiXactConformance: ConformanceCase = {
 
 /** Pipeline cases: round trips per turn, statement grouping and order across admission, handler, and commit, and batching of the pipelined worker. */
 export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
+  {
+    name: "pipeline: repeated canonical payloads are hashed once per batch without sharing different payloads or later admissions",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) => {
+      const digested: Array<string> = []
+      return withProbe(
+        environment,
+        {
+          observeDigest: (bytes) => digested.push(new TextDecoder().decode(bytes)),
+        },
+        () =>
+          Effect.gen(function* () {
+            const plain = yield* Plain.get("batch-hash")
+            const first = yield* holding(plain.Add(0))
+            const waiting = yield* enqueue(
+              [3, 17, 3, 17].map((amount) => Effect.orDie(plain.Add(amount))),
+            )
+            digested.length = 0
+            yield* first.release
+            expect(yield* Fiber.join(first.fiber)).toBe(0)
+            expect(yield* Effect.forEach(waiting, Fiber.join)).toEqual([3, 20, 23, 40])
+            expect(digested).toEqual(['{"value": 3}', '{"value": 17}'])
+            const sql = yield* SqlClient.SqlClient
+            const rows = yield* sql<{
+              size: string
+            }>`SELECT count(*)::text AS size FROM actor_receipts
+          WHERE actor_type = ${plain.ref.actor} AND actor_id = ${plain.ref.id} AND tenant_id = ${plain.ref.tenant}
+          GROUP BY xmin ORDER BY count(*)`
+            expect(rows).toEqual([{ size: "1" }, { size: "4" }])
+            expect(yield* plain.Add(3)).toBe(43)
+            expect(digested).toEqual(['{"value": 3}', '{"value": 17}', '{"value": 3}'])
+            const test = yield* ActorTest
+            expect(yield* test.inspect(plain.ref)).toMatchObject({
+              state: { count: 43 },
+              receipts: 6,
+            })
+          }),
+      )
+    },
+  },
   ...[false, true].map(
     (freezeBeforeCommitVersion) =>
       ({
