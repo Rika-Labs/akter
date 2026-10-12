@@ -34,7 +34,12 @@ const THROTTLE_STATUSES = new Set([429, 503])
 
 const DELETED_KEYS = 50
 
-const ORDERED_NAMES = ["m", "B", "a", "10", "9", "_", "Z", "0", "z", "b", "A", "1"]
+/**
+ * Key names for the listing-order probe, created out of order. Some are prefixes of others and
+ * some sort around digits and letters; none differ only by case, so a case-insensitive file system
+ * can hold them all.
+ */
+const ORDERED_NAMES = ["m", "a", "10", "9", "_", "z", "0", "-", "1", "a.b", "b", "1a"]
 
 const ORDERED_PAGE = 5
 

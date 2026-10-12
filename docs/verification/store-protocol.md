@@ -54,7 +54,7 @@ Every segment carries a `build`: the runtime and its version, the engine and its
 
 The S3 adapter answers a `412` on a plain `PUT` with a failure that carries the status, so the page writer can resolve it, and `s3.test.ts` checks that against a stand-in server. It turns off the SDK's own retries, so every repeated write goes through the store's retry schedule, which reads a create-once write back to recognize its own. `s3.test.ts` also runs a local stand-in server that answers a conditional create with `412` and then drops the next request on that kept-alive connection without responding. MinIO RELEASE.2025-09-07 does this; RELEASE.2026-09-22 keeps the connection open. The test shows that the adapter sends a dropped read again exactly once, on a fresh connection, and never sends a write again. Removing the read resend, or resending writes too, fails the test.
 
-The file-system adapter writes each object to a temporary file, fsyncs it, then links it into place for create-once or renames it for a plain put. A lease is a directory of numbered versions, and its etag is the version number. These guarantees hold on one host's local file system only.
+The file-system adapter writes each object to a temporary file, fsyncs it, then links it into place for create-once or renames it for a plain put. A lease is a directory of numbered versions, and its etag is the version number. These guarantees hold on one host's local file system only. On a case-insensitive file system (macOS by default) two keys that differ only by case name one file; the store's own keys never differ only by case, and the listing-order probe uses names that do not.
 
 ## Packaging
 
