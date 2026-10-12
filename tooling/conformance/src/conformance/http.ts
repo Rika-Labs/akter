@@ -1,6 +1,7 @@
 import type { NodeInspectSymbol, Unify } from "../../../../packages/akter/src/actor/definition.ts"
 import {
   Cause,
+  Clock,
   Context,
   Crypto,
   Deferred,
@@ -41,6 +42,7 @@ import {
 import { InternalActors } from "../../../../packages/akter/src/runtime/actors.ts"
 import type { ContentStore } from "../../../../packages/akter/src/handles/content.ts"
 import { RuntimeControl } from "../../../../packages/akter/src/runtime/drain.ts"
+import { DatabaseClock } from "../../../../packages/akter/src/client/clock.ts"
 import { ActorRef, System } from "../../../../packages/akter/src/identity/caller.ts"
 import {
   type AuthProvider,
@@ -887,6 +889,134 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
           })
 
           expect(reply).toMatchObject({ status: 200, body: 1 })
+        }),
+      ),
+  },
+  {
+    name: "resamples served time after monotonic discontinuities before SDK-minted identities reach unchanged database admission",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const original = performance.now.bind(performance)
+          const descriptor = Object.getOwnPropertyDescriptor(performance, "now")
+          let shift = 0
+          yield* Effect.acquireRelease(
+            Effect.sync(() =>
+              Object.defineProperty(performance, "now", {
+                configurable: true,
+                value: () => original() + shift,
+              }),
+            ),
+            () =>
+              Effect.sync(() => {
+                if (descriptor === undefined) Reflect.deleteProperty(performance, "now")
+                else Object.defineProperty(performance, "now", descriptor)
+              }),
+          )
+          const server = yield* serveHttp()
+          const actors = yield* InternalActors
+          const token = `${yield* tenantOf}:alice`
+          const crypto = yield* Crypto.Crypto
+          const wallClock = yield* Clock.Clock
+          expect((yield* server.send("/protocol", { method: "GET" })).status).toBe(200)
+          for (const gap of [-304_000, 155_000]) {
+            shift += gap
+            const client = new DatabaseClock(() => wallClock.currentTimeMillisUnsafe())
+            const sent = client.localNow()
+            const protocol = yield* server.send("/protocol", { method: "GET" })
+            const received = client.localNow()
+            const stamped = Number(protocol.headers.get("durable-now"))
+            const authoritative = yield* actors.databaseNow
+            expect(protocol.status).toBe(200)
+            expect(Math.abs(stamped - authoritative) < 500).toBe(true)
+            expect(
+              Math.abs((protocol.body as { readonly now: number }).now - authoritative) < 500,
+            ).toBe(true)
+            client.observe(sent, received, stamped)
+            const commandId = client.mint(
+              actors.retryWindowMs,
+              yield* crypto.randomUUIDv4().pipe(Effect.orDie),
+            )
+            const reply = yield* server.send(`/actors/HttpRoom/gap-${gap}/Post`, {
+              token,
+              key: commandId,
+              body: { text: "after suspension" },
+            })
+            expect(reply).toMatchObject({ status: 200, body: 1 })
+            const minted = yield* server.send("/command-ids", { token })
+            expect(minted.status).toBe(200)
+            const serverId = (minted.body as { readonly commandId: string }).commandId
+            const mintedReply = yield* server.send(`/actors/HttpRoom/server-gap-${gap}/Post`, {
+              token,
+              key: serverId,
+              body: { text: "database-minted" },
+            })
+            expect(mintedReply).toMatchObject({ status: 200, body: 1 })
+          }
+        }),
+      ),
+  },
+  {
+    name: "omits a failed clock refresh header without replacing a committed reply, its request id or browser headers",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const actors = yield* InternalActors
+          let available = true
+          const original = performance.now.bind(performance)
+          const descriptor = Object.getOwnPropertyDescriptor(performance, "now")
+          let shift = 0
+          yield* Effect.acquireRelease(
+            Effect.sync(() =>
+              Object.defineProperty(performance, "now", {
+                configurable: true,
+                value: () => original() + shift,
+              }),
+            ),
+            () =>
+              Effect.sync(() => {
+                if (descriptor === undefined) Reflect.deleteProperty(performance, "now")
+                else Object.defineProperty(performance, "now", descriptor)
+              }),
+          )
+          const origin = "https://clock-refresh.test"
+          const server = yield* serveHttp({ origins: [origin] }).pipe(
+            Effect.provideService(InternalActors, {
+              ...actors,
+              databaseNow: Effect.suspend(() =>
+                available
+                  ? actors.databaseNow
+                  : Effect.fail(
+                      ActorError.make({
+                        reason: ActorUnavailable.make({
+                          cause: new Error("Clock sampler unavailable"),
+                        }),
+                      }),
+                    ),
+              ),
+            }),
+          )
+          expect((yield* server.send("/protocol", { method: "GET" })).status).toBe(200)
+          const key = yield* actors.mintCommandId
+          const tenant = yield* tenantOf
+          const token = `${tenant}:alice`
+          shift += 155_000
+          available = false
+          const reply = yield* server.send("/actors/HttpRoom/clock-failure/Post", {
+            key,
+            token,
+            body: { text: "committed despite sample failure" },
+            headers: { origin },
+          })
+          expect(reply).toMatchObject({ status: 200, body: 1 })
+          expect(reply.headers.get("x-request-id")).toBe(key)
+          expect(reply.headers.get("access-control-allow-origin")).toBe(origin)
+          expect(reply.headers.get("durable-protocol")).toBe("1")
+          expect(reply.headers.get("durable-now")).toBe(null)
+          expect(yield* receipts(tenant, "HttpRoom", "clock-failure")).toBe(1)
+          const protocol = yield* server.send("/protocol", { method: "GET" })
+          expect(protocol.status).toBe(503)
+          expect(protocol.headers.get("durable-now")).toBe(null)
         }),
       ),
   },
