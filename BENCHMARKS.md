@@ -1,5 +1,79 @@
 # Akter benchmarks
 
+## Served command CPU and receipt-history probes (2026-10-11)
+
+### Method
+
+Local arm64 Linux containers on the Mac run Bun 1.4.2, Effect 4.0.2 and
+Postgres 18.6 with synchronous commits. A production `Runner.socket` and real
+`Actors.serve` counter receive 64 closed-loop HTTP callers against one key or
+10,000 acknowledged, pre-created keys. Each run uses a fresh database/process,
+three seconds of warm-up and 20 seconds of measurement. A kernel relay adds
+1.25 ms per database direction. Runner/database/relay/driver CPU sets are
+0/1/2/3; the runner has a one-CPU quota. Profiles are separate from timings.
+The driver independently checks outcomes, receipt counts and durable state.
+
+Named receipt statements use full-primary-key point probes behind a separate
+materialized generation lock. Inclusive bounds on the same non-null key avoid
+an empty-table plan selecting the actor-type-only expiry index. Two settings
+statements save the prior `enable_seqscan` value, disable scans immediately
+before the probe, and restore that value immediately afterwards. They share
+its pipelined flight; customer SQL and later framework statements retain the
+operator's setting. No index, migration or extra round trip is introduced.
+
+Actual ordinary and warm SQL is prepared under `force_generic_plan` at empty
+history, executed after inserting 100,000 receipts without analysis, and
+executed again after analysis. Every phase keeps 32 ordinary primary-key probes
+or one warm probe, with at most 96 or three receipt buffer hits respectively.
+Conformance checks both original planner values on ordinary, warm-guard and
+actual grouped paths, including handler SQL and post-guard writes.
+
+### Before / after
+
+The prior prepared version `f30be3f02` was measured in three alternating pairs
+against each baseline. Values are per-run medians, not pooled percentiles.
+The same-session original comparison establishes many-key database CPU parity;
+the earlier absolute 0.17 ms target came from a different session.
+
+| Comparison             | Cohort      | Control commands/s | Prepared commands/s | Control p99 ms | Prepared p99 ms | Control DB CPU ms/command | Prepared DB CPU ms/command |
+| ---------------------- | ----------- | -----------------: | ------------------: | -------------: | --------------: | ------------------------: | -------------------------: |
+| Original `9bbeaa6c0`   | One key     |            1,612.8 |             1,939.8 |         84.873 |          60.979 |                     0.101 |                      0.025 |
+| Original `9bbeaa6c0`   | 10,000 keys |            1,966.8 |             2,131.5 |        122.373 |         106.441 |                     0.199 |                      0.194 |
+| Replanning `d8ef447e8` | One key     |            1,870.3 |             1,935.5 |         65.311 |          61.717 |                     0.037 |                      0.028 |
+| Replanning `d8ef447e8` | 10,000 keys |            2,046.0 |             1,884.2 |        113.537 |         137.509 |                     0.267 |                      0.207 |
+
+The planner-scope change `cd595c0f4` has a separate single-pair check against
+the same receipt query with transaction-wide settings: hot runs before/after,
+and many-key runs after/before. All outcomes, receipts and durable state agree.
+
+| Cohort      | Before commands/s | Scoped commands/s | Before p99 ms | Scoped p99 ms | Before DB CPU ms/command | Scoped DB CPU ms/command |
+| ----------- | ----------------: | ----------------: | ------------: | ------------: | -----------------------: | -----------------------: |
+| One key     |           1,839.0 |           1,863.2 |        77.634 |        61.271 |                   0.0345 |                   0.0279 |
+| 10,000 keys |           1,828.7 |           2,076.7 |       144.705 |       112.989 |                   0.2199 |                   0.2013 |
+
+No throughput, tail-latency or database-CPU regression appears in this pair.
+Many-key main-thread CPU is 0.4480 → 0.4565 ms/command; one noisy pair does not
+establish a CPU gain or eliminate small regressions. Full typecheck, lint,
+format, root tests and Postgres conformance pass; the latter has 353 passes
+and 11 unavailable cases.
+
+Hash reuse remains separate at `9873ae41b`: four files, +115/−4, with hot
+main-thread CPU medians of 0.219 → 0.192 ms/command. It is not combined here.
+
+### Limitations and retained evidence
+
+Guest CPU affinity is not exclusive physical Mac capacity. Original controls
+vary substantially, so neither candidate regressions nor improvements can all
+be assigned to host noise. These are local diagnostics, not a provider's plan,
+production SLO or Neki certification. No durability, fencing, receipt-access or
+reply-after-commit guarantee changes; unavailable provider/replica cases remain
+unknown. No RPC bypass, body-reader prototype or extra warm-key reshape ships.
+
+[Full repeat tables, profiles, plans and verification evidence (private)](https://capy.ai/s/dsh_tvsH0Q3MYuYvAZNtNwqBuEWh)
+are retained outside the source tree, with the harness in
+`~/.capy/work/akter-orch/s22/`. The narrower planner-scope verification and its
+performance check are recorded there rather than duplicating all repeats here.
+
 ## Partial storage hot-path tuning (#496, 2026-10-10)
 
 Migration `0035_hot_table_foreign_keys` removes only the composite state/receipt references to `actor_generations`. It retains receipt identity uniqueness, RLS, other foreign keys and the `SELECT ... FOR UPDATE` writer fence. The modest ordinary-admission CPU reduction below supports this metadata-only change; the warm measurements do not establish a performance win. Conditional UPDATE is not adopted, and expiry partitioning remains deferred. **#496 is not fully resolved**; its remaining scope is carried by #714.

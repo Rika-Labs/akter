@@ -1,6 +1,7 @@
 import { createServer, connect, type Socket, type AddressInfo } from "node:net"
 import { pgTable, text } from "drizzle-orm/pg-core"
 import { Pool } from "pg"
+import type { PgPool } from "@effect/sql-pg"
 import {
   Cause,
   Crypto,
@@ -18,7 +19,7 @@ import {
   Tracer,
 } from "effect"
 import type { Scope } from "effect"
-import { SqlClient } from "effect/sql"
+import { SqlClient, Statement } from "effect/sql"
 import { retryPoolRefusal } from "../../../../packages/akter/src/runtime/database/bounded.ts"
 import {
   Actor,
@@ -49,7 +50,7 @@ import {
 } from "../../../../packages/akter/src/testing/actor-test.ts"
 import { enqueue, holding } from "./batches.ts"
 import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
-import { SERVED_COMMAND, wireStatements } from "./statements.ts"
+import { type RecordedStatement, SERVED_COMMAND, wireStatements } from "./statements.ts"
 
 const marks = Actor.table(pgTable("pipeline_marks", { id: text("id").primaryKey() }))
 
@@ -65,13 +66,15 @@ const Mark = Actor.command("Mark", {
 
 const Tap = Actor.command("Tap", { success: Schema.Finite })
 
+const PlannerFlag = Actor.command("PlannerFlag", { success: Schema.Literals(["on", "off"]) })
+
 const Meter = Actor.make("Meter", {
   key: Schema.String,
   state: Actor.state({
     count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
   tables: [marks],
-  api: { Add, Mark, Tap },
+  api: { Add, Mark, Tap, PlannerFlag },
 })
 
 const Defer = Actor.command("Defer", {
@@ -252,6 +255,12 @@ const actorsLive = (probe: Probe) =>
               probe.handled += 1
 
               return (yield* Meter.Turn).state.count
+            }),
+            PlannerFlag: Effect.fnUntraced(function* () {
+              const sql = yield* SqlClient.SqlClient
+              const rows = yield* sql<{ value: "on" | "off" }>`
+                SELECT current_setting('enable_seqscan') AS value`.pipe(Effect.orDie)
+              return rows[0]!.value
             }),
           }),
         ),
@@ -530,6 +539,8 @@ const withProbe = <A, E>(
   environment: ConformanceEnvironment,
   options: {
     readonly prepare?: boolean
+    readonly forceGenericPlan?: boolean
+    readonly seqscan?: "on" | "off"
     readonly everyPool?: boolean
     /** Ordinary pipeline cases remain independent of the speculative path. */
     readonly warm?: boolean
@@ -541,6 +552,8 @@ const withProbe = <A, E>(
     readonly tracer?: Tracer.Tracer
     /** The turn pool's size, when a case needs sessions to be scarce. */
     readonly turnSessions?: number
+    /** Observes the actual compiled statements used by the runner. */
+    readonly observeStatement?: (statement: RecordedStatement) => void
     /** Observes real digest inputs without substituting their cryptographic result. */
     readonly observeDigest?: (bytes: Uint8Array) => void
   },
@@ -562,6 +575,22 @@ const withProbe = <A, E>(
         const probe: Probe = { flights: 0, statements: 0, sent: [], handled: 0 }
         const relayed = yield* relay(new URL(Redacted.value(database)), probe)
         const stream = () => connect({ host: "127.0.0.1", port: relayed.port, noDelay: true })
+        let turnSettings: Partial<PgPool.Config> = { stream, prepare: options.prepare !== false }
+        if (options.turnSessions !== undefined)
+          turnSettings = { ...turnSettings, maxConnections: options.turnSessions }
+        if (options.forceGenericPlan === true)
+          turnSettings = {
+            ...turnSettings,
+            startupParameters: { plan_cache_mode: "force_generic_plan" },
+          }
+        if (options.seqscan !== undefined)
+          turnSettings = {
+            ...turnSettings,
+            startupParameters: {
+              ...turnSettings.startupParameters,
+              enable_seqscan: options.seqscan,
+            },
+          }
 
         const context = yield* Layer.build(
           actorsLive(probe).pipe(
@@ -577,17 +606,17 @@ const withProbe = <A, E>(
             Layer.provide(Layer.succeed(Tracer.Tracer, options.tracer ?? Tracer.nativeTracer)),
             Layer.provide(
               Layer.mergeAll(
-                Layer.succeed(
-                  TurnPoolSettings,
-                  options.turnSessions === undefined
-                    ? { stream, prepare: options.prepare !== false }
-                    : {
-                        stream,
-                        prepare: options.prepare !== false,
-                        maxConnections: options.turnSessions,
-                      },
-                ),
+                Layer.succeed(TurnPoolSettings, turnSettings),
                 Layer.succeed(WarmTurnFastPath, options.warm === true),
+                options.observeStatement === undefined
+                  ? Layer.empty
+                  : Layer.succeed(Statement.CurrentTransformer, (statement) =>
+                      Effect.sync(() => {
+                        const [sql, params] = statement.compile()
+                        options.observeStatement!({ sql, params })
+                        return statement
+                      }),
+                    ),
                 options.everyPool === true
                   ? Layer.succeed(ClusterMember, { tenant: "pipeline", connect: stream })
                   : Layer.empty,
@@ -632,6 +661,30 @@ const flightsOf = <A, E, R>(probe: Probe, effect: Effect.Effect<A, E, R>) =>
   })
 
 const wire = (flight: Buffer) => flight.toString("latin1")
+
+/** Parse messages prove which statements the driver caches instead of inferring preparation from SQL text. */
+const parsedStatements = (flights: ReadonlyArray<Buffer>) => {
+  const bytes = Buffer.concat(flights)
+  const statements: Array<{ readonly name: string; readonly sql: string }> = []
+  let offset = 0
+  while (offset + 5 <= bytes.length) {
+    if (bytes[offset] === 0) {
+      offset += bytes.readInt32BE(offset)
+      continue
+    }
+    const end = offset + 1 + bytes.readInt32BE(offset + 1)
+    if (bytes[offset] === 0x50) {
+      const nameEnd = bytes.indexOf(0, offset + 5)
+      const sqlEnd = bytes.indexOf(0, nameEnd + 1)
+      statements.push({
+        name: bytes.subarray(offset + 5, nameEnd).toString("utf8"),
+        sql: bytes.subarray(nameEnd + 1, sqlEnd).toString("utf8"),
+      })
+    }
+    offset = end
+  }
+  return statements
+}
 
 /** Positions of `fragments` in `flight`, in the order given; -1 when absent. */
 const positions = (flight: Buffer, fragments: ReadonlyArray<string>) =>
@@ -778,8 +831,293 @@ export const ownerCacheMultiXactConformance: ConformanceCase = {
     ),
 }
 
-/** Pipeline cases: round trips per turn, statement grouping and order across admission, handler, and commit, and batching of the pipelined worker. */
+/** Pipeline cases cover ordered flights and batching. Receipt triggers observe planner restoration for SQL-free handlers without forcing fallback. Grouped identities predate warmup so one fixture exercises both warm guards and ordinary groups. */
 export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
+  ...(["on", "off"] as const).map(
+    (seqscan) =>
+      ({
+        name: `pipeline: receipt planning restores the session's ${seqscan} setting on ordinary, warm-guard and grouped paths`,
+        requiresIndependentConnections: true,
+        timeoutMs: 60_000,
+        run: ({ expect, environment }) =>
+          withProbe(environment, { seqscan, warm: true, prepare: false }, (probe) =>
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient
+              yield* sql.unsafe(`CREATE TABLE planner_observations (
+                  command_id text PRIMARY KEY, actor_id text NOT NULL, setting text NOT NULL)`)
+              yield* sql.unsafe(`CREATE FUNCTION observe_receipt_planning() RETURNS trigger LANGUAGE plpgsql AS $$
+                  BEGIN
+                    INSERT INTO planner_observations VALUES
+                      (NEW.command_id, NEW.actor_id, current_setting('enable_seqscan'));
+                    RETURN NEW;
+                  END $$`)
+              yield* sql.unsafe(`CREATE TRIGGER observe_receipt_planning BEFORE INSERT ON actor_receipts
+                  FOR EACH ROW EXECUTE FUNCTION observe_receipt_planning()`)
+              const meter = yield* Meter.get("planner-ordinary")
+              expect(yield* meter.PlannerFlag()).toBe(seqscan)
+              const plain = yield* Plain.get("planner-warm")
+              expect(yield* plain.Add(0)).toBe(0)
+              const warm = yield* flightsOf(probe, plain.Add(3))
+              expect(warm).toMatchObject({ value: 3, flights: 1 })
+              expect(
+                parsedStatements(warm.sent).filter(
+                  ({ sql }) => sql.includes("actor_receipts") && sql.includes("NOT EXISTS"),
+                ).length,
+              ).toBe(1)
+              const test = yield* ActorTest
+              const actors = yield* Actors
+              const keys = ["planner-group-a", "planner-group-b"]
+              const ids = yield* Effect.forEach(keys, () => actors.mintCommandId)
+              for (const key of keys) expect(yield* (yield* Plain.get(key)).Add(1)).toBe(1)
+              const pauses = yield* Effect.forEach(ids, (commandId) =>
+                test.pauseNext("beforeHandler", { commandId }),
+              )
+              const fibers = yield* Effect.forEach(keys, (key, index) =>
+                Effect.flatMap(Plain.get(key), (grouped) =>
+                  Effect.forkChild(grouped.Add(3).pipe(Actor.commandId(ids[index]!), Effect.orDie)),
+                ),
+              )
+              yield* Effect.forEach(pauses, ({ reached }) => reached, { concurrency: "unbounded" })
+              yield* Effect.forEach(pauses, ({ release }) => release, { discard: true })
+              expect(yield* Effect.forEach(fibers, Fiber.join)).toEqual([4, 4])
+              const groups = yield* sql<{ members: number }>`
+                    SELECT count(*)::integer AS members FROM planner_observations
+                    WHERE actor_id IN ${sql.in(keys)}
+                    GROUP BY xmin::text HAVING count(DISTINCT actor_id) = 2`
+              expect(groups).toEqual([{ members: 2 }])
+              const observed = yield* sql<{ setting: string }>`
+                  SELECT setting FROM planner_observations`
+              expect(observed.map(({ setting }) => setting)).toEqual(
+                Array.from({ length: 7 }, () => seqscan),
+              )
+              const statements = parsedStatements(probe.sent)
+              const probes = statements.flatMap(({ sql }, index) =>
+                sql.includes("WITH locked AS MATERIALIZED") && sql.includes("actor_receipts")
+                  ? [index]
+                  : [],
+              )
+              expect(probes.length > 0).toBe(true)
+              for (const index of probes) {
+                expect(statements[index - 1]!.sql).toContain("set_config('durable.receipt_seqscan'")
+                expect(statements[index + 1]!.sql).toContain(
+                  "current_setting('durable.receipt_seqscan')",
+                )
+              }
+            }),
+          ),
+      }) satisfies ConformanceCase,
+  ),
+  ...[false, true].map(
+    (warm) =>
+      ({
+        name: `pipeline: a retained empty-history ${warm ? "warm guard" : "batch-admission"} plan keeps full-key receipt probes as history grows`,
+        requiresIndependentConnections: true,
+        timeoutMs: 60_000,
+        run: ({ expect, environment }) => {
+          const observed: Array<RecordedStatement> = []
+          return withProbe(
+            environment,
+            {
+              warm,
+              turnSessions: 1,
+              forceGenericPlan: true,
+              observeStatement: (statement) => observed.push(statement),
+            },
+            (probe, database) =>
+              Effect.gen(function* () {
+                const plain = yield* Plain.get(`receipt-plan-${warm}`)
+                expect(yield* plain.Add(0)).toBe(0)
+                const sent = probe.sent.length
+                if (warm) {
+                  expect(yield* plain.Add(3)).toBe(3)
+                  expect(yield* plain.Add(17)).toBe(20)
+                  expect(probe.handled).toBe(3)
+                } else {
+                  for (const start of [0, 32]) {
+                    const held = yield* holding(plain.Add(0))
+                    const waiting = yield* enqueue(
+                      Array.from({ length: 32 }, () => Effect.orDie(plain.Add(1))),
+                    )
+                    yield* held.release
+                    expect(yield* Fiber.join(held.fiber)).toBe(start)
+                    expect(yield* Effect.forEach(waiting, Fiber.join)).toEqual(
+                      Array.from({ length: 32 }, (_, index) => start + index + 1),
+                    )
+                  }
+                }
+                const matches = ({ sql, params }: RecordedStatement) =>
+                  sql.includes("WITH locked AS MATERIALIZED") &&
+                  sql.includes("actor_receipts") &&
+                  (warm ? sql.includes("NOT EXISTS") : params.length === 100)
+                const admissions = observed.filter(matches)
+                expect(admissions.length).toBe(2)
+                const admission = admissions[0]!
+                expect(admissions[1]!.sql).toBe(admission.sql)
+                const parsed = parsedStatements(probe.sent.slice(sent)).filter(
+                  ({ sql }) => sql === admission.sql,
+                )
+                expect(parsed.length).toBe(1)
+                expect(parsed[0]!.name).not.toBe("")
+                const settings = observed.find(
+                  ({ sql }) => sql.startsWith("SELECT") && sql.includes("'durable.turn'"),
+                )
+                const restrict = observed.find(({ sql }) =>
+                  sql.includes("set_config('durable.receipt_seqscan'"),
+                )
+                const restore = observed.find(({ sql }) =>
+                  sql.includes("current_setting('durable.receipt_seqscan')"),
+                )
+                if (settings === undefined || restrict === undefined || restore === undefined)
+                  return yield* Effect.die(new Error("The runner did not bracket receipt planning"))
+                const pool = yield* Effect.acquireRelease(
+                  Effect.sync(
+                    () => new Pool({ connectionString: Redacted.value(database), max: 1 }),
+                  ),
+                  (pool) => Effect.promise(() => pool.end()),
+                )
+                const connection = yield* Effect.acquireRelease(
+                  Effect.promise(() => pool.connect()),
+                  (connection) => Effect.sync(() => connection.release()),
+                )
+                const query = (text: string, params?: ReadonlyArray<unknown>) =>
+                  Effect.promise(() =>
+                    connection.query(text, params === undefined ? undefined : [...params]),
+                  )
+                const original = (yield* query("SHOW enable_seqscan")).rows[0]!.enable_seqscan
+                yield* query("ALTER TABLE actor_receipts SET (autovacuum_enabled = false)")
+                yield* query(
+                  "CREATE TEMP TABLE plan_receipt_fixture AS SELECT * FROM actor_receipts LIMIT 1",
+                )
+                yield* query("TRUNCATE actor_receipts")
+                yield* query("ANALYZE actor_receipts")
+                yield* query("ANALYZE actor_generations")
+                yield* query("SET plan_cache_mode = 'force_generic_plan'")
+                yield* query(`PREPARE bounded_admission AS ${admission.sql}`)
+                const parameters = admission.params
+                  .map((value) => `'${String(value).replaceAll("'", "''")}'`)
+                  .join(",")
+                interface Node {
+                  readonly "Node Type": string
+                  readonly "Relation Name"?: string
+                  readonly "Actual Rows": number
+                  readonly "Actual Loops": number
+                  readonly "Rows Removed by Filter"?: number
+                  readonly "Rows Removed by Index Recheck"?: number
+                  readonly "Index Cond"?: string
+                  readonly "Shared Hit Blocks": number
+                  readonly "Shared Read Blocks": number
+                  readonly Plans?: ReadonlyArray<Node>
+                }
+                for (const phase of ["empty", "grown", "analyzed"] as const) {
+                  if (phase === "grown") {
+                    yield* query(`INSERT INTO actor_receipts
+                      (routing_key, tenant_id, actor_type, actor_id, command_id, command, payload_hash,
+                        caller_key, outcome, expires_at_ms, started_at_ms, committed_at_ms)
+                      SELECT routing_key, tenant_id, actor_type, actor_id,
+                        (CASE WHEN n % 2 = 0 THEN 'a-lower-' ELSE 'z-upper-' END) || n, command,
+                        payload_hash, caller_key, outcome, expires_at_ms, started_at_ms, committed_at_ms
+                      FROM plan_receipt_fixture CROSS JOIN generate_series(1, 100000) AS history(n)`)
+                    expect(
+                      (yield* query("SELECT count(*)::integer AS count FROM actor_receipts"))
+                        .rows[0]!.count,
+                    ).toBe(100000)
+                  }
+                  if (phase === "analyzed") yield* query("ANALYZE actor_receipts")
+                  yield* query("BEGIN")
+                  yield* query(settings.sql, settings.params)
+                  yield* query(restrict.sql, restrict.params)
+                  const plans = (yield* query(
+                    `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) EXECUTE bounded_admission(${parameters})`,
+                  )).rows[0]!["QUERY PLAN"] as ReadonlyArray<{ readonly Plan: Node }>
+                  yield* query(restore.sql, restore.params)
+                  expect((yield* query("SHOW enable_seqscan")).rows[0]!.enable_seqscan).toBe(
+                    original,
+                  )
+                  yield* query("ROLLBACK")
+                  expect((yield* query("SHOW enable_seqscan")).rows[0]!.enable_seqscan).toBe(
+                    original,
+                  )
+                  const receipts: Array<Node> = []
+                  const visit = (node: Node) => {
+                    if (node["Relation Name"] === "actor_receipts") receipts.push(node)
+                    for (const child of node.Plans ?? []) visit(child)
+                  }
+                  visit(plans[0]!.Plan)
+                  expect(plans[0]!.Plan["Actual Rows"]).toBe(warm ? 1 : 32)
+                  expect(receipts.length).toBe(1)
+                  const receipt = receipts[0]!
+                  expect(["Index Scan", "Index Only Scan"]).toContain(receipt["Node Type"])
+                  expect(receipt["Actual Loops"]).toBe(warm ? 1 : 32)
+                  expect(receipt["Actual Rows"]).toBe(0)
+                  expect(receipt["Rows Removed by Filter"] ?? 0).toBe(0)
+                  expect(receipt["Rows Removed by Index Recheck"] ?? 0).toBe(0)
+                  for (const key of [
+                    "routing_key",
+                    "tenant_id",
+                    "actor_type",
+                    "actor_id",
+                    "command_id",
+                  ])
+                    expect(receipt["Index Cond"]).toContain(key)
+                  expect(
+                    receipt["Shared Hit Blocks"] + receipt["Shared Read Blocks"] <=
+                      (warm ? 8 : 256),
+                  ).toBe(true)
+                }
+                const identities = warm
+                  ? [
+                      admission.params.find(
+                        (value) => Schema.is(Schema.String)(value) && value.startsWith("v1."),
+                      ),
+                    ]
+                  : Array.from({ length: 16 }, (_, index) => admission.params[5 + index * 6])
+                yield* query(
+                  `INSERT INTO actor_receipts
+                  (routing_key, tenant_id, actor_type, actor_id, command_id, command, payload_hash,
+                    caller_key, outcome, expires_at_ms, started_at_ms, committed_at_ms)
+                  SELECT routing_key, tenant_id, actor_type, actor_id, identity, command,
+                    payload_hash, caller_key, outcome, expires_at_ms, started_at_ms, committed_at_ms
+                  FROM plan_receipt_fixture CROSS JOIN unnest($1::text[]) AS matched(identity)`,
+                  [identities],
+                )
+                yield* query("BEGIN")
+                yield* query(settings.sql, settings.params)
+                yield* query(restrict.sql, restrict.params)
+                if (warm) {
+                  const failed = yield* Effect.tryPromise(() =>
+                    connection.query(`EXECUTE bounded_admission(${parameters})`),
+                  ).pipe(
+                    Effect.flip,
+                    Effect.flatMap((error) =>
+                      Schema.decodeUnknownEffect(Schema.Struct({ code: Schema.String }))(
+                        error.cause,
+                      ),
+                    ),
+                  )
+                  expect(failed.code).toBe("22012")
+                } else {
+                  const rows = (yield* query(`EXECUTE bounded_admission(${parameters})`)).rows
+                  expect(rows.map((row) => row.command !== null)).toEqual(
+                    Array.from({ length: 32 }, (_, index) => index % 2 === 0),
+                  )
+                  yield* query(restore.sql, restore.params)
+                  expect((yield* query("SHOW enable_seqscan")).rows[0]!.enable_seqscan).toBe(
+                    original,
+                  )
+                }
+                yield* query("ROLLBACK")
+                expect((yield* query("SHOW enable_seqscan")).rows[0]!.enable_seqscan).toBe(original)
+                expect(
+                  (yield* query(
+                    "SELECT custom_plans::integer FROM pg_prepared_statements WHERE name = 'bounded_admission'",
+                  )).rows[0]!.custom_plans,
+                ).toBe(0)
+                yield* query("DEALLOCATE bounded_admission")
+              }),
+          )
+        },
+      }) satisfies ConformanceCase,
+  ),
   {
     name: "pipeline: repeated canonical payloads are hashed once per batch without sharing different payloads or later admissions",
     requiresIndependentConnections: true,
@@ -2483,7 +2821,7 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: "pipeline: concurrent warm turns of three actors share one BEGIN, settings statement, COMMIT and version read: thirteen statements",
+    name: "pipeline: concurrent warm turns of three actors share one BEGIN, settings statement, COMMIT and version read: nineteen statements",
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -2497,7 +2835,7 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           yield* release
 
           expect(yield* Effect.forEach(fibers, Fiber.join)).toEqual([2, 2, 2])
-          expect(probe.statements - statements).toBe(13)
+          expect(probe.statements - statements).toBe(19)
 
           const wired = probe.sent.slice(sent).map(wire).join("")
           expect(wired.split("BEGIN").length - 1).toBe(1)
