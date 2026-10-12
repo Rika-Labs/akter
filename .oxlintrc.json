@@ -54,30 +54,15 @@
   },
   "overrides": [
     {
-      "files": [
-        "apps/self-host/src/bun.ts",
-        "apps/self-host/src/node.ts",
-        "apps/self-host/src/check.ts",
-        "apps/self-host/src/peers.ts",
-        "apps/self-host/src/probe.ts"
-      ],
-      "rules": { "effecttsgo/strict-effect-provide": "off" }
-    },
-    {
-      "files": [
-        "apps/cli/src/platform.ts",
-        "apps/self-host/src/node.ts",
-        "apps/self-host/src/peers.ts"
-      ],
-      "rules": { "effecttsgo/node-builtin-import": "off" }
-    },
-    {
-      "files": [
-        "tooling/conformance/src/conformance/*/harness.ts",
-        "tooling/conformance/src/conformance/transports/wire.ts"
-      ],
+      "files": ["apps/self-host/src/peers.ts", "apps/self-host/src/probe.ts"],
       "rules": {
-        "effecttsgo/missing-pipeable-signature": "off"
+        "effecttsgo/strict-effect-provide": "off"
+      }
+    },
+    {
+      "files": ["apps/cli/src/platform.ts", "apps/self-host/src/peers.ts"],
+      "rules": {
+        "effecttsgo/node-builtin-import": "off"
       }
     },
     {
@@ -86,15 +71,6 @@
         "effecttsgo/node-builtin-import": "off",
         "effecttsgo/missing-pipeable-signature": "off"
       }
-    },
-    {
-      "files": [
-        "apps/cli/src/commands/defects/list.test.ts",
-        "packages/akter/src/actor/reads.test.ts",
-        "packages/akter/src/actor/turns.test.ts",
-        "packages/python-client/src/generate.test.ts"
-      ],
-      "rules": { "akter/synchronous-actions": "off" }
     },
     {
       "files": ["packages/akter/src/runtime/peering/transport.test.ts"],
@@ -106,13 +82,6 @@
       "files": ["packages/akter/src/runtime/peering/*.ts"],
       "rules": {
         "effecttsgo/node-builtin-import": "off"
-      }
-    },
-    {
-      "files": ["packages/react/src/*.ts"],
-      "rules": {
-        "effecttsgo/async-function": "off",
-        "effecttsgo/missing-pipeable-signature": "off"
       }
     }
   ],

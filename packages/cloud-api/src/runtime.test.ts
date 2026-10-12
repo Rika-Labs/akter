@@ -1,4 +1,4 @@
-import * as Framework from "@rikalabs/akter/client"
+import * as Framework from "@rikalabs/akter"
 import { Effect, Exit, Predicate, Schema } from "effect"
 import { describe, expect, it } from "vitest"
 

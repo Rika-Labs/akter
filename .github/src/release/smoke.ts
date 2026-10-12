@@ -1,18 +1,5 @@
 import { BunRuntime, BunServices } from "@effect/platform-bun"
-import {
-  Config,
-  Console,
-  Effect,
-  FileSystem,
-  Layer,
-  Option,
-  Path,
-  Schedule,
-  Schema,
-  Stream,
-} from "effect"
-import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
-import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { Config, Console, Effect, FileSystem, Layer, Path, Schema } from "effect"
 
 const args = process.argv.slice(2)
 
@@ -86,78 +73,27 @@ void invalidRole
 console.log("cloud-api contract passed")
 `
 
-const consumerMain = (
-  engine: "bun" | "node",
-) => `import { ${engine === "bun" ? "BunCrypto" : "NodeCrypto"} as PlatformCrypto } from "@effect/platform-${engine}"
-const cryptoLayer = PlatformCrypto.layer
-import { Actor, User } from "@rikalabs/akter"
-import { S3ColdStorage, type S3ColdStorageOptions } from "@rikalabs/akter/cold-storage/s3"
-import { Actors, Database } from "@rikalabs/akter/runtime"
-import { Effect, Layer, Schema } from "effect"
+const consumerMain = `import assert from "node:assert/strict"
+import { ActorError, ASSERTION_HEADER, InvalidInput, requestDigest, User } from "@rikalabs/akter"
+import { Effect, Schema } from "effect"
 
-const Increment = Actor.command("Increment", { payload: Schema.Int, success: Schema.Int })
+const caller = Schema.decodeUnknownSync(User)({ _tag: "User", subject: "smoke" })
+assert.equal(caller.subject, "smoke")
+assert.throws(() => Schema.decodeUnknownSync(User)({ _tag: "User", subject: "" }))
+assert.equal(ASSERTION_HEADER, "durable-assertion")
 
-const Counter = Actor.make("Counter", {
-  key: Schema.NonEmptyString,
-  state: Actor.state({ count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
-  api: { Increment },
-})
+const failure = ActorError.make({ reason: InvalidInput.make({ code: "decode" }) })
+assert.equal(failure.reason._tag, "InvalidInput")
 
-const CounterLive = Counter.toLayer({
-  Increment: Effect.fn(function* (amount) {
-    const turn = yield* Counter.Turn
-    yield* turn.state.set({ count: turn.state.count + amount })
-
-    return turn.state.count
-  }),
-})
-
-const live = CounterLive.pipe(
-  Layer.provideMerge(Actors.layer({ authorize: () => Effect.succeed(true) })),
-  Layer.provide(Database.pglite()),
-  Layer.provide(cryptoLayer),
-)
-
-const program = Effect.gen(function* () {
-  const store = yield* S3ColdStorage.make({ bucket: "smoke", region: "us-east-1" } satisfies S3ColdStorageOptions)
-  if (typeof store.get !== "function") throw new Error("S3 cold storage export is invalid")
-  const counter = yield* Counter.get("smoke").pipe(
-    Actor.tenant("smoke"),
-    Actor.as(User.make({ subject: "smoke" })),
+const digest = (body: string) =>
+  Effect.runPromise(
+    requestDigest({ method: "POST", target: "/rpc", idempotencyKey: undefined, body: new TextEncoder().encode(body) }),
   )
-
-  // @ts-expect-error Increment takes an integer.
-  void counter.Increment("2")
-
-  const first = yield* counter.Increment(2)
-  const second = yield* counter.Increment(3)
-  console.log(JSON.stringify([first, second]))
-})
-
-await Effect.runPromise(Effect.scoped(Layer.build(live).pipe(Effect.flatMap((context) => program.pipe(Effect.provide(context))))))
-`
-
-const cliMain = `import { Actor } from "@rikalabs/akter"
-import { Actors, Auth } from "@rikalabs/akter/runtime"
-import { Effect, Layer, Schema } from "effect"
-
-const Add = Actor.command("Add", { payload: Schema.Int, success: Schema.Int })
-const Counter = Actor.make("Counter", {
-  key: Schema.String,
-  state: Actor.state({ count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
-  access: Actor.access.public,
-  api: { Add },
-})
-const CounterLive = Counter.toLayer({
-  Add: Effect.fn(function* (amount) {
-    const turn = yield* Counter.Turn
-    yield* turn.state.set({ count: turn.state.count + amount })
-    return turn.state.count
-  }),
-})
-export const app = Actors.serve({ actors: [Counter], auth: Auth.none }).pipe(
-  Layer.provide(CounterLive.pipe(Layer.provideMerge(Actors.layer()))),
-)
+const [first, again, other] = await Promise.all([digest("a"), digest("a"), digest("b")])
+assert.match(first, /^[0-9a-f]{64}$/)
+assert.equal(first, again)
+assert.notEqual(first, other)
+console.log("root entry passed")
 `
 
 const cliSmoke = Effect.fn("cliSmoke")(function* ({
@@ -170,7 +106,7 @@ const cliSmoke = Effect.fn("cliSmoke")(function* ({
   readonly bin: string
 }) {
   const help = yield* run([engine, bin, "--help"], consumer)
-  if (!help.includes("Akter Cloud") || !help.includes("/_akter/inspector"))
+  if (!help.includes("Akter Cloud"))
     return yield* Effect.die(new Error("akter --help did not print the public command tree"))
 
   const loginHelp = yield* run(
@@ -179,99 +115,6 @@ const cliSmoke = Effect.fn("cliSmoke")(function* ({
   )
   if (!loginHelp.includes("--api-url"))
     return yield* Effect.die(new Error("akter login --help did not print --api-url"))
-
-  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-  const child = yield* spawner.spawn(
-    ChildProcess.make(engine, [bin, "dev", "--entry", "app.ts", "--port", "0"], {
-      cwd: consumer,
-      forceKillAfter: "5 seconds",
-    }),
-  )
-  const printed = { stdout: "", stderr: "" }
-  yield* child.stdout.pipe(
-    Stream.decodeText(),
-    Stream.runForEach((text) =>
-      Effect.sync(() => {
-        printed.stdout += text
-      }),
-    ),
-    Effect.forkScoped,
-  )
-  yield* child.stderr.pipe(
-    Stream.decodeText(),
-    Stream.runForEach((text) =>
-      Effect.sync(() => {
-        printed.stderr += text
-      }),
-    ),
-    Effect.forkScoped,
-  )
-  const origin = yield* Effect.gen(function* () {
-    if (!(yield* child.isRunning))
-      return yield* Effect.die(
-        new Error(`akter dev exited before readiness: ${printed.stdout}\n${printed.stderr}`),
-      )
-    return Option.fromUndefinedOr(/^ {2}app +(http:\/\/\S+)$/m.exec(printed.stdout)?.[1])
-  }).pipe(
-    Effect.repeat({ schedule: Schedule.spaced("100 millis"), until: Option.isSome }),
-    Effect.timeout("60 seconds"),
-    Effect.flatMap(
-      Option.match({
-        onNone: () => Effect.die(new Error("akter dev printed no origin")),
-        onSome: Effect.succeed,
-      }),
-    ),
-  )
-  const client = yield* HttpClient.HttpClient
-  yield* Effect.gen(function* () {
-    const response = yield* client.get(`${origin}/ready`)
-    const body = yield* HttpClientResponse.schemaBodyJson(Schema.Struct({ ready: Schema.Boolean }))(
-      response,
-    )
-    if (response.status === 200 && body.ready) return true
-    if (response.status !== 503 || body.ready)
-      return yield* Effect.die(new Error("akter dev returned an invalid readiness response"))
-    return false
-  }).pipe(
-    Effect.repeat({ schedule: Schedule.spaced("100 millis"), until: (ready) => ready }),
-    Effect.timeout("60 seconds"),
-  )
-  for (const [amount, expected] of [
-    [7, 7],
-    [2, 9],
-  ] as const) {
-    const minted = yield* client.post(`${origin}/command-ids`)
-    if (minted.status !== 200)
-      return yield* Effect.die(new Error("akter dev could not mint a command id"))
-    const { commandId } = yield* HttpClientResponse.schemaBodyJson(
-      Schema.Struct({ commandId: Schema.String }),
-    )(minted)
-    const response = yield* client.execute(
-      HttpClientRequest.post(`${origin}/actors/Counter/smoke/Add`).pipe(
-        HttpClientRequest.setHeader("idempotency-key", commandId),
-        HttpClientRequest.bodyJsonUnsafe(amount),
-      ),
-    )
-    if (
-      response.status !== 200 ||
-      (yield* HttpClientResponse.schemaBodyJson(Schema.Int)(response)) !== expected
-    )
-      return yield* Effect.die(
-        new Error(`akter dev counter increment ${amount} did not return ${expected}`),
-      )
-  }
-  const inspector = yield* client.get(`${origin}/_akter/inspector`)
-  if (
-    inspector.status !== 200 ||
-    !(yield* inspector.text).includes('data-api="/_akter/inspector/api"')
-  )
-    return yield* Effect.die(new Error("akter dev inspector page failed"))
-  const script = yield* client.get(`${origin}/_akter/inspector/client.js`)
-  if (script.status !== 200 || (yield* script.text).includes('from "effect"'))
-    return yield* Effect.die(new Error("akter dev inspector asset is not bundled"))
-  const legacy = yield* client.get(`${origin}/_durable/inspector`)
-  if (legacy.status !== 404)
-    return yield* Effect.die(new Error("the legacy inspector path still exists"))
 })
 
 const program = Effect.gen(function* () {
@@ -281,7 +124,6 @@ const program = Effect.gen(function* () {
 
   if (engine !== "bun" && engine !== "node")
     return yield* Effect.die(new Error("SMOKE_RUNTIME must be bun or node"))
-  const main = consumerMain(engine)
   const root = path.resolve(import.meta.dirname, "../../..")
   const work = yield* fs.makeTempDirectoryScoped({ prefix: "akter-smoke-" })
 
@@ -386,8 +228,7 @@ const program = Effect.gen(function* () {
     path.join(consumer, "tsconfig.json"),
     `${yield* encode(consumerTsconfig)}\n`,
   )
-  yield* fs.writeFileString(path.join(consumer, "main.ts"), main)
-  yield* fs.writeFileString(path.join(consumer, "app.ts"), cliMain)
+  yield* fs.writeFileString(path.join(consumer, "main.ts"), consumerMain)
   yield* fs.writeFileString(path.join(consumer, "cloud-api.ts"), cloudApiMain)
 
   yield* run(["bun", "install", "--ignore-scripts"], consumer)
@@ -405,66 +246,19 @@ const program = Effect.gen(function* () {
 
   const output = (yield* run([engine, "main.ts"], consumer)).trim()
 
-  if (output !== "[2,5]") return yield* Effect.die(new Error(`Expected [2,5], got ${output}`))
+  if (output !== "root entry passed")
+    return yield* Effect.die(new Error(`Root entry check failed: ${output}`))
 
-  yield* fs.writeFileString(
-    path.join(consumer, "main.ts"),
-    main.replace("Database.pglite()", 'Database.pglite({ dataDir: "./.data" })'),
-  )
-  const first = (yield* run([engine, "main.ts"], consumer)).trim()
-  const restarted = (yield* run([engine, "main.ts"], consumer)).trim()
-
-  if (first !== "[2,5]" || restarted !== "[7,10]")
-    return yield* Effect.die(
-      new Error(`Quickstart restart expected [2,5] then [7,10], got ${first} then ${restarted}`),
-    )
-
-  yield* fs.writeFileString(
-    path.join(consumer, "test.ts"),
-    `${main.slice(0, main.indexOf("const live ="))}
-import assert from "node:assert/strict"
-import { ActorTest } from "@rikalabs/akter/testing"
-import { ManagedRuntime } from "effect"
-
-const runtime = ManagedRuntime.make(CounterLive.pipe(
-  Layer.provideMerge(ActorTest.layer()),
-  Layer.provide(cryptoLayer),
-))
-
-try {
-  await runtime.runPromise(Effect.gen(function* () {
-    const test = yield* ActorTest
-    const counter = yield* Counter.get("retry")
-    const call = counter.Increment(2)
-    assert.equal(yield* call, 2)
-    assert.equal(yield* call, 2)
-    yield* test.crashNext("beforeCommit")
-    assert.equal(yield* counter.Increment(7), 9)
-    yield* test.crashNext("afterCommit")
-    const after = counter.Increment(3)
-    assert.equal(yield* after, 12)
-    assert.equal(yield* after, 12)
-    const stored = yield* test.inspect(counter.ref)
-    assert.deepEqual(stored.state, { count: 12 })
-    assert.equal(stored.receipts, 3)
-  }))
-} finally {
-  await runtime.dispose()
-}
-console.log("quickstart retry and rollback passed")
-`,
-  )
-  yield* run([engine, "test.ts"], consumer)
   yield* cliSmoke({ engine, consumer, bin: path.join(consumer, "node_modules/.bin/akter") }).pipe(
     Effect.scoped,
   )
 
   yield* Console.log(
-    `${staged.name}@${staged.version}: ${tarball} installs into a clean project, typechecks, and runs on ${engine}: memory ${output}, quickstart restart ${first} -> ${restarted}; ${cliStaged.name}@${cliStaged.version}: cloud-api types, import, endpoint and schema checks, help, offline login help, dev readiness, counter [7,9], inspector asset, and old-route refusal pass`,
+    `${staged.name}@${staged.version}: ${tarball} installs into a clean project, typechecks, and its root entry runs on ${engine}; ${cliStaged.name}@${cliStaged.version}: cloud-api types, import, endpoint and schema checks, help and offline login help pass`,
   )
 }).pipe(Effect.scoped)
 
 Effect.gen(function* () {
-  const services = yield* Layer.build(Layer.mergeAll(BunServices.layer, FetchHttpClient.layer))
+  const services = yield* Layer.build(BunServices.layer)
   return yield* program.pipe(Effect.provideContext(services))
 }).pipe(Effect.scoped, BunRuntime.runMain)

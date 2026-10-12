@@ -1,19 +1,14 @@
 import { type Crypto, Effect, Layer, Predicate, Schema } from "effect"
-import type { SqlClient } from "effect/sql"
-import type { layer } from "./layer.ts"
 
 export const TypeId: unique symbol = Symbol.for("@rikalabs/akter/App")
 
-/** What `Actors.layer` provides: the actor runtime every handler layer registers with. */
-type RuntimeServices = Layer.Success<ReturnType<typeof layer>>
-
 /**
- * Every service a hosted app's layer may require. The host builds
- * `Actors.layer` over its own database and provides it with the SQL client and
- * `Crypto`, so an app never constructs a runtime and a requirement outside
- * this union is a compile error at `App.make`.
+ * Every service a hosted app's layer may require. The host provides them, so
+ * an app never constructs a runtime and a requirement outside this union is a
+ * compile error at `App.make`. Only `Crypto` is in it until the engine's
+ * services exist to join it.
  */
-export type AppServices = RuntimeServices | SqlClient.SqlClient | Crypto.Crypto
+export type AppServices = Crypto.Crypto
 
 /** Building the app's layer failed; `cause` is what the layer failed with. */
 export class AppLayerFailed extends Schema.TaggedError<AppLayerFailed>()("AppLayerFailed", {
@@ -21,9 +16,8 @@ export class AppLayerFailed extends Schema.TaggedError<AppLayerFailed>()("AppLay
 }) {}
 
 /**
- * An actor definition as an app declares it: its name, which `Actors.serve`
- * routes by, and its declared members, which `checkWorkflows` compares with
- * stored executions before a rollout.
+ * An actor definition as an app declares it: its name, which the server
+ * routes by, and its declared members.
  */
 export interface AppActor {
   readonly name: string

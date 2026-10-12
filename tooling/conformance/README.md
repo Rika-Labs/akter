@@ -1,17 +1,11 @@
 # Framework conformance
 
-`@akter/conformance` is an unpublished verification workspace, not an application dependency. App developers use `ActorTest`, `checkBatchLaw`, `cleanup`, `sweepContent`, `testDatabase`, and `disposableDatabase` from `@rikalabs/akter/testing`.
+`@akter/conformance` is an unpublished verification workspace, not an application dependency.
 
-The shared cases in `src/conformance.ts` run on PGlite and real Postgres. Fixtures deliberately inspect framework internals. `clusterLayer` provides `ActorCluster`; `simulate` and `simulateCluster` use the ambient test runtime under a reproducible seeded fault schedule. The cluster harness requires a Postgres URL and cannot prove independent-connection behavior on PGlite.
+On `rewrite/0.2` the 0.1 suites that ran against the old engine are retired; [the retirement map](../../docs/verification/0.1-retirement.md) names the 0.2 evidence or the accepted removal for each. What remains is `src/conformance/workflow-engine.ts`: the cases a `WorkflowEngine` must pass, run today against Effect's `ClusterWorkflowEngine` in memory and kept as the template for the shard workflow engine's suite. The seeded simulator, the bucket-protocol integration suites and the benchmark driver are added here as their milestones land.
 
 From the repository root:
 
 ```sh
-bun run test
-bun run --cwd tooling/conformance test:pglite
-TEST_DATABASE_URL=<dedicated-test-database> bun run --cwd tooling/conformance test:integration:postgres
-TEST_DATABASE_URL=<dedicated-test-database> bun run --cwd tooling/conformance test:integration:drills
-bun run test:node:conformance
+bun run --cwd tooling/conformance test
 ```
-
-`test:integration:drills` requires Docker. Replica cases require `TEST_REPLICA_DATABASE_URL`; absent provider or replica targets are skips, not evidence of support. Project filters such as `--project=postgres:conformance` and `--project=pglite:conformance` select registered shards. CI, nightly properties, and stress runs use the same workspace commands.

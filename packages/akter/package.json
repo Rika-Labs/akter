@@ -11,8 +11,6 @@
     "durable",
     "effect",
     "effect-ts",
-    "pglite",
-    "postgres",
     "realtime",
     "stateful",
     "transactions",
@@ -37,11 +35,7 @@
   "type": "module",
   "types": "./src/index.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./runtime": "./src/runtime/index.ts",
-    "./cold-storage/s3": "./src/cold-storage/s3.ts",
-    "./client": "./src/client/index.ts",
-    "./testing": "./src/testing/index.ts"
+    ".": "./src/index.ts"
   },
   "publishConfig": {
     "types": "./dist/index.d.ts",
@@ -49,22 +43,6 @@
       ".": {
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
-      },
-      "./runtime": {
-        "types": "./dist/runtime/index.d.ts",
-        "default": "./dist/runtime/index.js"
-      },
-      "./client": {
-        "types": "./dist/client/index.d.ts",
-        "default": "./dist/client/index.js"
-      },
-      "./cold-storage/s3": {
-        "types": "./dist/cold-storage/s3.d.ts",
-        "default": "./dist/cold-storage/s3.js"
-      },
-      "./testing": {
-        "types": "./dist/testing/index.d.ts",
-        "default": "./dist/testing/index.js"
       },
       "./package.json": "./package.json"
     },
@@ -75,36 +53,22 @@
     "prepublishOnly": "echo 'Publish through the release workflow: push a v<version> tag.' && exit 1",
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
     "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
-    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. packages/akter/src/actor packages/akter/src/client packages/akter/src/identity packages/akter/src/members packages/akter/src/policies packages/akter/src/runtime/workflows/steps.test.ts packages/akter/src/tables packages/akter/src/runtime/database/pglite.test.ts packages/akter/src/runtime/database/flock.test.ts packages/akter/src/runtime/database/transient.test.ts packages/akter/src/runtime/database/gate.test.ts packages/akter/src/runtime/storage/codec.test.ts packages/akter/src/runtime/storage/platform.test.ts packages/akter/src/runtime/storage/cold-storage.test.ts packages/akter/src/runtime/cron packages/akter/src/runtime/turn/admission.test.ts packages/akter/src/runtime/turn/receipt.test.ts packages/akter/src/runtime/topology/locks.test.ts packages/akter/src/runtime/runner.test.ts packages/akter/src/runtime/peering packages/akter/src/runtime/turn/relay.test.ts packages/akter/src/runtime/jobs packages/akter/src/runtime/operators packages/akter/src/runtime/retry.test.ts packages/akter/src/runtime/admission.test.ts packages/akter/src/runtime/app.test.ts packages/akter/src/runtime/telemetry/live.test.ts packages/akter/src/serve packages/akter/src/protocol packages/akter/src/runtime/entity/mailbox.test.ts packages/akter/src/testing/property.test.ts"
+    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. packages/akter/src"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.1148.0",
-    "@effect/platform-node-shared": "catalog:",
-    "@electric-sql/pglite": "0.5.8",
-    "@noble/hashes": "2.4.0",
-    "@node-rs/xxhash": "1.7.8",
-    "koffi": "3.3.2"
+    "@effect/platform-node-shared": "catalog:"
   },
   "devDependencies": {
     "@effect/platform-bun": "catalog:",
     "@effect/platform-node": "catalog:",
-    "@effect/sql-pg": "catalog:",
-    "@effect/sql-pglite": "catalog:",
     "@effect/vitest": "catalog:",
-    "@types/pg": "8.23.1",
-    "drizzle-kit": "catalog:",
-    "drizzle-orm": "catalog:",
     "effect": "catalog:",
-    "fake-indexeddb": "6.2.5",
-    "pg": "8.23.0",
     "vitest": "catalog:"
   },
   "peerDependencies": {
     "@effect/platform-bun": "catalog:",
     "@effect/platform-node": "catalog:",
-    "@effect/sql-pg": "catalog:",
-    "@effect/sql-pglite": "catalog:",
-    "drizzle-orm": "catalog:",
     "effect": "catalog:"
   },
   "peerDependenciesMeta": {
