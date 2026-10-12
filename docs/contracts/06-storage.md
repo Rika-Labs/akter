@@ -24,6 +24,7 @@ Status: proposal (0.2), owned by ADR 0127; promoted when E2 (store, log and chec
   cluster/locks/<shard>       shard lock, If-Match (advisory)
   cluster/machines/<id>       machine id claim, If-Match (advisory)
   audit/<date>/<id>           operator read audit record, created once
+  check/<run>/                `akter storage check` probe objects, removed by the probe
   ```
 
 - Shard assignments MUST NOT be stored: each runner computes them from the runner leases with `HashRing`. The lease objects stay advisory; the log fence is the only authority.
@@ -32,7 +33,9 @@ Status: proposal (0.2), owned by ADR 0127; promoted when E2 (store, log and chec
 
 ## Supported providers
 
-A provider is supported only while `akter storage check` passes on it: atomic conditional create under concurrency, atomic `If-Match` compare-and-swap, strongly consistent ordered listing, and last-modified refreshed by a plain `PUT`. The support matrix MUST name each provider with the date and version of its passing run. Simulator, filesystem and MinIO results MUST NOT be presented as results for another provider.
+A provider is supported only while `akter storage check` passes on it: atomic conditional create under concurrency, atomic `If-Match` compare-and-swap, strongly consistent ordered listing, and last-modified refreshed by a plain `PUT`. The [support matrix](../verification/store-providers.md) MUST name each provider with the date and version of its passing run. Simulator, filesystem and MinIO results MUST NOT be presented as results for another provider.
+
+`akter storage check` MUST open no store in the target: it writes only under `check/<run>/`, removes what it wrote, and creates neither `meta/store` nor any `audit/` record. It MUST exit non-zero when any probe fails, and it MUST NOT print credentials.
 
 ## Segments and checkpoints
 

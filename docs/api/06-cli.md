@@ -15,11 +15,11 @@ description: "The akter command-line tool: its commands, flags, output, and exit
 
 ## Exit statuses
 
-| Status | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0      | The command succeeded, or printed help, its version, or completions.                                                                                                                                                                                                                                                                                                                                                                                                       |
-| 1      | The command ran and reported a refusal: `workflows check` or `payloads check` found a deploy that would be refused, `payloads clear` left a version uncleared, `adopt plan` found a table problem or an `adopt` step was refused, a runner refused an operator request (`Refused (<status>): <body>`), the control plane refused a hosted command or no longer accepts the stored session, a `login` was denied or expired, or a `deploy` failed or outlasted `--timeout`. |
-| 2      | Usage error: an unknown command or flag, a missing or invalid value, an entry module that cannot be loaded, an unreachable runner or control plane, a database `workflows check`, `payloads`, or `adopt` cannot read, a hosted command run before `login`, or stored credentials other users can read. An invalid invocation prints the command's help on stdout and the error on stderr.                                                                                  |
+| Status | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0      | The command succeeded, or printed help, its version, or completions.                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| 1      | The command ran and reported a refusal: `workflows check` or `payloads check` found a deploy that would be refused, `payloads clear` left a version uncleared, `adopt plan` found a table problem or an `adopt` step was refused, a runner refused an operator request (`Refused (<status>): <body>`), the control plane refused a hosted command or no longer accepts the stored session, a `login` was denied or expired, a `deploy` failed or outlasted `--timeout`, or `storage check` ran and at least one probe failed. |
+| 2      | Usage error: an unknown command or flag, a missing or invalid value, an entry module that cannot be loaded, an unreachable runner or control plane, a database `workflows check`, `payloads`, or `adopt` cannot read, a hosted command run before `login`, stored credentials other users can read, or a `storage check` with no target, two targets, an endpoint that carries credentials, or a bucket it cannot reach. An invalid invocation prints the command's help on stdout and the error on stderr.                   |
 
 ## Global flags
 
@@ -64,6 +64,8 @@ Akter Cloud client:
   env       List, set, unset and import encrypted write-only environment variables
   logs      Read recent customer runner logs, or follow with resumable long polls
 
+Storage:
+  storage    Check that a bucket or directory can hold an Akter store
 ```
 
 ## Operator commands
@@ -506,6 +508,35 @@ FLAGS
   --token-env string       The environment variable holding the operator bearer token (default AKTER_OPERATOR_TOKEN)
   --json                   Print the runner's answer as JSON
 ```
+
+## `akter storage check`
+
+```text
+USAGE
+  akter storage check [flags]
+
+FLAGS
+  --bucket string        The S3-compatible bucket to check (default AKTER_STORAGE_BUCKET)
+  --endpoint string      The S3 endpoint URL, without credentials (default AKTER_STORAGE_ENDPOINT or AWS_ENDPOINT_URL_S3)
+  --region string        The bucket's region (default AKTER_STORAGE_REGION or AWS_REGION, then us-east-1)
+  --prefix string        A key prefix inside the bucket (default AKTER_STORAGE_PREFIX)
+  --directory string     Check a local directory with the file-system store instead of a bucket
+  --writers integer      Concurrent writers in each race round (default 16)
+  --rounds integer       Rounds of each race and of the listing probe (default 10)
+  --writes integer       Back-to-back writes to one key in the write-rate probe (default 10)
+  --settle-ms integer    Milliseconds between the two identical writes of the last-modified probe (default 2000); it must exceed the provider's timestamp resolution, one second on S3
+  --json                 Print the report as JSON
+```
+
+Runs the framework's conformance probe, `Store.check`, against one S3-compatible bucket or one local directory, and prints each probe with its verdict, a detail line and its measured numbers. The six probes are the conditional-create race, the compare-and-swap race, listing after writes and deletes, last-modified refreshed by a plain `PUT`, the per-key write rate, and batch delete. A provider is supported for Akter stores only while the command exits 0 on it; the [support matrix](../verification/store-providers.md) records the runs.
+
+The command opens no store in the target. It writes only under `check/<run>/` and removes what it wrote, so it creates no `meta/store` and no `audit/` record, and it is safe to run against a bucket before deploying. Name either a bucket or `--directory`, not both.
+
+**Credentials come from the environment, never from flags.** The access key id is read from `AKTER_STORAGE_ACCESS_KEY_ID` or `AWS_ACCESS_KEY_ID`, the secret from `AKTER_STORAGE_SECRET_ACCESS_KEY` or `AWS_SECRET_ACCESS_KEY`, and an optional session token from `AKTER_STORAGE_SESSION_TOKEN` or `AWS_SESSION_TOKEN`; the `AKTER_STORAGE_*` name wins. Set both the id and the secret or neither: with neither, the AWS SDK's credential chain applies. The bucket, endpoint, region and prefix come from the flags or from `AKTER_STORAGE_BUCKET`, `AKTER_STORAGE_ENDPOINT` (or `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL`), `AKTER_STORAGE_REGION` (or `AWS_REGION`, `AWS_DEFAULT_REGION`) and `AKTER_STORAGE_PREFIX`. An endpoint that carries credentials (`https://key:secret@host`) is refused, the report prints the endpoint's origin only, and a provider message that quotes the secret or the session token is printed with `[redacted]` in its place.
+
+The text report begins with the command version and the UTC time of the run, which the support matrix records. `--json` prints one object on stdout: `cli` (the command version), `checkedAt`, `target` (`{ kind: "s3", bucket, endpoint, region, prefix }` or `{ kind: "fileSystem", directory }`), `passed`, and `probes`, each `{ name, passed, detail, measured }` with `measured` a map of numbers such as `doubleWinners`, `throttled` and `elapsedMillis`. The default settle wait makes a run take at least two seconds, because S3 timestamps have one-second resolution.
+
+Exit 0 means every probe passed; 1 means the probes ran and at least one failed, with the failing names on stdout (`Failed: ...` in the text report, `passed: false` in JSON); 2 means no target, two targets, an endpoint with credentials, a half-set key pair, an invalid number, or a bucket the command could not reach or write to (the message names the operation, key and HTTP status). On a file-system target the lease keys the probe wrote keep numbered tombstone files and empty directories under `check/`.
 
 ## `akter env`
 

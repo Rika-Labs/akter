@@ -32,6 +32,7 @@
       },
       "devDependencies": {
         "@akter/cloud-api": "workspace:*",
+        "@aws-sdk/client-s3": "3.1148.0",
         "@effect/platform-bun": "catalog:",
         "@effect/platform-node": "catalog:",
         "@effect/vitest": "catalog:",

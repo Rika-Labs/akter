@@ -11,10 +11,11 @@ import { whoamiCommand } from "./commands/cloud/whoami.ts"
 import { envCommand } from "./commands/cloud/env.ts"
 import { logsCommand } from "./commands/cloud/logs.ts"
 import { keysCommand } from "./commands/cloud/keys.ts"
+import { storageCommand } from "./commands/storage/check.ts"
 
 /** The `akter` command tree. */
 export const akter = Command.make("akter").pipe(
-  Command.withDescription("Sign in to Akter Cloud, deploy, and manage environments"),
+  Command.withDescription("Sign in to Akter Cloud, deploy, manage environments, and check storage"),
   Command.withSubcommands([
     {
       group: "Akter Cloud",
@@ -28,6 +29,7 @@ export const akter = Command.make("akter").pipe(
         logsCommand,
       ],
     },
+    { group: "Storage", commands: [storageCommand] },
   ]),
 )
 

@@ -16,4 +16,10 @@ export const exemptions: ReadonlyArray<Exemption> = [
     reason:
       "Vendored rule corpus (see ANTI-SLOP-LICENSE) keeps upstream's layout: each rule's RuleTester file sits beside the rule, outside a src/ directory.",
   },
+  {
+    path: "apps/cli/src/commands/storage/check.s3.test.ts",
+    rule: "tests-beside-sources",
+    reason:
+      "The MinIO-backed half of check.test.ts: it needs TEST_S3_URL, so `test` excludes it and `test:integration` runs it.",
+  },
 ]

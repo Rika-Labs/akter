@@ -12,7 +12,16 @@ describe("akter", () => {
       expect(root.exitCode).toBe(0)
       expect(root.stdout).toContain("USAGE\n  akter <subcommand> [flags]")
 
-      for (const command of ["login", "logout", "whoami", "deploy", "env", "keys", "logs"])
+      for (const command of [
+        "login",
+        "logout",
+        "whoami",
+        "deploy",
+        "env",
+        "keys",
+        "logs",
+        "storage",
+      ])
         expect(root.stdout).toMatch(new RegExp(`^  ${command} +\\S`, "m"))
 
       expect(root.stdout).not.toMatch(/^  (tenants|billing|dev|inspect|operator) +\S/m)
@@ -24,6 +33,23 @@ describe("akter", () => {
 
       for (const flag of ["--project", "--env", "--tenant"])
         expect(create.stdout).toMatch(new RegExp(`^  ${flag}( \\w+)? +\\S`, "m"))
+
+      const check = yield* runCli(["storage", "check", "--help"])
+
+      expect(check.exitCode).toBe(0)
+      expect(check.stdout).toContain("akter storage check [flags]")
+
+      for (const flag of [
+        "--bucket",
+        "--endpoint",
+        "--region",
+        "--prefix",
+        "--directory",
+        "--json",
+      ])
+        expect(check.stdout).toMatch(new RegExp(`^  ${flag}( \\w+)? +\\S`, "m"))
+
+      expect(check.stdout).not.toMatch(/--(secret|access-key|token|password)/)
 
       const group = yield* runCli(["keys"])
 

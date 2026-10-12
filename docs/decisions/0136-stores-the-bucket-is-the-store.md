@@ -54,7 +54,7 @@ The S3 adapter uses the AWS SDK as a signer only, without server-side-encryption
 5. **Per-key write rate** is measured and reported (R2 allows one write per second per key; the key layout never needs more).
 6. **Batch delete** works.
 
-A store that fails any of 1–4 is unsupported. The supported-provider list in the support matrix names each provider and the date and version of its passing run; MinIO runs in CI and the chosen Cloud provider runs nightly. Simulator and MinIO passes are never relabeled as provider passes.
+A store that fails any of 1–4 is unsupported. The supported-provider list in the [support matrix](../verification/store-providers.md) names each provider and the date and version of its passing run; MinIO runs in CI and the chosen Cloud provider runs nightly. Simulator and MinIO passes are never relabeled as provider passes.
 
 ### 3. Store lifecycle
 

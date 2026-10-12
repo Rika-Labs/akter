@@ -52,7 +52,8 @@
     "prepublishOnly": "echo 'Publish through the release workflow: push a v<version> tag.' && exit 1",
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
     "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
-    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/cli/src"
+    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/cli/src --exclude apps/cli/src/commands/storage/check.s3.test.ts",
+    "test:integration": "bun --bun ../../node_modules/vitest/vitest.mjs run --config vitest.integration.config.ts"
   },
   "dependencies": {
     "@effect/platform-bun": "catalog:",
@@ -61,6 +62,7 @@
   },
   "devDependencies": {
     "@akter/cloud-api": "workspace:*",
+    "@aws-sdk/client-s3": "3.1148.0",
     "@effect/platform-bun": "catalog:",
     "@effect/platform-node": "catalog:",
     "@effect/vitest": "catalog:",
