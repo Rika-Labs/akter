@@ -51,6 +51,17 @@ const skipsIdenticalPuts = (bucket: Bucket): Bucket => ({
     }),
 })
 
+const listsWrongly = (
+  bucket: Bucket,
+  list: (
+    keys: ReadonlyArray<string>,
+    options: { readonly startAfter?: string; readonly limit?: number },
+  ) => ReadonlyArray<string>,
+): Bucket => ({
+  ...bucket,
+  list: (prefix, options = {}) => Effect.map(bucket.list(prefix), (keys) => list(keys, options)),
+})
+
 const bytesEqual = (left: Uint8Array, right: Uint8Array) =>
   left.length === right.length && left.every((byte, index) => byte === right[index])
 
@@ -94,6 +105,49 @@ describe("checkBucket", () => {
           refreshes.probes.find((probe) => probe.name === "overwrite refreshes last-modified")
             ?.measured.advancedMillis,
         ).toBeGreaterThan(0)
+      }),
+  )
+
+  it.live(
+    "fails a bucket whose listing is newest-first, ignores start-after or ignores the limit, and passes the same bucket listing correctly (rejects a probe that only lists once or only checks that keys are present)",
+    () =>
+      Effect.gen(function* () {
+        const options = { writers: 4, rounds: 2, writes: 2, settle: "20 millis" } as const
+        const afterAndLimit = (
+          keys: ReadonlyArray<string>,
+          { startAfter, limit }: { readonly startAfter?: string; readonly limit?: number },
+        ) =>
+          keys
+            .filter((key) => startAfter === undefined || key > startAfter)
+            .slice(0, limit ?? keys.length)
+        const wrong = {
+          "newest first": listsWrongly(memoryBucket(), (keys, options) =>
+            afterAndLimit(keys.toReversed(), { ...options, startAfter: undefined }),
+          ),
+          "ignores start-after": listsWrongly(memoryBucket(), (keys, { limit }) =>
+            afterAndLimit(keys, { limit }),
+          ),
+          "ignores the limit": listsWrongly(memoryBucket(), (keys, { startAfter }) =>
+            afterAndLimit(keys, { startAfter }),
+          ),
+        }
+        for (const [name, bucket] of Object.entries(wrong)) {
+          const report = yield* checkBucket(bucket)(options)
+          expect(
+            report.probes.filter((probe) => !probe.passed).map((probe) => probe.name),
+            name,
+          ).toEqual(["ordered listing with limit and start-after"])
+        }
+
+        const correct = yield* checkBucket(
+          listsWrongly(memoryBucket(), (keys, options) => afterAndLimit(keys, options)),
+        )(options)
+        expect(correct.passed).toBe(true)
+        expect(
+          correct.probes.find(
+            (probe) => probe.name === "ordered listing with limit and start-after",
+          )?.measured,
+        ).toMatchObject({ keys: 12, pageSize: 5, pages: 4, fullListingInOrder: 1, pagedKeys: 12 })
       }),
   )
 })

@@ -11,6 +11,7 @@ const probeNames = [
   "conditional create race",
   "compare-and-swap race",
   "list after write",
+  "ordered listing with limit and start-after",
   "overwrite refreshes last-modified",
   "per-key write rate",
   "batch delete",
@@ -53,7 +54,7 @@ describe("akter storage check", () => {
         expect(text.stdout).toContain(
           "4 writers x 3 rounds: 0 rounds with two successful creators, 0 winners not stored, 0 unanswered writes",
         )
-        expect(text.stdout).toContain("Passed: all 6 probes.")
+        expect(text.stdout).toContain("Passed: all 7 probes.")
         expect(text.stdout).not.toContain("FAIL")
 
         const written = yield* fs.readDirectory(directory, { recursive: true })

@@ -528,7 +528,7 @@ FLAGS
   --json                 Print the report as JSON
 ```
 
-Runs the framework's conformance probe, `Store.check`, against one S3-compatible bucket or one local directory, and prints each probe with its verdict, a detail line and its measured numbers. The six probes are the conditional-create race, the compare-and-swap race, listing after writes and deletes, last-modified refreshed by a plain `PUT`, the per-key write rate, and batch delete. A provider is supported for Akter stores only while the command exits 0 on it; the [support matrix](../verification/store-providers.md) records the runs.
+Runs the framework's conformance probe, `Store.check`, against one S3-compatible bucket or one local directory, and prints each probe with its verdict, a detail line and its measured numbers. The seven probes are the conditional-create race, the compare-and-swap race, listing after writes and deletes, ordered listing through `limit` and `start-after`, last-modified refreshed by a plain `PUT`, the per-key write rate, and batch delete. A provider is supported for Akter stores only while the command exits 0 on it; the [support matrix](../verification/store-providers.md) records the runs.
 
 The command opens no store in the target. It writes only under `check/<run>/` and removes what it wrote, so it creates no `meta/store` and no `audit/` record, and it is safe to run against a bucket before deploying. Name either a bucket or `--directory`, not both.
 

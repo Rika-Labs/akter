@@ -54,6 +54,7 @@ const probeNames = [
   "conditional create race",
   "compare-and-swap race",
   "list after write",
+  "ordered listing with limit and start-after",
   "overwrite refreshes last-modified",
   "per-key write rate",
   "batch delete",
@@ -108,7 +109,7 @@ describe("akter storage check on an S3-compatible bucket (TEST_S3_URL)", () => {
         for (const name of probeNames)
           expect(text.stdout).toMatch(new RegExp(`^PASS  ${name} \\(\\d+ ms\\)$`, "m"))
         expect(text.stdout).toContain("8 writers x 4 rounds: 0 rounds with two successful creators")
-        expect(text.stdout).toContain("Passed: all 6 probes.")
+        expect(text.stdout).toContain("Passed: all 7 probes.")
         expect(text.stdout + text.stderr).not.toContain(s3.secretAccessKey)
         expect(yield* s3.keysUnder(prefix)).toEqual([])
       }),

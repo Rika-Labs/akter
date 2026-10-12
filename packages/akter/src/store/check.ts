@@ -34,6 +34,12 @@ const THROTTLE_STATUSES = new Set([429, 503])
 
 const DELETED_KEYS = 50
 
+const ORDERED_NAMES = ["m", "B", "a", "10", "9", "_", "Z", "0", "z", "b", "A", "1"]
+
+const ORDERED_PAGE = 5
+
+const byteOrder = (left: string, right: string) => (left < right ? -1 : left > right ? 1 : 0)
+
 const encoder = new TextEncoder()
 
 const bytesEqual = (left: Uint8Array, right: Uint8Array) =>
@@ -43,7 +49,8 @@ const bytesEqual = (left: Uint8Array, right: Uint8Array) =>
  * The conformance probe that defines a supported bucket for Akter: the log's
  * fence needs create-once writes that never let two concurrent creators both
  * succeed, runner leases need compare-and-swap on etags, open needs listings
- * that show every completed write, garbage collection needs a plain `PUT` to
+ * that show every completed write and return keys in byte order through
+ * `limit` and `startAfter`, garbage collection needs a plain `PUT` to
  * refresh last-modified, and trim needs batch deletes. The probe also records
  * how the bucket treats rapid writes to one key, which bounds heartbeat
  * rates. It writes only under `check/<run>/` and removes what it wrote.
@@ -194,6 +201,49 @@ export const checkBucket =
         }
       })
 
+      const orderedListing = Effect.gen(function* () {
+        const prefix = `${run}ordered/`
+        const keys = ORDERED_NAMES.map((name) => `${prefix}${name}`)
+        objectKeys.push(...keys)
+        yield* Effect.forEach(keys, (key) => bucket.create(key, encoder.encode(key)), {
+          concurrency: 4,
+          discard: true,
+        })
+        const expected = keys.toSorted(byteOrder)
+        const full = yield* bucket.list(prefix)
+        const paged: Array<string> = []
+        let pages = 0
+        let oversized = 0
+        while (pages <= expected.length) {
+          const after = paged[paged.length - 1]
+          const page = yield* bucket.list(
+            prefix,
+            after === undefined
+              ? { limit: ORDERED_PAGE }
+              : { limit: ORDERED_PAGE, startAfter: after },
+          )
+          pages += 1
+          if (page.length === 0) break
+          if (page.length > ORDERED_PAGE) oversized += 1
+          paged.push(...page)
+        }
+        const same = (found: ReadonlyArray<string>) =>
+          found.length === expected.length && found.every((key, index) => key === expected[index])
+        return {
+          name: "ordered listing with limit and start-after",
+          passed: same(full) && same(paged) && oversized === 0,
+          detail: `${keys.length} keys created out of order: the full listing is ${same(full) ? "in byte order" : "not in byte order"}; ${pages} pages of at most ${ORDERED_PAGE} by start-after ${same(paged) ? "return every key once, in order" : "do not return every key once, in order"}, ${oversized} pages over the limit`,
+          measured: {
+            keys: keys.length,
+            pageSize: ORDERED_PAGE,
+            pages,
+            fullListingInOrder: same(full) ? 1 : 0,
+            pagedKeys: paged.length,
+            oversizedPages: oversized,
+          },
+        }
+      })
+
       const lastModified = Effect.gen(function* () {
         const key = `${run}modified`
         objectKeys.push(key)
@@ -283,6 +333,7 @@ export const checkBucket =
         timed(conditionalCreate),
         timed(compareAndSwap),
         timed(listAfterWrite),
+        timed(orderedListing),
         timed(lastModified),
         timed(writeRate),
         timed(deleteBatch),
