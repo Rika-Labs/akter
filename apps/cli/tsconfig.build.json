@@ -11,8 +11,6 @@
     "plugins": [],
     "paths": {
       "@rikalabs/akter": ["../../packages/akter/dist/index.d.ts"],
-      "@rikalabs/akter/runtime": ["../../packages/akter/dist/runtime/index.d.ts"],
-      "@rikalabs/akter/client": ["../../packages/akter/dist/client/index.d.ts"],
       "@akter/cloud-api": ["../../packages/cloud-api/src/index.ts"]
     }
   },
