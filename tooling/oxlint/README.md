@@ -17,10 +17,10 @@ name there:
 Action, view, `connect` and `disconnect` handlers must be plain synchronous
 functions that reach the world only through `ctx`, so a turn replays
 identically from the log. The rule reports `Date`, `Math.random`, every
-`Math` function except `floor`, `ceil`, `round`, `trunc`, `abs`, `min`, `max`
-and `sign` (constants such as `Math.PI` pass), `**` and `**=`, `crypto`,
+`Math` function except `floor`, `ceil`, `round`, `trunc`, `abs`, `min`, `max`,
+`sign`, `sqrt`, `fround`, `clz32` and `imul` (constants such as `Math.PI` pass), `**` and `**=`, `crypto`,
 `performance`, `process`, `globalThis`, `Promise`, `await`, `async` functions,
-`setTimeout`, `setInterval`, `Intl`, `toLocaleString`, `toLocaleDateString`,
+`setTimeout`, `setInterval`, `setImmediate`, `queueMicrotask`, `clearTimeout`, `clearInterval`, `Intl`, `toLocaleString`, `toLocaleDateString`,
 `toLocaleTimeString`, `localeCompare`, `toString` called with an argument,
 `.message` and `.stack` read from a `catch` binding, `structuredClone`,
 `Effect` and `yield`. Each message names its replacement (`ctx.now()`,

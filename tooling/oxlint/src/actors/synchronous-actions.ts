@@ -15,11 +15,28 @@ const GLOBAL_MESSAGES = new Map([
   ["Promise", "promise"],
   ["setTimeout", "timer"],
   ["setInterval", "timer"],
+  ["setImmediate", "timer"],
+  ["queueMicrotask", "timer"],
+  ["clearTimeout", "timer"],
+  ["clearInterval", "timer"],
   ["Intl", "intl"],
   ["structuredClone", "structuredClone"],
 ])
 
-const EXACT_MATH = new Set(["floor", "ceil", "round", "trunc", "abs", "min", "max", "sign"])
+const EXACT_MATH = new Set([
+  "floor",
+  "ceil",
+  "round",
+  "trunc",
+  "abs",
+  "min",
+  "max",
+  "sign",
+  "sqrt",
+  "fround",
+  "clz32",
+  "imul",
+])
 
 const MATH_CONSTANTS = new Set(["PI", "E", "LN2", "LN10", "LOG2E", "LOG10E", "SQRT1_2", "SQRT2"])
 
@@ -109,9 +126,9 @@ export const synchronousActionsRule = defineRule({
       date: "`Date` reads the host clock. Use `ctx.now()` for the current time.",
       random: "`Math.random` is not replayable. Use `ctx.random()`.",
       mathInexact:
-        "`Math.{{name}}` is not bit-exact across engines. Use only floor, ceil, round, trunc, abs, min, max or sign, or compute the value in a job and pass it in through an action.",
+        "`Math.{{name}}` is not bit-exact across engines. Use only floor, ceil, round, trunc, abs, min, max, sign, sqrt, fround, clz32 or imul, or compute the value in a job and pass it in through an action.",
       mathDynamic:
-        "`Math` used without a direct member cannot be checked. Call floor, ceil, round, trunc, abs, min, max or sign directly.",
+        "`Math` used without a direct member cannot be checked. Call floor, ceil, round, trunc, abs, min, max, sign, sqrt, fround, clz32 or imul directly.",
       exponent:
         "`**` and `**=` are not bit-exact across engines. Multiply explicitly, for example `x * x`.",
       crypto:
@@ -124,7 +141,8 @@ export const synchronousActionsRule = defineRule({
       promise: "Actions are synchronous. Move asynchronous work to a job.",
       await: "Actions are synchronous. Move `await` and the I/O it waits on to a job.",
       asyncFunction: "Actions are synchronous. Remove `async` and move the I/O to a job.",
-      timer: "Timers do not exist in actions. Use `ctx.schedule(delay).<action>(payload)`.",
+      timer:
+        "Timers and task queues do not exist in actions. Use `ctx.schedule(delay).<action>(payload)`.",
       intl: "`Intl` depends on host locale and ICU data. Format on the client or in a job.",
       locale:
         "`{{name}}` depends on the host locale. Compare with `<` and `>` and format on the client.",
