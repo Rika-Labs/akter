@@ -6,7 +6,7 @@ import {
   retryUnavailable,
   type Versioned,
 } from "./bucket.ts"
-import type { StoreUnavailable } from "./errors.ts"
+import type { StorageUnavailable } from "./errors.ts"
 import { isLeaseKey, isLeasePrefix } from "./keys.ts"
 
 /**
@@ -18,22 +18,22 @@ import { isLeaseKey, isLeasePrefix } from "./keys.ts"
  * lease never authorizes a log write, the log's fence does.
  */
 export interface Leases {
-  readonly read: (key: string) => Effect.Effect<Option.Option<Versioned>, StoreUnavailable>
+  readonly read: (key: string) => Effect.Effect<Option.Option<Versioned>, StorageUnavailable>
   /** Creates the key if absent and returns its etag; none if it exists. */
   readonly create: (
     key: string,
     body: Uint8Array,
-  ) => Effect.Effect<Option.Option<string>, StoreUnavailable>
+  ) => Effect.Effect<Option.Option<string>, StorageUnavailable>
   /** Replaces the key while its etag is `etag` and returns the new etag; none if it changed. */
   readonly replace: (
     key: string,
     body: Uint8Array,
     etag: string,
-  ) => Effect.Effect<Option.Option<string>, StoreUnavailable>
+  ) => Effect.Effect<Option.Option<string>, StorageUnavailable>
   /** Writes the key unconditionally and returns its etag. */
-  readonly write: (key: string, body: Uint8Array) => Effect.Effect<string, StoreUnavailable>
-  readonly list: (prefix: string) => Effect.Effect<ReadonlyArray<Listed>, StoreUnavailable>
-  readonly remove: (key: string) => Effect.Effect<void, StoreUnavailable>
+  readonly write: (key: string, body: Uint8Array) => Effect.Effect<string, StorageUnavailable>
+  readonly list: (prefix: string) => Effect.Effect<ReadonlyArray<Listed>, StorageUnavailable>
+  readonly remove: (key: string) => Effect.Effect<void, StorageUnavailable>
 }
 
 const bytesEqual = (left: Uint8Array, right: Uint8Array) =>

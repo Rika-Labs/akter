@@ -1,5 +1,5 @@
 import { Data, Effect, type Option, type Schedule, Schema } from "effect"
-import { StoreUnavailable } from "./errors.ts"
+import { StorageUnavailable } from "./errors.ts"
 
 /** Bounds on a listing: keys strictly after `startAfter`, at most `limit` of them. */
 export interface ListOptions {
@@ -38,14 +38,14 @@ export const Condition = Data.taggedEnum<Condition>()
  * conditional write that does not apply returns none and changes nothing.
  */
 export interface LeaseObjects {
-  readonly read: (key: string) => Effect.Effect<Option.Option<Versioned>, StoreUnavailable>
+  readonly read: (key: string) => Effect.Effect<Option.Option<Versioned>, StorageUnavailable>
   readonly write: (
     key: string,
     body: Uint8Array,
     condition: Condition,
-  ) => Effect.Effect<Option.Option<string>, StoreUnavailable>
-  readonly list: (prefix: string) => Effect.Effect<ReadonlyArray<Listed>, StoreUnavailable>
-  readonly remove: (key: string) => Effect.Effect<void, StoreUnavailable>
+  ) => Effect.Effect<Option.Option<string>, StorageUnavailable>
+  readonly list: (prefix: string) => Effect.Effect<ReadonlyArray<Listed>, StorageUnavailable>
+  readonly remove: (key: string) => Effect.Effect<void, StorageUnavailable>
 }
 
 /**
@@ -57,30 +57,31 @@ export interface LeaseObjects {
 export interface Bucket {
   readonly get: (
     key: string,
-  ) => Effect.Effect<Option.Option<Uint8Array<ArrayBuffer>>, StoreUnavailable>
-  readonly exists: (key: string) => Effect.Effect<boolean, StoreUnavailable>
+  ) => Effect.Effect<Option.Option<Uint8Array<ArrayBuffer>>, StorageUnavailable>
+  /** The stored object's length in bytes; none when the key is absent. */
+  readonly head: (key: string) => Effect.Effect<Option.Option<number>, StorageUnavailable>
   /** Creates `key` only if it does not exist; false when it already does. */
-  readonly create: (key: string, body: Uint8Array) => Effect.Effect<boolean, StoreUnavailable>
+  readonly create: (key: string, body: Uint8Array) => Effect.Effect<boolean, StorageUnavailable>
   /** Writes `key` whether or not it exists. */
-  readonly put: (key: string, body: Uint8Array) => Effect.Effect<void, StoreUnavailable>
+  readonly put: (key: string, body: Uint8Array) => Effect.Effect<void, StorageUnavailable>
   /** Keys under `prefix` in ascending byte order; the listing reflects every completed write. */
   readonly list: (
     prefix: string,
     options?: ListOptions,
-  ) => Effect.Effect<ReadonlyArray<string>, StoreUnavailable>
+  ) => Effect.Effect<ReadonlyArray<string>, StorageUnavailable>
   /** Deletes every key; deleting a missing key succeeds. */
-  readonly delete: (keys: ReadonlyArray<string>) => Effect.Effect<void, StoreUnavailable>
+  readonly delete: (keys: ReadonlyArray<string>) => Effect.Effect<void, StorageUnavailable>
   readonly leases: LeaseObjects
 }
 
-/** A bucket and the schedule on which its callers repeat `StoreUnavailable` failures. */
+/** A bucket and the schedule on which its callers repeat `StorageUnavailable` failures. */
 export interface RetriedBucket {
   readonly bucket: Bucket
   readonly retry: Schedule.Schedule<unknown, unknown>
 }
 
-/** Repeats an operation that ended `StoreUnavailable`, on the given schedule. */
+/** Repeats an operation that ended `StorageUnavailable`, on the given schedule. */
 export const retryUnavailable =
   (schedule: Schedule.Schedule<unknown, unknown>) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-    Effect.retry(effect, { schedule, while: Schema.is(StoreUnavailable) })
+    Effect.retry(effect, { schedule, while: Schema.is(StorageUnavailable) })

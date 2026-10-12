@@ -1,7 +1,7 @@
 import { Effect, Option, Request, RequestResolver, Schema } from "effect"
 import { type RetriedBucket, retryUnavailable } from "./bucket.ts"
 import { decodePage, encodePage, PageHash, sha256 } from "./codec.ts"
-import { type CorruptSegment, MissingPage, type StoreUnavailable } from "./errors.ts"
+import { PageCorrupt, type StorageUnavailable } from "./errors.ts"
 import { pageKey } from "./keys.ts"
 
 /** Requests in one bucket round of page loads. */
@@ -14,25 +14,27 @@ const CONCURRENCY = 32
 class LoadPage extends Request.TaggedClass("LoadPage")<
   { readonly hash: string },
   Uint8Array,
-  MissingPage | CorruptSegment | StoreUnavailable
+  StorageUnavailable
 > {}
 
-/** HTTP status a bucket returns when one key is written faster than it allows. */
-const THROTTLED = 429
+/** Statuses a provider may answer a plain PUT of an existing content key with: refused or throttled. */
+const RESOLVED_BY_HEAD = new Set([412, 429])
 
 /**
  * Content-addressed pages. A page is written with a plain PUT, so writing the
  * same bytes again refreshes the object instead of failing, and the hash of the
- * stored bytes is its key. A throttled write of a page that already exists is a
- * success: the bytes under that key are the same bytes.
+ * stored bytes is its key. A refused or throttled write is a success when the
+ * key already holds an object of the page's length: the key is the hash of
+ * those bytes. A page that is absent or does not match its key is the
+ * `PageCorrupt` defect.
  */
 export const bucketPages = ({ bucket, retry }: RetriedBucket) => {
   const retrying = retryUnavailable(retry)
   const load = (hash: string) =>
     Effect.gen(function* () {
-      const key = pageKey(hash)
-      const stored = yield* retrying(bucket.get(key))
-      if (Option.isNone(stored)) return yield* MissingPage.make({ hash })
+      const stored = yield* retrying(bucket.get(pageKey(hash)))
+      if (Option.isNone(stored))
+        return yield* Effect.die(PageCorrupt.make({ hash, reason: "is not in the store" }))
       return yield* decodePage(hash)(stored.value)
     })
 
@@ -55,10 +57,10 @@ export const bucketPages = ({ bucket, retry }: RetriedBucket) => {
       yield* retrying(
         bucket.put(key, stored).pipe(
           Effect.catchIf(
-            (error) => error.status === THROTTLED,
+            (error) => RESOLVED_BY_HEAD.has(error.status ?? 0),
             (error) =>
-              Effect.flatMap(bucket.exists(key), (exists) =>
-                exists ? Effect.void : Effect.fail(error),
+              Effect.flatMap(bucket.head(key), (size) =>
+                Option.contains(size, stored.length) ? Effect.void : Effect.fail(error),
               ),
           ),
         ),
@@ -69,7 +71,7 @@ export const bucketPages = ({ bucket, retry }: RetriedBucket) => {
   const getPage = (hash: string) =>
     Schema.is(PageHash)(hash)
       ? Effect.request(new LoadPage({ hash }), resolver)
-      : Effect.fail(MissingPage.make({ hash }))
+      : Effect.die(new RangeError("A page hash is 64 lowercase hex digits"))
 
   return { putPage, getPage }
 }

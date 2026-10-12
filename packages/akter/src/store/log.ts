@@ -1,5 +1,6 @@
 import { Clock, Effect, Option, Semaphore, Stream } from "effect"
 import { type RetriedBucket, retryUnavailable } from "./bucket.ts"
+import type { Build } from "./build.ts"
 import {
   decodeManifest,
   decodeSegment,
@@ -8,12 +9,13 @@ import {
   type Manifest,
   type Segment,
 } from "./codec.ts"
-import { CorruptSegment, StaleEpoch, StoreUnavailable } from "./errors.ts"
+import { CorruptSegment, LogUnavailable, StaleEpoch, type StorageUnavailable } from "./errors.ts"
 import {
   checkpointKey,
   checkpointOffset,
   checkpointPrefix,
   logPrefix,
+  pageKey,
   segmentKey,
   segmentOffset,
 } from "./keys.ts"
@@ -24,9 +26,13 @@ const OPEN_ATTEMPTS = 5
 /** How many segments `read` fetches at once, in offset order. */
 const READ_CONCURRENCY = 8
 
+/** Page existence checks in flight at once while `open` checks a manifest. */
+const PAGE_CHECKS = 16
+
 /** The protocol's bucket and settings, resolved from the store options. */
 export interface Settings extends RetriedBucket {
   readonly writer: string
+  readonly build: Build
   readonly shards: number
   /** Milliseconds an owner may go without appending or verifying before it must verify. */
   readonly validFor: number
@@ -44,8 +50,10 @@ export interface Lease {
   readonly shard: number
   readonly open: bigint
   readonly head: bigint
-  /** The newest checkpoint when the shard was opened; recovery reads the log after its offset. */
+  /** The newest intact checkpoint when the shard was opened; recovery reads the log after its offset. */
   readonly checkpoint: Option.Option<Manifest>
+  /** Newer checkpoints that open skipped because they do not decode or name a page that is not stored, newest first. */
+  readonly damaged: ReadonlyArray<CorruptSegment>
 }
 
 /** A segment read from the log, with the offset it is stored at. */
@@ -68,6 +76,14 @@ interface Holding {
 
 const now = Effect.map(Clock.monotonicTimeNanos, (nanos) => Number(nanos / 1_000_000n))
 
+const unavailable = (error: StorageUnavailable) =>
+  LogUnavailable.make({
+    operation: error.operation,
+    key: error.key,
+    status: error.status,
+    reason: error.reason,
+  })
+
 /**
  * The bucket log protocol. A segment is created once at `head + 1`; the
  * create-once write is the fence, so no clock sits in the commit path. An
@@ -78,6 +94,12 @@ const now = Effect.map(Clock.monotonicTimeNanos, (nanos) => Number(nanos / 1_000
  * a checkpoint known for `trimAfter`, so an owner that could aim at a deleted
  * key has failed its check first. Times are the owner's own monotonic clock,
  * and each confirmation counts from before its request was sent.
+ *
+ * Open recovers from the newest intact checkpoint. A newer one that does not
+ * decode or names a page that is not stored is skipped and reported, but only
+ * while every segment after the intact one is still in the log, through the
+ * skipped checkpoint's offset; otherwise the shard is refused, because opening
+ * would reuse offsets whose entries are gone.
  */
 export const bucketLog = (settings: Settings) => {
   const bucket = settings.bucket
@@ -89,17 +111,29 @@ export const bucketLog = (settings: Settings) => {
       .list(checkpointPrefix(shard), { limit: 1 })
       .pipe(Effect.map((keys) => Option.fromNullishOr(keys[0])))
 
-  const loadManifest = (shard: number, key: string) =>
+  /** The manifest at `key` if it decodes, matches its key and names only stored pages. */
+  const intactCheckpoint = (shard: number, key: string) =>
     Effect.gen(function* () {
       const bytes = yield* retrying(bucket.get(key))
       if (Option.isNone(bytes))
-        return yield* CorruptSegment.make({ key, reason: "listed but no longer stored" })
+        return yield* CorruptSegment.make({ key, reason: "was listed but is no longer stored" })
       const manifest = yield* decodeManifest(key)(bytes.value)
       if (!Option.contains(checkpointOffset(shard, key), manifest.offset))
         return yield* CorruptSegment.make({
           key,
           reason: `holds a checkpoint at offset ${manifest.offset}`,
         })
+      const sizes = yield* Effect.forEach(
+        [...manifest.statePages, ...manifest.indexPages],
+        (hash) => Effect.map(retrying(bucket.head(pageKey(hash))), (size) => [hash, size] as const),
+        { concurrency: PAGE_CHECKS },
+      )
+      for (const [hash, size] of sizes)
+        if (Option.isNone(size))
+          return yield* CorruptSegment.make({
+            key,
+            reason: `names page ${hash}, which is not stored`,
+          })
       return manifest
     })
 
@@ -136,10 +170,7 @@ export const bucketLog = (settings: Settings) => {
       const start = yield* now
       const [newest, taken] = yield* retrying(
         Effect.all(
-          [
-            newestCheckpoint(lease.shard),
-            bucket.exists(segmentKey(lease.shard, holding.head + 1n)),
-          ],
+          [newestCheckpoint(lease.shard), bucket.head(segmentKey(lease.shard, holding.head + 1n))],
           { concurrency: 2 },
         ),
       )
@@ -147,15 +178,15 @@ export const bucketLog = (settings: Settings) => {
         Option.flatMap(newest, (key) => checkpointOffset(lease.shard, key)),
         (offset) => offset > holding.head,
       )
-      if (taken || passed) return yield* fence(lease, holding)
+      if (Option.isSome(taken) || passed) return yield* fence(lease, holding)
       holding.confirmedAt = start
     })
 
   /** Runs `body` alone on the lease, after re-checking a lease idle longer than `validFor`. */
-  const guarded = <A, E>(
+  const guarded = <A>(
     lease: Lease,
-    body: (holding: Holding) => Effect.Effect<A, E>,
-  ): Effect.Effect<A, E | StaleEpoch | StoreUnavailable> =>
+    body: (holding: Holding) => Effect.Effect<A, StaleEpoch | StorageUnavailable>,
+  ): Effect.Effect<A, StaleEpoch | LogUnavailable> =>
     Effect.suspend(() => {
       const holding = holdings.get(lease)
       if (holding === undefined)
@@ -168,6 +199,27 @@ export const bucketLog = (settings: Settings) => {
           return yield* body(holding)
         }),
       )
+    }).pipe(Effect.catchTag("StorageUnavailable", (error) => Effect.fail(unavailable(error))))
+
+  /** The newest intact checkpoint, with the newer ones skipped on the way. */
+  const recoveryPoint = (shard: number) =>
+    Effect.gen(function* () {
+      const damaged: Array<CorruptSegment> = []
+      const after = (key: string | undefined) =>
+        retrying(bucket.list(checkpointPrefix(shard), { limit: 1, startAfter: key }))
+      for (let [key] = yield* after(undefined); key !== undefined; [key] = yield* after(key)) {
+        const checkpoint = yield* intactCheckpoint(shard, key).pipe(
+          Effect.asSome,
+          Effect.catchTag("CorruptSegment", (error) =>
+            Effect.sync(() => {
+              damaged.push(error)
+              return Option.none<Manifest>()
+            }),
+          ),
+        )
+        if (Option.isSome(checkpoint)) return { checkpoint, damaged }
+      }
+      return { checkpoint: Option.none<Manifest>(), damaged }
     })
 
   const open = (shard: number) =>
@@ -179,26 +231,38 @@ export const bucketLog = (settings: Settings) => {
       let at = 1n
       for (let attempt = 0; attempt < OPEN_ATTEMPTS; attempt++) {
         const start = yield* now
-        const [newest, keys] = yield* retrying(
-          Effect.all([newestCheckpoint(shard), bucket.list(logPrefix(shard))], { concurrency: 2 }),
-        )
-        const checkpoint = Option.isSome(newest)
-          ? Option.some(yield* loadManifest(shard, newest.value))
-          : Option.none<Manifest>()
+        const { checkpoint, damaged } = yield* recoveryPoint(shard)
         const base = Option.match(checkpoint, { onNone: () => 0n, onSome: (cp) => cp.offset })
+        let reach = base
+        for (const skipped of damaged)
+          for (const offset of Option.toArray(checkpointOffset(shard, skipped.key)))
+            if (offset > reach) reach = offset
+        const keys = yield* retrying(
+          bucket.list(logPrefix(shard), { startAfter: segmentKey(shard, base) }),
+        )
         let head = base
         for (const key of keys) {
-          const offset = Option.getOrElse(segmentOffset(shard, key), () => 0n)
-          if (offset <= base) continue
-          if (offset !== head + 1n)
+          const offset = segmentOffset(shard, key)
+          if (Option.isNone(offset)) continue
+          if (offset.value !== head + 1n)
             return yield* CorruptSegment.make({
               key: segmentKey(shard, head + 1n),
-              reason: "is missing from the log after the newest checkpoint",
+              reason: `is missing from the log after checkpoint ${base}${damaged.length === 0 ? "" : `, the newest intact one (${damaged.map((skipped) => skipped.message).join("; ")})`}`,
             })
-          head = offset
+          head = offset.value
         }
+        if (head < reach)
+          return yield* CorruptSegment.make({
+            key: segmentKey(shard, head + 1n),
+            reason: `is missing, so the log after checkpoint ${base} no longer reaches skipped checkpoint ${reach} (${damaged.map((skipped) => skipped.message).join("; ")})`,
+          })
         at = head + 1n
-        const bytes = yield* encodeSegment({ writer: settings.writer, open: at, entries: [] })
+        const bytes = yield* encodeSegment({
+          writer: settings.writer,
+          open: at,
+          build: settings.build,
+          entries: [],
+        })
         if (!(yield* writeSegment(segmentKey(shard, at), bytes, at))) continue
         const holding: Holding = {
           head: at,
@@ -214,6 +278,7 @@ export const bucketLog = (settings: Settings) => {
           shard,
           open: at,
           checkpoint,
+          damaged,
           get head() {
             return holding.head
           },
@@ -222,7 +287,7 @@ export const bucketLog = (settings: Settings) => {
         return lease
       }
       return yield* StaleEpoch.make({ shard, open: at })
-    })
+    }).pipe(Effect.catchTag("StorageUnavailable", (error) => Effect.fail(unavailable(error))))
 
   const append = (lease: Lease, batch: ReadonlyArray<Uint8Array>) =>
     guarded(lease, (holding) =>
@@ -232,6 +297,7 @@ export const bucketLog = (settings: Settings) => {
         const bytes = yield* encodeSegment({
           writer: settings.writer,
           open: lease.open,
+          build: settings.build,
           entries: [...batch],
         })
         const ours = yield* writeSegment(segmentKey(lease.shard, offset), bytes, lease.open).pipe(
@@ -251,7 +317,7 @@ export const bucketLog = (settings: Settings) => {
   const read = (
     shard: number,
     from: bigint,
-  ): Stream.Stream<StoredSegment, StoreUnavailable | CorruptSegment> =>
+  ): Stream.Stream<StoredSegment, LogUnavailable | CorruptSegment> =>
     Stream.unwrap(
       Effect.gen(function* () {
         const keys = yield* retrying(
@@ -265,7 +331,7 @@ export const bucketLog = (settings: Settings) => {
           if (offset.value !== expected)
             return yield* CorruptSegment.make({
               key: segmentKey(shard, expected),
-              reason: "is not in the log; read from the newest checkpoint's offset",
+              reason: "is not in the log; read from the lease's checkpoint offset",
             })
           listed.push([offset.value, key])
           expected += 1n
@@ -278,7 +344,7 @@ export const bucketLog = (settings: Settings) => {
           ),
         )
       }),
-    )
+    ).pipe(Stream.catchTag("StorageUnavailable", (error) => Stream.fail(unavailable(error))))
 
   const checkpoint = (lease: Lease, manifest: Manifest) =>
     guarded(lease, (holding) =>

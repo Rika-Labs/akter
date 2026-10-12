@@ -4,7 +4,7 @@ import { CreateBucketCommand, S3Client } from "@aws-sdk/client-s3"
 import { describe, expect, it } from "@effect/vitest"
 import { Config, Effect, Option, Predicate, Random } from "effect"
 import { storeConformance } from "../../../../tooling/conformance/src/conformance/store.ts"
-import { StoreUnavailable } from "./errors.ts"
+import { StorageUnavailable } from "./errors.ts"
 import { s3Bucket } from "./s3.ts"
 
 /**
@@ -65,7 +65,9 @@ storeConformance({
 /**
  * An S3 stand-in that answers a conditional create with 412 and then drops the
  * connection's next request unanswered, as MinIO RELEASE.2025-09-07 does: it
- * closes the kept-alive connection without saying so. Other requests succeed.
+ * closes the kept-alive connection without saying so. A plain PUT of
+ * `refused` is answered 412 as a provider may for a content key. Other
+ * requests succeed.
  */
 const droppingServer = Effect.acquireRelease(
   Effect.callback<{
@@ -77,13 +79,20 @@ const droppingServer = Effect.acquireRelease(
     const dropping = new Set<number>()
     const server = createServer((request, response) => {
       const connection = request.socket.remotePort ?? 0
-      arrivals.push(`${request.method} ${new URL(request.url ?? "/", "http://store").pathname}`)
+      const path = new URL(request.url ?? "/", "http://store").pathname
+      arrivals.push(`${request.method} ${path}`)
       if (dropping.has(connection)) {
         request.socket.destroy()
         return
       }
       request.resume()
       request.on("end", () => {
+        if (request.method === "PUT" && path === "/store/refused") {
+          response
+            .writeHead(412, { "content-type": "application/xml" })
+            .end("<Error><Code>PreconditionFailed</Code></Error>")
+          return
+        }
         if (request.method === "PUT" && request.headers["if-none-match"] === "*") {
           response.on("finish", () => dropping.add(connection))
           response
@@ -134,7 +143,7 @@ describe("s3Bucket", () => {
         )
         expect(yield* bucket.create("b", new Uint8Array([2]))).toBe(false)
         expect(yield* Effect.flip(bucket.put("c", new Uint8Array([3])))).toBeInstanceOf(
-          StoreUnavailable,
+          StorageUnavailable,
         )
         expect(server.arrivals).toEqual([
           "PUT /store/a",
@@ -143,6 +152,23 @@ describe("s3Bucket", () => {
           "PUT /store/b",
           "PUT /store/c",
         ])
+      }),
+  )
+
+  it.effect(
+    "keeps a 412 on a plain write a failure the caller resolves (rejects reading every 412 as a condition that did not hold)",
+    () =>
+      Effect.gen(function* () {
+        const server = yield* droppingServer
+        const bucket = yield* s3Bucket({
+          bucket: "store",
+          endpoint: `http://127.0.0.1:${server.port}`,
+          credentials: { accessKeyId: "test", secretAccessKey: "test" },
+        })
+        const refused = yield* Effect.flip(bucket.put("refused", new Uint8Array([4])))
+        expect(refused).toBeInstanceOf(StorageUnavailable)
+        expect(refused.status).toBe(412)
+        expect(server.arrivals).toEqual(["PUT /store/refused"])
       }),
   )
 })

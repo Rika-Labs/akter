@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Effect, Exit, Fiber, Option, Result, Schedule, type Scope, Stream } from "effect"
+import { DateTime, Effect, Exit, Fiber, Option, Result, Schedule, type Scope, Stream } from "effect"
 import * as Runner from "effect/cluster/Runner"
 import * as RunnerAddress from "effect/cluster/RunnerAddress"
 import * as ShardId from "effect/cluster/ShardId"
@@ -8,13 +8,17 @@ import { TestClock } from "effect/testing"
 import type { Bucket } from "../../../../packages/akter/src/store/bucket.ts"
 import {
   CorruptSegment,
-  MissingPage,
+  LogUnavailable,
+  PageCorrupt,
   StaleEpoch,
-  StoreUnavailable,
+  StorageUnavailable,
+  StoreMismatch,
 } from "../../../../packages/akter/src/store/errors.ts"
 import { Fault, Faults, type Operation } from "../../../../packages/akter/src/store/faults.ts"
 import {
+  checkpointKey,
   checkpointPrefix,
+  logPrefix,
   pageKey,
   PAGES_PREFIX,
   segmentKey,
@@ -42,8 +46,14 @@ const RETRY = Schedule.recurs(4)
 const VALID_FOR = "10 seconds"
 const TRIM_AFTER = "10 minutes"
 
-const failureOf = <A, E>(effect: Effect.Effect<A, E>) =>
+const failureOf = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.map(Effect.exit(effect), (exit) => Option.getOrUndefined(Exit.findErrorOption(exit)))
+
+const defectOf = <A, E>(effect: Effect.Effect<A, E>) =>
+  Effect.map(Effect.exit(effect), (exit) => {
+    const defect = Exit.findDefect(exit)
+    return Result.isSuccess(defect) ? defect.success : undefined
+  })
 
 const creates = (key: string) => (operation: Operation) =>
   operation.kind === "create" && operation.key === key
@@ -57,6 +67,7 @@ const owner = <E>(
     const faults = Faults.plan()
     const store = yield* storeOf(yield* client, {
       writer,
+      build: { bundle: `${writer}-bundle`, framework: "0.2.0-conformance" },
       faults,
       retry: RETRY,
       shards: 4,
@@ -73,6 +84,7 @@ const history = (store: Store["Service"], shard: number, from: bigint) =>
     Array.from(segments, (segment) => ({
       offset: segment.offset,
       writer: segment.writer,
+      bundle: segment.build.bundle,
       open: segment.open,
       entries: segment.entries.map((entry) => decoder.decode(entry)),
     })),
@@ -119,10 +131,10 @@ export const storeConformance = <OpenError, ClientError>(
           expect(yield* failureOf(a.store.verify(leaseA))).toBeInstanceOf(StaleEpoch)
           expect(yield* b.store.append(leaseB, [text("b1")])).toBe(4n)
           expect(yield* history(b.store, 0, 0n)).toEqual([
-            { offset: 1n, writer: "a", open: 1n, entries: [] },
-            { offset: 2n, writer: "a", open: 1n, entries: ["a1"] },
-            { offset: 3n, writer: "b", open: 3n, entries: [] },
-            { offset: 4n, writer: "b", open: 3n, entries: ["b1"] },
+            { offset: 1n, writer: "a", bundle: "a-bundle", open: 1n, entries: [] },
+            { offset: 2n, writer: "a", bundle: "a-bundle", open: 1n, entries: ["a1"] },
+            { offset: 3n, writer: "b", bundle: "b-bundle", open: 3n, entries: [] },
+            { offset: 4n, writer: "b", bundle: "b-bundle", open: 3n, entries: ["b1"] },
           ])
         }),
     )
@@ -248,7 +260,7 @@ export const storeConformance = <OpenError, ClientError>(
             yield* failureOf(
               a.store.checkpoint(lease, { offset: 5n, statePages: [second], indexPages: [] }),
             ),
-          ).toBeInstanceOf(StoreUnavailable)
+          ).toBeInstanceOf(LogUnavailable)
 
           const recovered = yield* b.store.open(0)
           const checkpoint = Option.getOrThrow(recovered.checkpoint)
@@ -355,13 +367,13 @@ export const storeConformance = <OpenError, ClientError>(
           yield* b.store.checkpoint(leaseB, { offset: leaseB.head, statePages: [], indexPages: [] })
           yield* TestClock.adjust("10 minutes")
           expect(yield* b.store.trim(leaseB, leaseB.head)).toBe(6n)
-          expect(yield* (yield* client).exists(segmentKey(0, 3n))).toBe(false)
+          expect(yield* (yield* client).head(segmentKey(0, 3n))).toEqual(Option.none())
 
           expect(yield* failureOf(a.store.append(leaseA, [text("late")]))).toBeInstanceOf(
             StaleEpoch,
           )
           expect((yield* a.faults.operations).filter(creates(segmentKey(0, 3n)))).toEqual([])
-          expect(yield* (yield* client).exists(segmentKey(0, 3n))).toBe(false)
+          expect(yield* (yield* client).head(segmentKey(0, 3n))).toEqual(Option.none())
           expect(yield* history(b.store, 0, 6n)).toEqual([])
         }),
     )
@@ -376,7 +388,7 @@ export const storeConformance = <OpenError, ClientError>(
           const lease = yield* a.store.open(1)
           const checks = Effect.map(
             a.faults.operations,
-            (operations) => operations.filter((operation) => operation.kind === "exists").length,
+            (operations) => operations.filter((operation) => operation.kind === "head").length,
           )
           yield* TestClock.adjust("9 seconds")
           yield* a.store.append(lease, [text("fresh")])
@@ -407,10 +419,10 @@ export const storeConformance = <OpenError, ClientError>(
           expect(beta).not.toBe(alpha)
           expect(yield* raw.list(PAGES_PREFIX)).toEqual([pageKey(alpha), pageKey(beta)].sort())
           expect(decoder.decode(yield* a.store.getPage(alpha))).toBe("alpha")
-          expect(yield* failureOf(a.store.getPage("0".repeat(64)))).toBeInstanceOf(MissingPage)
+          expect(yield* defectOf(a.store.getPage("0".repeat(64)))).toBeInstanceOf(PageCorrupt)
 
           yield* raw.put(pageKey(beta), text("not beta"))
-          expect(yield* failureOf(a.store.getPage(beta))).toBeInstanceOf(CorruptSegment)
+          expect(yield* defectOf(a.store.getPage(beta))).toBeInstanceOf(PageCorrupt)
 
           const many = Array.from({ length: 300 }, (_, index) => `page ${index}`)
           const hashes = yield* Effect.forEach(many, (body) => a.store.putPage(text(body)), {
@@ -424,22 +436,162 @@ export const storeConformance = <OpenError, ClientError>(
     )
 
     it.effect(
-      "writes meta/store once for every concurrent creator (rejects a last-writer-wins identity record)",
+      "resolves a refused or throttled page write by the stored length (rejects trusting every 412 or 429, and trusting a key that holds other bytes)",
       () =>
         Effect.gen(function* () {
           const client = yield* backend.namespace
-          const stores = yield* Effect.forEach(
+          const a = yield* owner(client, "a")
+          const raw = yield* client
+          const alpha = yield* a.store.putPage(text("alpha"))
+          const beta = yield* a.store.putPage(text("beta"))
+          yield* raw.put(pageKey(beta), text("other bytes under beta's key"))
+          const putsTo = (key: string) => (operation: Operation) =>
+            operation.kind === "put" && operation.key === key
+          yield* a.faults.inject(Fault.Unavailable({ status: 429 }), {
+            match: putsTo(pageKey(alpha)),
+          })
+          yield* a.faults.inject(Fault.Unavailable({ status: 412 }), {
+            match: putsTo(pageKey(alpha)),
+          })
+          yield* a.faults.inject(Fault.Unavailable({ status: 429 }), {
+            match: putsTo(pageKey(beta)),
+            times: Number.POSITIVE_INFINITY,
+          })
+          yield* a.faults.inject(Fault.Unavailable({ status: 412 }), {
+            match: (operation) =>
+              operation.kind === "put" &&
+              operation.key.startsWith(PAGES_PREFIX) &&
+              operation.key !== pageKey(alpha) &&
+              operation.key !== pageKey(beta),
+            times: Number.POSITIVE_INFINITY,
+          })
+
+          expect(yield* a.store.putPage(text("alpha"))).toBe(alpha)
+          expect(yield* a.store.putPage(text("alpha"))).toBe(alpha)
+          const otherBytes = yield* failureOf(a.store.putPage(text("beta")))
+          expect(otherBytes).toBeInstanceOf(StorageUnavailable)
+          expect(otherBytes?.status).toBe(429)
+          const absent = yield* failureOf(a.store.putPage(text("gamma")))
+          expect(absent).toBeInstanceOf(StorageUnavailable)
+          expect(absent?.status).toBe(412)
+          expect(yield* raw.list(PAGES_PREFIX)).toEqual([pageKey(alpha), pageKey(beta)].sort())
+          expect((yield* a.faults.operations).filter(putsTo(pageKey(alpha)))).toHaveLength(3)
+        }),
+    )
+
+    it.effect(
+      "writes meta/store once with its creation time and refuses a runner configured otherwise (rejects a last-writer-wins record and adopting another shard count)",
+      () =>
+        Effect.gen(function* () {
+          const client = yield* backend.namespace
+          yield* TestClock.adjust("3 days")
+          const opened = yield* Effect.forEach(
             [8, 32, 4],
             (shards) =>
-              Effect.flatMap(client, (bucket) => storeOf(bucket, { shards, retry: RETRY })),
+              Effect.result(
+                Effect.flatMap(client, (bucket) => storeOf(bucket, { shards, retry: RETRY })),
+              ),
             { concurrency: "unbounded" },
           )
-          const metas = stores.map((store) => store.meta)
-          expect(new Set(metas.map((meta) => meta.store)).size).toBe(1)
-          expect(new Set(metas.map((meta) => meta.shards)).size).toBe(1)
-          const shards = metas[0]?.shards ?? 0
-          const exit = yield* Effect.exit(stores[0]!.open(shards))
+          const stores = opened.flatMap((result) =>
+            Result.isSuccess(result) ? [result.success] : [],
+          )
+          expect(stores).toHaveLength(1)
+          const meta = stores[0]!.meta
+          for (const result of opened)
+            if (Result.isFailure(result)) {
+              expect(result.failure).toBeInstanceOf(StoreMismatch)
+              expect(result.failure).toMatchObject({ setting: "shards", stored: meta.shards })
+            }
+          expect(DateTime.formatIso(meta.createdAt)).toBe("1970-01-04T00:00:00.000Z")
+          expect(meta.retentionMillis).toBe(7 * 24 * 60 * 60 * 1000)
+
+          yield* TestClock.adjust("1 day")
+          const adopting = yield* Effect.flatMap(client, (bucket) =>
+            storeOf(bucket, { retry: RETRY }),
+          )
+          expect(adopting.meta).toEqual(meta)
+          const retention = yield* failureOf(
+            Effect.flatMap(client, (bucket) =>
+              storeOf(bucket, { shards: meta.shards, retention: "30 days", retry: RETRY }),
+            ),
+          )
+          expect(retention).toBeInstanceOf(StoreMismatch)
+          expect(retention).toMatchObject({
+            setting: "retention",
+            stored: 7 * 24 * 60 * 60 * 1000,
+            configured: 30 * 24 * 60 * 60 * 1000,
+          })
+          const exit = yield* Effect.exit(adopting.open(meta.shards))
           expect(Exit.isFailure(exit) && !Exit.hasFails(exit)).toBe(true)
+        }),
+    )
+
+    it.effect(
+      "opens from the previous checkpoint and the longer tail when newer manifests are corrupt or name a missing page, and reports them (rejects trusting the newest manifest and opening from empty state)",
+      () =>
+        Effect.gen(function* () {
+          const client = yield* backend.namespace
+          const a = yield* owner(client, "a")
+          const b = yield* owner(client, "b")
+          const raw = yield* client
+          const lease = yield* a.store.open(0)
+          for (const entry of ["x1", "x2"]) yield* a.store.append(lease, [text(entry)])
+          const first = yield* a.store.putPage(text("state through 3"))
+          yield* a.store.checkpoint(lease, { offset: 3n, statePages: [first], indexPages: [] })
+          for (const entry of ["x3", "x4"]) yield* a.store.append(lease, [text(entry)])
+          const second = yield* a.store.putPage(text("state through 5"))
+          yield* a.store.checkpoint(lease, { offset: 5n, statePages: [], indexPages: [second] })
+          yield* a.store.append(lease, [text("x5")])
+          const third = yield* a.store.putPage(text("state through 6"))
+          yield* a.store.checkpoint(lease, { offset: 6n, statePages: [third], indexPages: [] })
+          yield* a.store.append(lease, [text("x6")])
+
+          yield* raw.delete([pageKey(second)])
+          yield* raw.put(checkpointKey(0, 6n), text("not a manifest"))
+          const recovered = yield* b.store.open(0)
+
+          expect(recovered.checkpoint).toEqual(
+            Option.some({ offset: 3n, statePages: [first], indexPages: [] }),
+          )
+          expect(recovered.damaged.map((damaged) => damaged.key)).toEqual([
+            checkpointKey(0, 6n),
+            checkpointKey(0, 5n),
+          ])
+          expect(recovered.damaged[1]?.reason).toContain(second)
+          expect(recovered.open).toBe(8n)
+          expect((yield* history(b.store, 0, 3n)).map((segment) => segment.entries)).toEqual([
+            ["x3"],
+            ["x4"],
+            ["x5"],
+            ["x6"],
+            [],
+          ])
+        }),
+    )
+
+    it.effect(
+      "refuses a shard whose skipped checkpoint's segments were trimmed (rejects reopening at an offset whose entries are gone)",
+      () =>
+        Effect.gen(function* () {
+          const client = yield* backend.namespace
+          const a = yield* owner(client, "a")
+          const b = yield* owner(client, "b")
+          const raw = yield* client
+          const lease = yield* a.store.open(1)
+          for (const entry of ["y1", "y2"]) yield* a.store.append(lease, [text(entry)])
+          yield* a.store.checkpoint(lease, { offset: 3n, statePages: [], indexPages: [] })
+          for (const entry of ["y3", "y4"]) yield* a.store.append(lease, [text(entry)])
+          yield* a.store.checkpoint(lease, { offset: 5n, statePages: [], indexPages: [] })
+          yield* TestClock.adjust("10 minutes")
+          expect(yield* a.store.trim(lease, 5n)).toBe(5n)
+          expect(yield* raw.list(logPrefix(1))).toEqual([])
+          yield* raw.put(checkpointKey(1, 5n), text("not a manifest"))
+
+          const refused = yield* failureOf(b.store.open(1))
+          expect(refused).toBeInstanceOf(CorruptSegment)
+          expect(refused?.message).toContain(checkpointKey(1, 5n))
+          expect(yield* raw.list(logPrefix(1))).toEqual([])
         }),
     )
 

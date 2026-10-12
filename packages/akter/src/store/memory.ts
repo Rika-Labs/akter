@@ -37,7 +37,10 @@ export const memoryBucket = (): Bucket => {
       Effect.sync(() =>
         Option.map(Option.fromNullishOr(objects.get(key)), (object) => object.body.slice()),
       ),
-    exists: (key) => Effect.sync(() => objects.has(key)),
+    head: (key) =>
+      Effect.sync(() =>
+        Option.map(Option.fromNullishOr(objects.get(key)), (object) => object.body.length),
+      ),
     create: (key, body) =>
       Effect.sync(() => {
         if (objects.has(key)) return false

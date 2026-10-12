@@ -1,11 +1,11 @@
 import { Data, Deferred, Duration, Effect, Latch } from "effect"
 import type { Bucket } from "./bucket.ts"
-import { StoreUnavailable } from "./errors.ts"
+import { StorageUnavailable } from "./errors.ts"
 
 /** The bucket call a fault can intercept. */
 export type OperationKind =
   | "get"
-  | "exists"
+  | "head"
   | "create"
   | "put"
   | "list"
@@ -71,7 +71,7 @@ export interface Faults {
 }
 
 const unavailable = (operation: Operation, status: number, reason: string) =>
-  StoreUnavailable.make({ operation: operation.kind, key: operation.key, status, reason })
+  StorageUnavailable.make({ operation: operation.kind, key: operation.key, status, reason })
 
 /** A new, empty fault plan. */
 const plan = (): Faults => {
@@ -80,8 +80,8 @@ const plan = (): Faults => {
 
   const intercept = <A>(
     operation: Operation,
-    perform: Effect.Effect<A, StoreUnavailable>,
-  ): Effect.Effect<A, StoreUnavailable> =>
+    perform: Effect.Effect<A, StorageUnavailable>,
+  ): Effect.Effect<A, StorageUnavailable> =>
     Effect.gen(function* () {
       seen.push(operation)
       for (const rule of rules) {
@@ -128,7 +128,7 @@ const plan = (): Faults => {
     operations: Effect.sync(() => [...seen]),
     wrap: (bucket) => ({
       get: (key) => intercept({ kind: "get", key }, bucket.get(key)),
-      exists: (key) => intercept({ kind: "exists", key }, bucket.exists(key)),
+      head: (key) => intercept({ kind: "head", key }, bucket.head(key)),
       create: (key, body) => intercept({ kind: "create", key }, bucket.create(key, body)),
       put: (key, body) => intercept({ kind: "put", key }, bucket.put(key, body)),
       list: (prefix, options) =>

@@ -13,7 +13,7 @@ const checkThenWrite = (bucket: Bucket): Bucket => ({
   ...bucket,
   create: (key, body) =>
     Effect.gen(function* () {
-      if (yield* bucket.exists(key)) return false
+      if (Option.isSome(yield* bucket.head(key))) return false
       yield* Effect.yieldNow
       yield* bucket.put(key, body)
       return true

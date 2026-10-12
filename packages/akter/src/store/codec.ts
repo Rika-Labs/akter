@@ -1,7 +1,7 @@
 import { Effect, Schema } from "effect"
 import { Hex, SchemaBinary } from "effect/encoding"
-import { CorruptSegment } from "./errors.ts"
-import { pageKey } from "./keys.ts"
+import { Build } from "./build.ts"
+import { CorruptSegment, PageCorrupt } from "./errors.ts"
 
 /** The at-rest format this release writes and the only one it reads. */
 export const FORMAT = 1
@@ -13,11 +13,13 @@ export const PageHash = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u))
  * One appended batch at `s/<shard>/log/<offset>`. `open` is the offset of the
  * writing lease's open segment and `writer` the process that holds it; together
  * they tell an owner's own earlier write from another owner's after a lost
- * response. The open segment itself has no entries and `open` equal to its offset.
+ * response. `build` names the code that wrote it, which replay must match. The
+ * open segment itself has no entries and `open` equal to its offset.
  */
 export const Segment = Schema.Struct({
   writer: Schema.String,
   open: Schema.BigInt,
+  build: Build,
   entries: Schema.Array(Schema.Uint8Array),
 })
 
@@ -39,11 +41,17 @@ export const Manifest = Schema.Struct({
 /** A checkpoint manifest. */
 export type Manifest = typeof Manifest.Type
 
-/** `meta/store`: the store's id and shard count, fixed when the store is created. */
+/**
+ * `meta/store`: the store's id, shard count and history retention, fixed when
+ * the store is created, and when that was. It records nothing about builds;
+ * each segment carries its own.
+ */
 export const StoreMeta = Schema.Struct({
   format: Schema.Int,
   store: Schema.String,
   shards: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 1024 })),
+  retentionMillis: Schema.Int.check(Schema.isGreaterThan(0)),
+  createdAt: Schema.DateTimeUtcFromString,
 })
 
 /** The store's identity record. */
@@ -144,12 +152,15 @@ export const sha256 = (bytes: Uint8Array<ArrayBuffer>) =>
     Effect.map((digest) => Hex.encode(new Uint8Array(digest))),
   )
 
-/** Reads a page stored under `hash`, checking the bytes hash to it. */
+/** Reads a page stored under `hash`; bytes that do not hash to it or do not decode are the `PageCorrupt` defect. */
 export const decodePage = (hash: string) => (bytes: Uint8Array<ArrayBuffer>) =>
-  sha256(bytes).pipe(
-    Effect.filterOrFail(
-      (actual) => actual === hash,
-      (actual) => corrupt(pageKey(hash), `bytes hash to ${actual}`),
-    ),
-    Effect.andThen(unwrap(pageKey(hash), Kind.page, bytes)),
-  )
+  Effect.gen(function* () {
+    const actual = yield* sha256(bytes)
+    if (actual !== hash)
+      return yield* Effect.die(
+        PageCorrupt.make({ hash, reason: `holds bytes that hash to ${actual}` }),
+      )
+    return yield* unwrap(hash, Kind.page, bytes).pipe(
+      Effect.catch((error) => Effect.die(PageCorrupt.make({ hash, reason: error.reason }))),
+    )
+  })

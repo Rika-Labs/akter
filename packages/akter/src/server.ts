@@ -2,7 +2,15 @@ import * as Store from "./store/layer.ts"
 
 export type { CheckOptions, CheckReport, Probe } from "./store/check.ts"
 export type { Manifest, Segment, StoreMeta } from "./store/codec.ts"
-export { CorruptSegment, MissingPage, StaleEpoch, StoreUnavailable } from "./store/errors.ts"
+export type { Application, Build } from "./store/build.ts"
+export {
+  CorruptSegment,
+  LogUnavailable,
+  PageCorrupt,
+  StaleEpoch,
+  StorageUnavailable,
+  StoreMismatch,
+} from "./store/errors.ts"
 export {
   Fault,
   Faults,

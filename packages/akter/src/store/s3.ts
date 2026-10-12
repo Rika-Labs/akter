@@ -10,7 +10,7 @@ import {
 } from "@aws-sdk/client-s3"
 import { Effect, Option, Predicate } from "effect"
 import { type Bucket, Condition, type Listed, type ListOptions } from "./bucket.ts"
-import { StoreUnavailable } from "./errors.ts"
+import { StorageUnavailable } from "./errors.ts"
 
 /** Where the store's bucket is and how to reach it. */
 export interface S3Options {
@@ -50,7 +50,7 @@ const statusOf = (cause: unknown) =>
  * A bucket on an S3-compatible service through the AWS SDK, used as the
  * request signer. Conditional writes are `If-None-Match: *` and `If-Match`;
  * a 412 is a condition that did not hold. A 409 (a concurrent conditional
- * write on AWS) and every other failure is `StoreUnavailable`, with an unknown
+ * write on AWS) and every other failure is `StorageUnavailable`, with an unknown
  * outcome for writes. Checksums are sent and validated only where the API
  * requires them, which R2 needs, and no server-side encryption headers are
  * sent: the bucket's default encryption applies.
@@ -91,7 +91,7 @@ export const s3Bucket = (options: S3Options) =>
       key: string,
       run: (signal: AbortSignal) => Promise<A>,
       resend: "idempotent" | "never" = "never",
-    ): Effect.Effect<A, StoreUnavailable> =>
+    ): Effect.Effect<A, StorageUnavailable> =>
       Effect.tryPromise({
         try: run,
         catch: (cause) => ({
@@ -99,7 +99,7 @@ export const s3Bucket = (options: S3Options) =>
             statusOf(cause) === undefined &&
             Predicate.hasProperty(cause, "code") &&
             cause.code === "ECONNRESET",
-          error: StoreUnavailable.make({
+          error: StorageUnavailable.make({
             operation,
             key,
             status: statusOf(cause),
@@ -117,7 +117,7 @@ export const s3Bucket = (options: S3Options) =>
     /** Turns the given status into a value instead of a failure. */
     const recover =
       <B>(status: number, value: () => B) =>
-      <A>(effect: Effect.Effect<A, StoreUnavailable>): Effect.Effect<A | B, StoreUnavailable> =>
+      <A>(effect: Effect.Effect<A, StorageUnavailable>): Effect.Effect<A | B, StorageUnavailable> =>
         Effect.catchIf(
           effect,
           (error) => error.status === status,
@@ -136,7 +136,11 @@ export const s3Bucket = (options: S3Options) =>
           const body = object.Body
           if (body === undefined)
             return Effect.fail(
-              StoreUnavailable.make({ operation: "get", key, reason: "the response has no body" }),
+              StorageUnavailable.make({
+                operation: "get",
+                key,
+                reason: "the response has no body",
+              }),
             )
           return call("get", key, () => body.transformToByteArray()).pipe(
             Effect.map((bytes) =>
@@ -149,6 +153,7 @@ export const s3Bucket = (options: S3Options) =>
         ),
       )
 
+    /** A 412 is a condition that did not hold; on a plain write it stays a failure the caller resolves. */
     const put = (operation: string, key: string, body: Uint8Array, condition: Condition) =>
       call(operation, key, (abortSignal) =>
         client.send(
@@ -164,7 +169,9 @@ export const s3Bucket = (options: S3Options) =>
         ),
       ).pipe(
         Effect.map((output) => Option.some(output.ETag ?? "")),
-        recover(PRECONDITION_FAILED, () => Option.none<string>()),
+        Condition.$is("Always")(condition)
+          ? (effect) => effect
+          : recover(PRECONDITION_FAILED, () => Option.none<string>()),
       )
 
     const listed = (listPrefix: string, options: ListOptions = {}) =>
@@ -197,7 +204,7 @@ export const s3Bucket = (options: S3Options) =>
               found.push({ key: object.Key.slice(prefix.length), etag: object.ETag ?? "" })
           continuation = page.IsTruncated === true ? page.NextContinuationToken : undefined
           if (page.IsTruncated === true && continuation === undefined)
-            return yield* StoreUnavailable.make({
+            return yield* StorageUnavailable.make({
               operation: "list",
               key: listPrefix,
               reason: "a truncated listing has no continuation token",
@@ -215,16 +222,16 @@ export const s3Bucket = (options: S3Options) =>
           read(key),
           Option.map((object) => object.body),
         ),
-      exists: (key) =>
+      head: (key) =>
         call(
-          "exists",
+          "head",
           key,
           (abortSignal) =>
             client.send(new HeadObjectCommand({ Bucket, Key: `${prefix}${key}` }), { abortSignal }),
           "idempotent",
         ).pipe(
-          Effect.as(true),
-          recover(NOT_FOUND, () => false),
+          Effect.map((output) => Option.some(output.ContentLength ?? 0)),
+          recover(NOT_FOUND, () => Option.none<number>()),
         ),
       create: (key, body) =>
         Effect.map(put("create", key, body, Condition.Absent()), Option.isSome),
@@ -258,7 +265,7 @@ export const s3Bucket = (options: S3Options) =>
                 return failed === undefined
                   ? Effect.void
                   : Effect.fail(
-                      StoreUnavailable.make({
+                      StorageUnavailable.make({
                         operation: "delete",
                         key: (failed.Key ?? "").slice(prefix.length),
                         reason: `${failed.Code ?? "Error"}: ${failed.Message ?? "the key was not deleted"}`,

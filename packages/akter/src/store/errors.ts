@@ -19,21 +19,40 @@ export class StaleEpoch extends Schema.TaggedError<StaleEpoch>()("StaleEpoch", {
  * The bucket did not answer, answered with a server error, or throttled the
  * request. For a write the outcome is unknown: the object may or may not exist.
  */
-export class StoreUnavailable extends Schema.TaggedError<StoreUnavailable>()("StoreUnavailable", {
-  operation: Schema.String,
-  key: Schema.String,
-  status: Schema.optional(Schema.Finite),
-  reason: Schema.String,
-}) {
+export class StorageUnavailable extends Schema.TaggedError<StorageUnavailable>()(
+  "StorageUnavailable",
+  {
+    operation: Schema.String,
+    key: Schema.String,
+    status: Schema.optional(Schema.Finite),
+    reason: Schema.String,
+  },
+) {
   override get message() {
     return `Store ${this.operation} of ${this.key} failed${this.status === undefined ? "" : ` with status ${this.status}`}: ${this.reason}`
   }
 }
 
 /**
- * An object's bytes are not what its key promises: they do not decode, carry a
- * format version this release cannot read, do not hash to a page's key, or a
- * log segment the shard's history needs is absent.
+ * A log operation could not reach the bucket after its retries. An append
+ * that ends this way has an unknown outcome and closes its lease; the next
+ * open decides from the segment headers.
+ */
+export class LogUnavailable extends Schema.TaggedError<LogUnavailable>()("LogUnavailable", {
+  operation: Schema.String,
+  key: Schema.String,
+  status: Schema.optional(Schema.Finite),
+  reason: Schema.String,
+}) {
+  override get message() {
+    return `Log ${this.operation} of ${this.key} failed${this.status === undefined ? "" : ` with status ${this.status}`}: ${this.reason}`
+  }
+}
+
+/**
+ * A log object's bytes are not what its key promises: a segment, checkpoint
+ * manifest or `meta/store` does not decode, carries a format version this
+ * release cannot read, or a segment the shard's history needs is absent.
  */
 export class CorruptSegment extends Schema.TaggedError<CorruptSegment>()("CorruptSegment", {
   key: Schema.String,
@@ -44,11 +63,30 @@ export class CorruptSegment extends Schema.TaggedError<CorruptSegment>()("Corrup
   }
 }
 
-/** No page is stored under the hash a manifest or caller named. */
-export class MissingPage extends Schema.TaggedError<MissingPage>()("MissingPage", {
+/**
+ * A page's stored bytes do not hash to its key or do not decode, or a page a
+ * manifest names is not stored. Raised as a defect: a damaged page never
+ * yields default or partial state.
+ */
+export class PageCorrupt extends Schema.TaggedError<PageCorrupt>()("PageCorrupt", {
   hash: Schema.String,
+  reason: Schema.String,
 }) {
   override get message() {
-    return `Page ${this.hash} is not in the store`
+    return `Page ${this.hash} ${this.reason}`
+  }
+}
+
+/**
+ * `meta/store` disagrees with the configuration this process was started
+ * with, so it refuses the store rather than adopt or overwrite the record.
+ */
+export class StoreMismatch extends Schema.TaggedError<StoreMismatch>()("StoreMismatch", {
+  setting: Schema.Literals(["shards", "retention"]),
+  stored: Schema.Finite,
+  configured: Schema.Finite,
+}) {
+  override get message() {
+    return `The store records ${this.setting} ${this.stored}, but this process is configured with ${this.configured}`
   }
 }

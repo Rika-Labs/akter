@@ -1,9 +1,16 @@
-import { Context, Duration, Effect, Option, Random, Schedule, type Stream } from "effect"
+import { Context, DateTime, Duration, Effect, Option, Random, Schedule, type Stream } from "effect"
 import { dual } from "effect/Function"
 import { type Bucket, retryUnavailable } from "./bucket.ts"
+import { type Application, runtimeBuild } from "./build.ts"
 import { type CheckOptions, type CheckReport, checkBucket } from "./check.ts"
 import { decodeMeta, encodeMeta, FORMAT, type Manifest, type StoreMeta } from "./codec.ts"
-import type { CorruptSegment, MissingPage, StaleEpoch, StoreUnavailable } from "./errors.ts"
+import {
+  type CorruptSegment,
+  type LogUnavailable,
+  type StaleEpoch,
+  type StorageUnavailable,
+  StoreMismatch,
+} from "./errors.ts"
 import type { Faults } from "./faults.ts"
 import { META_KEY } from "./keys.ts"
 import { bucketLeases, type Leases } from "./leases.ts"
@@ -12,8 +19,12 @@ import { bucketPages } from "./pages.ts"
 
 /** How a store is created and how its owners keep their leases honest. */
 export interface StoreOptions {
-  /** Shards recorded in `meta/store` when this call creates the store; an existing store keeps its count. Default 16. */
+  /** Shards recorded in `meta/store` when this call creates the store; an existing store with another count is refused. Default: 16 for a new store, the recorded count for an existing one. */
   readonly shards?: number
+  /** History retention recorded in `meta/store` when this call creates the store; an existing store with another retention is refused. Default: 7 days for a new store, the recorded retention for an existing one. */
+  readonly retention?: Duration.Input
+  /** The application bundle digest and framework version recorded in every segment beside the runtime's own build. Default: both empty. */
+  readonly build?: Application
   /** Names this process in the segments it writes. Default: random per store instance. */
   readonly writer?: string
   /** How long an owner may append or answer reads without re-checking its lease. Default 10 seconds. */
@@ -27,6 +38,8 @@ export interface StoreOptions {
 }
 
 const DEFAULT_SHARDS = 16
+
+const DEFAULT_RETENTION = "7 days"
 
 const DEFAULT_RETRY: Schedule.Schedule<unknown, unknown> = Schedule.max([
   Schedule.exponential("50 millis").pipe(Schedule.jittered),
@@ -47,71 +60,107 @@ const randomHex = Effect.map(
 export class Store extends Context.Service<
   Store,
   {
+    /** The store's identity record, as created by its first runner. */
     readonly meta: StoreMeta
-    /** Opens a shard: fences every earlier owner and returns the new lease. */
+    /** Opens a shard from its newest intact checkpoint: fences every earlier owner and returns the new lease. */
     readonly open: (
       shard: number,
-    ) => Effect.Effect<Lease, StaleEpoch | StoreUnavailable | CorruptSegment>
+    ) => Effect.Effect<Lease, StaleEpoch | LogUnavailable | CorruptSegment>
     /** Appends one batch of encoded entries at `head + 1` and returns its offset. */
     readonly append: (
       lease: Lease,
       batch: ReadonlyArray<Uint8Array>,
-    ) => Effect.Effect<bigint, StaleEpoch | StoreUnavailable>
+    ) => Effect.Effect<bigint, StaleEpoch | LogUnavailable>
     /** The shard's segments after `from`, in offset order. */
     readonly read: (
       shard: number,
       from: bigint,
-    ) => Stream.Stream<StoredSegment, StoreUnavailable | CorruptSegment>
+    ) => Stream.Stream<StoredSegment, LogUnavailable | CorruptSegment>
     /** Records a checkpoint through `manifest.offset`; write its pages first. */
     readonly checkpoint: (
       lease: Lease,
       manifest: Manifest,
-    ) => Effect.Effect<void, StaleEpoch | StoreUnavailable>
+    ) => Effect.Effect<void, StaleEpoch | LogUnavailable>
     /** Deletes segments at or below `through` that an old enough checkpoint covers; returns the offset deleted through, 0 for none. */
     readonly trim: (
       lease: Lease,
       through: bigint,
-    ) => Effect.Effect<bigint, StaleEpoch | StoreUnavailable>
+    ) => Effect.Effect<bigint, StaleEpoch | LogUnavailable>
     /** Succeeds while the lease is current: at once within `validFor` of its last append or check, otherwise after re-checking the bucket. */
-    readonly verify: (lease: Lease) => Effect.Effect<void, StaleEpoch | StoreUnavailable>
+    readonly verify: (lease: Lease) => Effect.Effect<void, StaleEpoch | LogUnavailable>
     /** Stores a page and returns its hash. */
-    readonly putPage: (bytes: Uint8Array) => Effect.Effect<string, StoreUnavailable>
-    /** Loads a page by hash; concurrent loads are batched. */
-    readonly getPage: (
-      hash: string,
-    ) => Effect.Effect<Uint8Array, MissingPage | CorruptSegment | StoreUnavailable>
+    readonly putPage: (bytes: Uint8Array) => Effect.Effect<string, StorageUnavailable>
+    /** Loads a page by hash; concurrent loads are batched. A page that is absent or does not match its hash is the `PageCorrupt` defect. */
+    readonly getPage: (hash: string) => Effect.Effect<Uint8Array, StorageUnavailable>
     readonly leases: Leases
     /** Runs the conformance probe against this store's bucket. */
-    readonly check: (options?: CheckOptions) => Effect.Effect<CheckReport, StoreUnavailable>
+    readonly check: (options?: CheckOptions) => Effect.Effect<CheckReport, StorageUnavailable>
   }
 >()("@rikalabs/akter/store/service/Store") {}
 
-/** Reads `meta/store`, creating it if this is the store's first start. */
+/** The store settings a process was configured with; unset ones adopt what `meta/store` records. */
+interface Configured {
+  readonly shards: Option.Option<number>
+  readonly retentionMillis: Option.Option<number>
+}
+
+/** Fails when `meta` disagrees with a configured setting. */
+const agrees = (meta: StoreMeta, configured: Configured) =>
+  Effect.gen(function* () {
+    if (Option.exists(configured.shards, (shards) => shards !== meta.shards))
+      return yield* StoreMismatch.make({
+        setting: "shards",
+        stored: meta.shards,
+        configured: Option.getOrElse(configured.shards, () => meta.shards),
+      })
+    if (
+      Option.exists(configured.retentionMillis, (retention) => retention !== meta.retentionMillis)
+    )
+      return yield* StoreMismatch.make({
+        setting: "retention",
+        stored: meta.retentionMillis,
+        configured: Option.getOrElse(configured.retentionMillis, () => meta.retentionMillis),
+      })
+    return meta
+  })
+
+/** Reads `meta/store`, creating it if this is the store's first start, and checks it against the configuration. */
 const establish = (
   bucket: Bucket,
   retrying: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>,
-  shards: number,
+  configured: Configured,
 ) =>
   Effect.gen(function* () {
     const existing = yield* retrying(bucket.get(META_KEY))
-    if (Option.isSome(existing)) return yield* decodeMeta(META_KEY)(existing.value)
-    const created: StoreMeta = { format: FORMAT, store: yield* randomHex, shards }
+    if (Option.isSome(existing))
+      return yield* agrees(yield* decodeMeta(META_KEY)(existing.value), configured)
+    const created: StoreMeta = {
+      format: FORMAT,
+      store: yield* randomHex,
+      shards: Option.getOrElse(configured.shards, () => DEFAULT_SHARDS),
+      retentionMillis: Option.getOrElse(configured.retentionMillis, () =>
+        Duration.toMillis(Duration.fromInputUnsafe(DEFAULT_RETENTION)),
+      ),
+      createdAt: yield* DateTime.now,
+    }
     if (yield* retrying(bucket.create(META_KEY, yield* encodeMeta(created)))) return created
     const winner = yield* retrying(bucket.get(META_KEY))
     if (Option.isNone(winner))
       return yield* Effect.die(new Error("meta/store vanished after another process created it"))
-    return yield* decodeMeta(META_KEY)(winner.value)
+    return yield* agrees(yield* decodeMeta(META_KEY)(winner.value), configured)
   })
 
 /** The store over a bucket. */
 export const storeOf: {
   (
     options: StoreOptions,
-  ): (raw: Bucket) => Effect.Effect<Store["Service"], StoreUnavailable | CorruptSegment>
+  ): (
+    raw: Bucket,
+  ) => Effect.Effect<Store["Service"], StorageUnavailable | CorruptSegment | StoreMismatch>
   (
     raw: Bucket,
     options: StoreOptions,
-  ): Effect.Effect<Store["Service"], StoreUnavailable | CorruptSegment>
+  ): Effect.Effect<Store["Service"], StorageUnavailable | CorruptSegment | StoreMismatch>
 } = dual(2, (raw: Bucket, options: StoreOptions) =>
   Effect.gen(function* () {
     const bucket = options.faults === undefined ? raw : options.faults.wrap(raw)
@@ -120,11 +169,17 @@ export const storeOf: {
     const trimAfter = Duration.toMillis(Duration.fromInputUnsafe(options.trimAfter ?? "10 minutes"))
     if (trimAfter <= validFor)
       return yield* Effect.die(new RangeError("trimAfter must be longer than validFor"))
-    const meta = yield* establish(bucket, retryUnavailable(retry), options.shards ?? DEFAULT_SHARDS)
+    const meta = yield* establish(bucket, retryUnavailable(retry), {
+      shards: Option.fromUndefinedOr(options.shards),
+      retentionMillis: Option.map(Option.fromUndefinedOr(options.retention), (retention) =>
+        Duration.toMillis(Duration.fromInputUnsafe(retention)),
+      ),
+    })
     const writer = options.writer ?? (yield* randomHex)
+    const build = yield* runtimeBuild(options.build ?? { bundle: "", framework: "" })
     return Store.of({
       meta,
-      ...bucketLog({ bucket, retry, writer, shards: meta.shards, validFor, trimAfter }),
+      ...bucketLog({ bucket, retry, writer, build, shards: meta.shards, validFor, trimAfter }),
       ...bucketPages({ bucket, retry }),
       leases: bucketLeases({ bucket, retry }),
       check: checkBucket(bucket),

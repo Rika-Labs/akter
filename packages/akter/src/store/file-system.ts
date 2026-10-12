@@ -1,6 +1,6 @@
 import { Effect, FileSystem, Option, Path, type PlatformError, Random } from "effect"
 import { type Bucket, Condition, type ListOptions, type Listed, type Versioned } from "./bucket.ts"
-import { StoreUnavailable } from "./errors.ts"
+import { StorageUnavailable } from "./errors.ts"
 
 const TEMPORARY = ".tmp-"
 
@@ -36,12 +36,12 @@ export const fileSystemBucket = Effect.fnUntraced(function* (directory: string) 
     .makeDirectory(root, { recursive: true })
     .pipe(
       Effect.mapError((error) =>
-        StoreUnavailable.make({ operation: "open", key: root, reason: error.message }),
+        StorageUnavailable.make({ operation: "open", key: root, reason: error.message }),
       ),
     )
 
   const failure = (operation: string, key: string) => (error: PlatformError.PlatformError) =>
-    StoreUnavailable.make({ operation, key, reason: error.message })
+    StorageUnavailable.make({ operation, key, reason: error.message })
 
   const pathOf = (key: string) => {
     const target = paths.resolve(root, ...key.split("/"))
@@ -203,10 +203,12 @@ export const fileSystemBucket = Effect.fnUntraced(function* (directory: string) 
 
   const bucket: Bucket = {
     get: (key) => pathOf(key).pipe(Effect.flatMap(readAt), Effect.mapError(failure("get", key))),
-    exists: (key) =>
+    head: (key) =>
       pathOf(key).pipe(
-        Effect.flatMap((path) => fs.exists(path)),
-        Effect.mapError(failure("exists", key)),
+        Effect.flatMap((path) => fs.stat(path)),
+        Effect.map((info) => Option.some(Number(info.size))),
+        Effect.catchReason("PlatformError", "NotFound", () => Effect.succeedNone),
+        Effect.mapError(failure("head", key)),
       ),
     create: (key, body) =>
       pathOf(key).pipe(
