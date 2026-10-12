@@ -1,5 +1,22 @@
 # Akter benchmarks
 
+## Maintained evaluation scoreboard
+
+`bun run --cwd tooling/bench compare <base-ref> <head-ref>` freezes both sources
+and their original locks, runs real Postgres in fresh case clusters, and
+alternates at least three same-host rounds. It covers the served write/read,
+open-loop, idle/cold-wake and resident-RSS cohorts. Raw JSON and Markdown retain
+independent per-run nearest-rank percentiles, medians and observed ranges;
+failures and refusals remain visible. SQL elapsed time and actual container
+CPU are separate measurements. Wire budgets and profiles run separately from
+timings.
+
+See [the fixture and commands](tooling/bench/README.md). The manually dispatched
+**Benchmark reference** workflow uses `ubuntu-24.04`, uploads its raw evidence,
+and has no schedule or timing merge gate. Mac comparisons are quick signals,
+not CI-reference or hosted-provider evidence. The alpha.6-to-`89e8af89` reference
+comparison is not yet recorded here.
+
 ## Served command CPU and receipt-history probes (2026-10-11)
 
 ### Method

@@ -53,6 +53,19 @@
   },
   "overrides": [
     {
+      "files": ["tooling/bench/src/*.ts"],
+      "rules": {
+        "effecttsgo/async-function": "off",
+        "effecttsgo/global-console": "off",
+        "effecttsgo/global-date": "off",
+        "effecttsgo/global-fetch": "off",
+        "effecttsgo/missing-pipeable-signature": "off",
+        "effecttsgo/node-builtin-import": "off",
+        "effecttsgo/process-env": "off",
+        "effecttsgo/schema-sync": "off"
+      }
+    },
+    {
       "files": [
         "apps/self-host/src/bun.ts",
         "apps/self-host/src/node.ts",

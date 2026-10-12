@@ -17,6 +17,7 @@ packages/
   react/                    @akter/react     React hooks over @rikalabs/akter/client
   python-client/            @akter/python-client  Python client generated from the served OpenAPI document
 tooling/
+  bench/                    @akter/bench unpublished same-host served evaluation scoreboard
   conformance/              @akter/conformance unpublished framework suites, cluster/simulation harnesses and crash fixtures
   oxlint/                   @akter/oxlint    anti-slop rules, directives and runtime-import checks
   structure/                @akter/structure tree checker and its exemptions

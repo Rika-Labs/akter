@@ -4,6 +4,8 @@
 
 ## Replacement decision
 
+The outside-tree-only convention below was replaced by [ADR 0123](0123-local-evaluation-scoreboard.md) for the maintained local evaluation scoreboard. The earlier runs remain historical evidence, not the current reproduction command.
+
 Run the comparison serially on clean, cgroup-limited Daytona hardware, keeping agent work and repository verification on Dallen's Mac. Preserve the report in one root file rather than maintaining a benchmark workspace or a statements gate. Do not add Markdown, link, or evidence linters. Runtime regression tests remain part of ordinary code verification.
 
 The restart drills exposed stale Postgres sessions holding shard advisory locks after a vanished runner and startup/shutdown SQLSTATEs being mistaken for deterministic actor defects. The runtime now requests server TCP keepalive defaults for its three pools, preserving caller overrides, and retries shutdown/recovery and resource-exhaustion codes rather than inventing a permanent failure. Dropped databases and configuration limits remain non-retryable. This changes recovery policy, not the database's authority or the atomic receipt/state transaction; the owning [recovery contract](../contracts/09-recovery.md) records the boundary. The report documents measured recovery separately from the probe settings, and does not claim pooler or provider support without evidence.

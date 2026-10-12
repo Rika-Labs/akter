@@ -1,0 +1,58 @@
+name: Benchmark reference
+
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: Baseline git ref
+        required: true
+        default: v0.1.0-alpha.6
+      head:
+        description: Candidate git ref
+        required: true
+        default: main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: benchmark-reference
+  cancel-in-progress: false
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      BASE_REF: ${{ inputs.base }}
+      HEAD_REF: ${{ inputs.head }}
+      BENCH_OUTPUT: ${{ runner.temp }}/akter-bench-evidence
+      BENCH_ROUNDS: "3"
+      BENCH_SECONDS: "20"
+      BENCH_WARMUP_SECONDS: "3"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Compare frozen refs on this host
+        run: bun run --cwd tooling/bench compare "$BASE_REF" "$HEAD_REF"
+      - name: Publish scoreboard
+        if: always()
+        run: |
+          if [ -f "$BENCH_OUTPUT/report.md" ]; then cat "$BENCH_OUTPUT/report.md" >> "$GITHUB_STEP_SUMMARY"; fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: benchmark-reference-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/akter-bench-evidence/*.json
+            ${{ runner.temp }}/akter-bench-evidence/*.md
+            ${{ runner.temp }}/akter-bench-evidence/*.log
+            ${{ runner.temp }}/akter-bench-evidence/*.txt
+            ${{ runner.temp }}/akter-bench-evidence/*.sha256
+            ${{ runner.temp }}/akter-bench-evidence/*.cpuprofile
+            ${{ runner.temp }}/akter-bench-evidence/*.heapprofile
+          if-no-files-found: error
+          retention-days: 90
