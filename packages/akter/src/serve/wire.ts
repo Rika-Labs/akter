@@ -1,63 +1,51 @@
-import { Effect, Option, Schema, SchemaIssue } from "effect"
+import { Effect, Schema } from "effect"
 import { HttpServerResponse } from "effect/http"
-import { ActorError, InvalidInput, Unauthorized } from "../errors/actor.ts"
-import { actorErrorBody, retryAfterSeconds, statusOf } from "../protocol/wire.ts"
+import { type ActorError, Reason } from "../contract/errors.ts"
+import { ErrorEnvelope } from "../rpc/group.ts"
+
+const encodeEnvelope = Schema.encodeEffect(ErrorEnvelope)
 
 /**
- * The HTTP response an `ActorError` is served as: its status, the JSON body,
- * `retry-after` in whole seconds when the error has a retry delay, and
+ * The HTTP status of a refusal answered before the RPC handler runs: `401` for credentials,
+ * `403` for a refused origin or access, `429` for quotas and a full mailbox, `503` while the
+ * runner or the auth provider is unavailable, `400` for input.
+ */
+export const statusOf = (reason: Reason): number =>
+  Reason.match(reason, {
+    Unauthorized: ({ code }) => {
+      if (code === "reauthorization_unavailable") return 503
+      return code === "access_denied" || code === "outcome_access_denied" ? 403 : 401
+    },
+    QuotaExceeded: () => 429,
+    MailboxFull: () => 429,
+    ActorUnavailable: () => 503,
+    ShardMoved: () => 503,
+    RunnerAtCapacity: () => 503,
+    Timeout: () => 503,
+    SessionEnded: () => 503,
+    TransportError: () => 503,
+    InvalidInput: () => 400,
+    CommandExpired: () => 400,
+    InvalidCommandId: () => 400,
+  })
+
+/** `retry-after` in whole seconds, rounded up. */
+export const retryAfterSeconds = (milliseconds: number) => String(Math.ceil(milliseconds / 1000))
+
+/**
+ * The HTTP response for a refusal before the RPC handler: its status, the `ActorError`
+ * envelope as JSON, `retry-after` when the error has a retry delay, and
  * `www-authenticate: Bearer` for credential failures.
  */
-export const actorErrorResponse = Effect.fnUntraced(function* (error: ActorError) {
-  const retryAfter = error.retryAfter
-  const body = yield* actorErrorBody(error)
+export const refusalResponse = (error: ActorError) => {
   const headers: Record<string, string> = {}
-
-  if (Option.isSome(retryAfter)) headers["retry-after"] = retryAfterSeconds(retryAfter.value)
-
-  if (Schema.is(Unauthorized)(error.reason) && error.reason.isCredential)
-    headers["www-authenticate"] = "Bearer"
-
-  return HttpServerResponse.jsonUnsafe(body, { status: statusOf(error.reason), headers })
-})
-
-const LEAF_MESSAGES: Record<SchemaIssue.Leaf["_tag"], string> = {
-  InvalidType: "Invalid type",
-  InvalidValue: "Invalid value",
-  MissingKey: "Missing key",
-  UnexpectedKey: "Unexpected key",
-  Forbidden: "Forbidden operation",
-  OneOf: "Expected exactly one member to match",
+  const retryAfter = Reason.guards.QuotaExceeded(error.reason)
+    ? error.reason.retryAfter
+    : error.retryAfter
+  if (retryAfter !== undefined) headers["retry-after"] = retryAfterSeconds(retryAfter)
+  const status = statusOf(error.reason)
+  if (status === 401) headers["www-authenticate"] = "Bearer"
+  return Effect.map(Effect.orDie(encodeEnvelope(error)), (body) =>
+    HttpServerResponse.jsonUnsafe(body, { status, headers }),
+  )
 }
-
-const formatIssues = SchemaIssue.makeFormatterStandardSchemaV1({
-  leafHook: (issue) => LEAF_MESSAGES[issue._tag],
-  checkHook: () => "Failed check",
-})
-
-/** An `ActorError` wrapping `InvalidInput` with the given code. */
-export const invalidInput = (code: InvalidInput["code"]) =>
-  ActorError.make({ reason: InvalidInput.make({ code }) })
-
-/**
- * A body, id, or payload that failed its schema. Issues carry a path and a
- * fixed message, so a response never echoes the value that failed.
- */
-export const undecodable = (error: Schema.SchemaError) =>
-  ActorError.make({
-    reason: InvalidInput.make({
-      code: "decode",
-      issues: formatIssues(error.issue).issues.map((issue) => ({
-        path: (issue.path ?? [])
-          .map((segment) =>
-            String(
-              Schema.is(Schema.Struct({ key: Schema.PropertyKey }))(segment)
-                ? segment.key
-                : segment,
-            ),
-          )
-          .join("."),
-        message: issue.message,
-      })),
-    }),
-  })

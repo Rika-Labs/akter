@@ -1,67 +1,69 @@
-import { Effect, Option, Schema } from "effect"
+import { Effect } from "effect"
 import { HttpServerResponse } from "effect/http"
 import { describe, expect, it } from "vitest"
 import {
   ActorError,
   ActorUnavailable,
   MailboxFull,
-  NotCreated,
+  QuotaExceeded,
   RunnerAtCapacity,
-  Timeout,
-} from "../errors/actor.ts"
-import { actorErrorBody, statusOf } from "../protocol/wire.ts"
-import { actorErrorResponse } from "./wire.ts"
+  Unauthorized,
+} from "../contract/errors.ts"
+import { refusalResponse } from "./wire.ts"
 
-const RetryBody = Schema.Struct({ retryAfter: Schema.Finite })
+const respond = (error: ActorError) =>
+  Effect.gen(function* () {
+    const web = HttpServerResponse.toWeb(yield* refusalResponse(error))
+    return {
+      status: web.status,
+      headers: web.headers,
+      body: yield* Effect.promise(() => web.json()),
+    }
+  })
 
-const respond = Effect.fnUntraced(function* (error: ActorError) {
-  const web = HttpServerResponse.toWeb(yield* actorErrorResponse(error))
-
-  return {
-    status: web.status,
-    headers: web.headers,
-    body: yield* Effect.promise(() => web.json()),
-  }
-})
-
-describe("served error envelopes", () => {
-  it("maps back-pressure and delivery reasons to their statuses with the in-process retryAfter", () =>
+describe("refusals before the RPC handler", () => {
+  it("answer credential failures 401 with a Bearer challenge and refused access 403 without one", () =>
     Effect.runPromise(
       Effect.gen(function* () {
-        for (const [reason, status, low, high] of [
-          [MailboxFull.make({}), 429, 50, 150],
-          [RunnerAtCapacity.make({}), 503, 500, 1500],
-          [ActorUnavailable.make({ cause: new Error("internal") }), 503, 125, 375],
-        ] as const) {
-          const error = ActorError.make({ reason })
-          const reply = yield* respond(error)
-
-          const { retryAfter } = yield* Schema.decodeUnknownEffect(RetryBody)(reply.body).pipe(
-            Effect.orDie,
-          )
-
-          expect(reply.status).toBe(status)
-          expect(retryAfter).toBe(Option.getOrElse(error.retryAfter, () => -1))
-          expect(retryAfter >= low && retryAfter <= high).toBe(true)
-          expect(reply.headers.get("retry-after")).toBe(String(Math.ceil(retryAfter / 1000)))
-          expect(reply.body).toEqual(yield* actorErrorBody(error))
-          expect(reply.body).toHaveProperty("reason._tag", reason._tag)
-          expect(reply.body).toHaveProperty("isRetryable", true)
-          expect(reply.body).not.toHaveProperty("reason.cause")
+        for (const code of ["missing_credentials", "invalid_credentials", "expired"] as const) {
+          const reply = yield* respond(ActorError.make({ reason: Unauthorized.make({ code }) }))
+          expect(reply.status).toBe(401)
+          expect(reply.headers.get("www-authenticate")).toBe("Bearer")
+          expect(Object.keys(reply.body).toSorted()).toEqual(["_tag", "isRetryable", "reason"])
+          expect(reply.body).toHaveProperty("_tag", "ActorError")
+          expect(reply.body).toHaveProperty(["reason", "_tag"], "Unauthorized")
+          expect(reply.body).toHaveProperty(["reason", "code"], code)
+          expect(reply.body).toHaveProperty("isRetryable", false)
         }
+        const denied = yield* respond(
+          ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) }),
+        )
+        expect(denied.status).toBe(403)
+        expect(denied.headers.get("www-authenticate")).toBe(null)
       }),
     ))
 
-  it("maps Timeout and NotCreated without retry metadata", () =>
+  it("answer back-pressure with its status, the envelope's retry metadata and retry-after in whole seconds", () =>
     Effect.runPromise(
       Effect.gen(function* () {
-        const timeout = yield* respond(
-          ActorError.make({ reason: Timeout.make({ commandId: "v1.1.2.x" }) }),
+        for (const [reason, status, retryAfter, header] of [
+          [ActorUnavailable.make({}), 503, 250, "1"],
+          [RunnerAtCapacity.make({}), 503, 1_000, "1"],
+          [MailboxFull.make({}), 429, 100, "1"],
+        ] as const) {
+          const reply = yield* respond(ActorError.make({ reason }))
+          expect(reply.status).toBe(status)
+          expect(reply.headers.get("retry-after")).toBe(header)
+          expect(reply.body).toHaveProperty(["reason", "_tag"], reason._tag)
+          expect(reply.body).toHaveProperty("isRetryable", true)
+          expect(reply.body).toHaveProperty("retryAfter", retryAfter)
+        }
+        const quota = yield* respond(
+          ActorError.make({ reason: QuotaExceeded.make({ limit: "storage", retryAfter: 2_500 }) }),
         )
-
-        expect(timeout.status).toBe(504)
-        expect(timeout.headers.get("retry-after")).toBe(null)
-        expect(statusOf(NotCreated.make({}))).toBe(404)
+        expect(quota.status).toBe(429)
+        expect(quota.headers.get("retry-after")).toBe("3")
+        expect(quota.body).toHaveProperty("isRetryable", true)
       }),
     ))
 })

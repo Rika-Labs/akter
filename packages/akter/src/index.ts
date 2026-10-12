@@ -78,3 +78,6 @@ export type {
   StateFrame,
   Transport,
 } from "./contract/handle.ts"
+
+export { classify as classifyRpc, Tags as RpcTags } from "./rpc/group.ts"
+export type { CallClass } from "./rpc/group.ts"

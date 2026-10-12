@@ -2,8 +2,8 @@ import { Clock, DateTime, Effect, Exit, Schema } from "effect"
 import { Base64Url } from "effect/encoding"
 import { Headers } from "effect/http"
 import { describe, expect, it } from "vitest"
-import { Unauthorized } from "../../errors/actor.ts"
-import { Anonymous, System, User } from "../../identity/caller.ts"
+import { Anonymous, System, User } from "../../contract/caller.ts"
+import { ActorError, Unauthorized } from "../../contract/errors.ts"
 import { type AssertionClaims, type AssertionKey, assertion } from "./verify.ts"
 import { ASSERTION_TYPE } from "./binding.ts"
 import { Credential } from "../auth.ts"
@@ -96,7 +96,8 @@ const setup = Effect.gen(function* () {
   return { edge, claims, now, provider, run }
 })
 
-const refusal = (code: Unauthorized["code"]) => Exit.fail(Unauthorized.make({ code }))
+const refusal = (code: (typeof Unauthorized.Type)["code"]) =>
+  Exit.fail(ActorError.make({ reason: Unauthorized.make({ code }) }))
 
 describe("Actor.auth.assertion", () => {
   it("refuses a signed assertion whose cexp is past the representable time as invalid, not a defect", () =>
@@ -186,7 +187,10 @@ describe("Actor.auth.assertion", () => {
         }).pipe(Effect.orDie)
 
         const withCrit = [Base64Url.encode(critical), ...valid.split(".").slice(1)]
-        const system = { ...claims, caller: System.make({ source: "actor" }) }
+        const system = {
+          ...claims,
+          caller: System.make({ source: "send", subject: "actor:Room/r1" }),
+        }
 
         const exits = [
           yield* run(withCrit.join(".")),

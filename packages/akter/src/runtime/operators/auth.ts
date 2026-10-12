@@ -1,18 +1,15 @@
 import { Effect, Redacted } from "effect"
-import type { ActorUnavailable } from "../../errors/actor.ts"
-import { Unauthorized } from "../../errors/actor.ts"
-import { type AuthRequest, bearerToken } from "../../serve/auth.ts"
+import type { ActorError } from "../../contract/errors.ts"
+import { type AuthRequest, bearerToken, unauthorized } from "../../serve/auth.ts"
 import type { OperatorGrant } from "./grants.ts"
 
 /**
  * Authenticates an operator request to a grant. It is a different type from
- * `Actor.auth`'s providers, which return an application caller, so no
+ * `Auth`'s providers, which return an application caller, so no
  * application credential can reach an operator route.
  */
 export interface OperatorAuth<R = never> {
-  readonly authenticate: (
-    request: AuthRequest,
-  ) => Effect.Effect<OperatorGrant, Unauthorized | ActorUnavailable, R>
+  readonly authenticate: (request: AuthRequest) => Effect.Effect<OperatorGrant, ActorError, R>
 }
 
 /** An operator provider from a function, e.g. one that verifies an identity provider's token. */
@@ -65,7 +62,7 @@ const tokens = (
             if (equalDigests(entry.digest, presented)) found = entry.grant
 
           return found === undefined
-            ? Effect.fail(Unauthorized.make({ code: "invalid_credentials" }))
+            ? Effect.fail(unauthorized("invalid_credentials"))
             : Effect.succeed(found)
         },
       ),
