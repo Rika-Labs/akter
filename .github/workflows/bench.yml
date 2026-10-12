@@ -11,6 +11,20 @@ on:
         description: Candidate git ref
         required: true
         default: main
+      cases:
+        description: Comma-separated cohorts (empty runs the full scoreboard)
+        required: false
+        default: ""
+      rounds:
+        description: Alternating repeats per side (at least three)
+        type: number
+        required: false
+        default: 3
+      diagnostics:
+        description: Include separate wire-budget diagnostics
+        type: boolean
+        required: false
+        default: true
 
 permissions:
   contents: read
@@ -27,7 +41,9 @@ jobs:
       BASE_REF: ${{ inputs.base }}
       HEAD_REF: ${{ inputs.head }}
       BENCH_OUTPUT: /tmp/akter-bench-evidence
-      BENCH_ROUNDS: "3"
+      BENCH_CASES: ${{ inputs.cases }}
+      BENCH_ROUNDS: ${{ inputs.rounds }}
+      BENCH_DIAGNOSTICS: ${{ inputs.diagnostics && '1' || '0' }}
       BENCH_SECONDS: "20"
       BENCH_WARMUP_SECONDS: "3"
     steps:
