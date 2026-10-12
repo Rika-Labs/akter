@@ -13,6 +13,7 @@ import {
 } from "effect"
 import type { PgConnection } from "@effect/sql-pg"
 import { SqlClient, SqlError } from "effect/sql"
+import type { Fragment } from "effect/sql/Statement"
 import { ActorError, CommandExpired, NotCreated, Unauthorized } from "../../errors/actor.ts"
 import {
   type Broadcast,
@@ -545,6 +546,15 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
       set_config('durable.turn', 'on', true)
       ${role === undefined ? sql.literal("") : sql`, ${tenantSettings({ sql, role, tenant })}`}`
 
+  /** The volatile subquery saves the current planner flag before changing it; only the following receipt statement uses the restriction. */
+  const receiptPlanning = Effect.asVoid(sql`
+    SELECT set_config('enable_seqscan', 'off', true)
+    FROM (SELECT set_config('durable.receipt_seqscan', current_setting('enable_seqscan'), true) AS value) previous
+    WHERE previous.value IS NOT NULL`)
+
+  const restoreReceiptPlanning = Effect.asVoid(sql`
+    SELECT set_config('enable_seqscan', current_setting('durable.receipt_seqscan'), true)`)
+
   /**
    * Turns that set the same transaction settings, which a group sets once for
    * all of them. Each part is encoded so no two settings share a key.
@@ -556,6 +566,12 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
     role === undefined ? "-" : `+${encodeURIComponent(tenant)}`,
   ].join(":")
 
+  /** Inclusive bounds on the same non-null primary key express equality without offering an actor-type-only expiry-index scan to an empty-history generic plan. */
+  const receiptPoint = (key: Fragment) => sql`
+    (r.routing_key, r.tenant_id, r.actor_type, r.actor_id, r.command_id) >= ${key}
+    AND (r.routing_key, r.tenant_id, r.actor_type, r.actor_id, r.command_id) <= ${key}`
+
+  /** Each command drives a bounded full-key receipt probe after the separate generation-row fence. */
   const admit = (
     batch: ReadonlyArray<Delivery>,
     canonicals: ReadonlyArray<string>,
@@ -611,6 +627,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                   ON CONFLICT DO NOTHING`)
               : Effect.asVoid(sql`SELECT ${timeouts}`),
           ]),
+      receiptPlanning,
       Effect.map(
         sql<Admission>`
           WITH locked AS MATERIALIZED (
@@ -627,16 +644,21 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
             r.caller_key, r.command, r.payload_hash, r.outcome, g.event_sequence::text AS head,
             g.cold_ref, g.cold_digest, g.cold_state_version
             ${cursorColumns}
-          FROM locked g
-          CROSS JOIN ${values}
-          LEFT JOIN actor_receipts r ON r.routing_key = g.routing_key AND r.tenant_id = g.tenant_id
-            AND r.actor_type = g.actor_type AND r.actor_id = g.actor_id AND r.command_id = c.command_id
+          FROM ${values}
+          CROSS JOIN locked g
+          LEFT JOIN LATERAL (
+            SELECT r.caller_key, r.command, r.payload_hash, r.outcome
+            FROM actor_receipts r
+            WHERE ${receiptPoint(sql`(g.routing_key, g.tenant_id, g.actor_type, g.actor_id, c.command_id)`)}
+            LIMIT 1
+          ) r ON true
           ${cursorJoin}
           ORDER BY c.ordinal`,
         (rows) => {
           admissions = rows
         },
       ),
+      restoreReceiptPlanning,
       ...(cold
         ? [
             Effect.map(
@@ -1639,8 +1661,9 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                   WHERE g.generation = ${committed.generation} AND g.created = ${committed.created}
                     AND g.event_sequence = ${committed.head}
                     AND g.cold_ref IS NULL
-                    AND NOT EXISTS (SELECT 1 FROM actor_receipts WHERE ${actorRow}
-                      AND command_id = ${request.commandId})
+                    AND NOT EXISTS (SELECT 1 FROM actor_receipts r
+                      WHERE ${receiptPoint(sql`(${routingKey}::bigint, ${tenant}::text,
+                        ${actor}::text, ${id}::text, ${request.commandId}::text)`)})
                     AND (${request.external !== true} OR
                       (g.now + ${identityOffset} >= ${issuedAt} AND g.now + ${identityOffset} < ${expiresAt}))
                 ) THEN 1 ELSE 0 END AS accepted,
@@ -1649,6 +1672,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
               const flight = [
                 begin,
                 Effect.asVoid(sql`SELECT ${timeouts}`),
+                receiptPlanning,
                 Effect.map(guard, (rows) => {
                   startedAtMs = Number(rows[0]!.now)
                   if (request.external === true) batch[0]!.admitted = true
@@ -1661,6 +1685,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                     }),
                   ),
                 ),
+                restoreReceiptPlanning,
                 ...plan.writes,
                 Effect.map(control("COMMIT"), (result) => {
                   tag = result.command

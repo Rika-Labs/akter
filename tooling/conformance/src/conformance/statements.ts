@@ -166,14 +166,14 @@ export const wireStatements = () => {
 /**
  * What one external command to a warm activation costs across every pool,
  * derived from the turn's two groups rather than measured. The admission
- * flight sends `BEGIN`, the timeout `set_config`, and the fenced read that
- * resolves the receipt. A command that runs its handler and dirties one key
+ * flight sends `BEGIN`, the timeout `set_config`, and the fenced read bracketed
+ * by receipt-only planner settings. A command that runs its handler and dirties one key
  * then sends the state upsert, the receipt insert, `COMMIT`, and the read of
- * the commit version and the clock its expiry recheck uses: 2 flights and 7
+ * the commit version and the clock its expiry recheck uses: 2 flights and 9
  * statements. A replay sends `ROLLBACK` and that same read instead: 2 flights
- * and 5 statements. Nothing is read before delivery or after the turn.
+ * and 7 statements. Nothing is read before delivery or after the turn.
  */
 export const SERVED_COMMAND = {
-  warm: { flights: 2, statements: 7 },
-  replay: { flights: 2, statements: 5 },
+  warm: { flights: 2, statements: 9 },
+  replay: { flights: 2, statements: 7 },
 } as const
