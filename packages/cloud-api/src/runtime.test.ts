@@ -251,8 +251,8 @@ describe("runtime models", () => {
 
     declared(
       QuotaExceeded,
-      Framework.QuotaExceeded,
-      Framework.QuotaExceeded.make({
+      QuotaExceeded,
+      QuotaExceeded.make({
         organizationId: "org_1",
         period: "2026-10",
         cap: "compute",

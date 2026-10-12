@@ -36,7 +36,8 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./server": "./src/server.ts"
+    "./server": "./src/server.ts",
+    "./testing": "./src/testing/index.ts"
   },
   "publishConfig": {
     "types": "./dist/index.d.ts",
@@ -48,6 +49,10 @@
       "./server": {
         "types": "./dist/server.d.ts",
         "default": "./dist/server.js"
+      },
+      "./testing": {
+        "types": "./dist/testing/index.d.ts",
+        "default": "./dist/testing/index.js"
       },
       "./package.json": "./package.json"
     },

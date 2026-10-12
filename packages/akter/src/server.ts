@@ -24,3 +24,15 @@ export type { StoreOptions } from "./store/service.ts"
 export type { S3Options } from "./store/s3.ts"
 
 export { Store }
+
+export {
+  ASSERTION_HEADER,
+  ASSERTION_TYPE,
+  canonicalRequest,
+  KEY_REFRESH_PATH,
+  KEY_REFRESH_TYPE,
+  reauthenticationDigest,
+  requestDigest,
+} from "./serve/assertion/binding.ts"
+
+export type { BoundRequest } from "./serve/assertion/binding.ts"

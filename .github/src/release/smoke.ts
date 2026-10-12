@@ -74,7 +74,8 @@ console.log("cloud-api contract passed")
 `
 
 const consumerMain = `import assert from "node:assert/strict"
-import { ActorError, ASSERTION_HEADER, InvalidInput, requestDigest, User } from "@rikalabs/akter"
+import { ActorError, InvalidInput, User } from "@rikalabs/akter"
+import { ASSERTION_HEADER, requestDigest } from "@rikalabs/akter/server"
 import { Effect, Schema } from "effect"
 
 const caller = Schema.decodeUnknownSync(User)({ _tag: "User", subject: "smoke" })
@@ -93,7 +94,7 @@ const [first, again, other] = await Promise.all([digest("a"), digest("a"), diges
 assert.match(first, /^[0-9a-f]{64}$/)
 assert.equal(first, again)
 assert.notEqual(first, other)
-console.log("root entry passed")
+console.log("root and server entries passed")
 `
 
 const cliSmoke = Effect.fn("cliSmoke")(function* ({
