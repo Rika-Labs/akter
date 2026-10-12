@@ -24,10 +24,14 @@ s/<nn>/log/<offset>         segments
 s/<nn>/cp/<inverted offset> checkpoint manifests
 pages/<sha256>              state, list, manifest and index pages
 gc/<epoch>                  GC lease
-cluster/runners/<id>        runner leases (advisory)
-cluster/assignments         shard assignment (advisory)
+cluster/runners/<address>   runner registration (advisory)
+cluster/beats/<address>     runner heartbeat (advisory)
+cluster/locks/<shard>       shard lock (advisory)
+cluster/machines/<id>       machine id claim (advisory)
 audit/<date>/<id>           operator read audit records
 ```
+
+Shard assignment is not stored: each runner computes it from the runner leases with `HashRing`.
 
 The `Store` service provides the log ([ADR 0126](0126-shard-ownership-on-the-bucket-log.md)), pages ([ADR 0127](0127-snapshots-pages-lists-history-gc.md)), the persisted index ([ADR 0131](0131-find-over-owner-held-index.md)) and the runner leases ([ADR 0135](0135-effect-primitive-inventory.md)). Its implementations:
 
