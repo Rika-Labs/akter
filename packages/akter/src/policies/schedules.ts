@@ -1,6 +1,16 @@
 import { Cron, DateTime, Duration, Effect, Option, Result, Schema, SchemaAST } from "effect"
-import type { AnyCommand } from "../members/command.ts"
-import { CRON_PREFIX } from "../runtime/cron/key.ts"
+
+/** Timer keys reserved for `schedules`; application timers may not use them. */
+const CRON_PREFIX = "$cron:"
+
+/** A command a `schedules` entry may name: its tag and its service-free payload schema. */
+export interface ScheduledCommand {
+  readonly tag: string
+  readonly payload: Schema.Top & {
+    readonly DecodingServices: never
+    readonly EncodingServices: never
+  }
+}
 
 /** One `schedules` entry: its tick's timer key, when it ticks, and its zero-input target. */
 export interface CronEntry {
@@ -13,8 +23,8 @@ export interface CronEntry {
 }
 
 /** The commands a `schedules` entry may target: those whose payload is `Schema.Void`. */
-export type ScheduleTarget<Command extends AnyCommand> = AnyCommand extends Command
-  ? AnyCommand
+export type ScheduleTarget<Command extends ScheduledCommand> = ScheduledCommand extends Command
+  ? ScheduledCommand
   : Extract<Command, { readonly payload: Schema.Void }>
 
 /** An actor type's cron entries and how late a tick may still fire. */
@@ -23,7 +33,7 @@ export interface CronSchedule {
   readonly skipMs: number
 }
 
-const emptyPayload = (command: AnyCommand) =>
+const emptyPayload = (command: ScheduledCommand) =>
   Schema.encodeEffect(
     Schema.fromJsonString(Schema.toCodecJson(Schema.Struct({ value: command.payload }))),
   )({ value: undefined }).pipe(Effect.orDie)
@@ -89,8 +99,8 @@ export const resolveSchedules = ({
   declared,
   commands,
 }: {
-  readonly declared: Readonly<Record<string, AnyCommand>> | undefined
-  readonly commands: ReadonlyArray<AnyCommand>
+  readonly declared: Readonly<Record<string, ScheduledCommand>> | undefined
+  readonly commands: ReadonlyArray<ScheduledCommand>
 }): ReadonlyArray<CronEntry> => {
   const entries: Array<CronEntry> = []
   const declarations = new Map<string, string>()

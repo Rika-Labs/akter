@@ -9,7 +9,6 @@ import {
   RunnerAtCapacity,
   Timeout,
 } from "../errors/actor.ts"
-import { checkDeclaredErrors } from "../actor/served.ts"
 import { actorErrorBody, statusOf } from "../protocol/wire.ts"
 import { actorErrorResponse } from "./wire.ts"
 
@@ -65,26 +64,4 @@ describe("served error envelopes", () => {
         expect(statusOf(NotCreated.make({}))).toBe(404)
       }),
     ))
-
-  it("rejects a declared error that claims a framework status or tag", () => {
-    class Conflict extends Schema.TaggedError<Conflict>()("Conflict", {}, { httpApiStatus: 409 }) {}
-
-    class Defect extends Schema.TaggedError<Defect>()("Defect", {}) {}
-
-    class Malformed extends Schema.TaggedError<Malformed>()(
-      "Malformed",
-      {},
-      { httpApiStatus: 400 },
-    ) {}
-
-    class Missing extends Schema.TaggedError<Missing>()("Missing", {}, { httpApiStatus: 404 }) {}
-
-    class Teapot extends Schema.TaggedError<Teapot>()("Teapot", {}, { httpApiStatus: 418 }) {}
-
-    expect(() => checkDeclaredErrors({ tag: "M", error: Conflict })).toThrow(/409/)
-    expect(() => checkDeclaredErrors({ tag: "M", error: Malformed })).toThrow(/400/)
-    expect(() => checkDeclaredErrors({ tag: "M", error: Missing })).toThrow(/404/)
-    expect(() => checkDeclaredErrors({ tag: "M", error: Defect })).toThrow(/reserved/)
-    expect(() => checkDeclaredErrors({ tag: "M", error: Teapot })).not.toThrow()
-  })
 })

@@ -8,10 +8,9 @@ import { RunnerAddress, Runners, ShardingConfig } from "effect/cluster"
 import { RpcMessage, RpcSerialization } from "effect/rpc"
 import { Socket, SocketServer } from "effect/socket"
 import { describe, expect, it } from "vitest"
-import { Runner } from "../runner.ts"
-import { PeerHealth } from "./transport.ts"
+import { mtls, PeerHealth } from "./transport.ts"
 import { RunnerAuthority } from "./authority.ts"
-import type { RunnerCredentials } from "./credentials.ts"
+import { identity as runnerIdentity, type RunnerCredentials } from "./credentials.ts"
 
 const DEPLOYMENT = "deployment-a"
 
@@ -36,7 +35,7 @@ const runner = Effect.fnUntraced(function* (
     frames: [] as Array<string>,
   }
   const context = yield* Layer.build(
-    Runner.mtls({
+    mtls({
       deployment: DEPLOYMENT,
       credentials: Effect.suspend(() =>
         state.hang ? Effect.never : Effect.succeed(state.credentials),
@@ -297,8 +296,8 @@ describe("runner mutual TLS", () => {
           const stranger = yield* RunnerAuthority.make()
           const caller = yield* runner(yield* authority.issue({ deployment: DEPLOYMENT }))
           const [own, extra] = crafted(
-            `URI:${Runner.identity(DEPLOYMENT)}`,
-            `URI:${Runner.identity(DEPLOYMENT)},DNS:runner.akter.internal`,
+            `URI:${runnerIdentity(DEPLOYMENT)}`,
+            `URI:${runnerIdentity(DEPLOYMENT)},DNS:runner.akter.internal`,
           )
           const strict = yield* runner(own!)
 
@@ -364,11 +363,11 @@ describe("runner mutual TLS", () => {
   it("refuses a peer whose certificate names anything besides its identity", () =>
     Effect.runPromise(
       Effect.gen(function* () {
-        const identity = `URI:${Runner.identity(DEPLOYMENT)}`
+        const identity = `URI:${runnerIdentity(DEPLOYMENT)}`
         const [own, ...others] = crafted(
           identity,
           `${identity},DNS:runner.akter.internal`,
-          `${identity},URI:${Runner.identity("deployment-b")}`,
+          `${identity},URI:${runnerIdentity("deployment-b")}`,
           `${identity},email:ops@example.com`,
           `DNS:spiffe://akter/deployment/${DEPLOYMENT}`,
         )
@@ -466,7 +465,7 @@ describe("runner mutual TLS", () => {
 
         const stuck = yield* Effect.exit(
           Layer.build(
-            Runner.mtls({
+            mtls({
               deployment: DEPLOYMENT,
               credentials: Effect.never,
               refreshTimeout: "100 millis",
@@ -581,7 +580,7 @@ describe("runner mutual TLS", () => {
           expect(String(exit)).toContain(reason)
         }
 
-        expect(() => Runner.mtls({ deployment: "a/b", credentials: Effect.succeed(own) })).toThrow(
+        expect(() => mtls({ deployment: "a/b", credentials: Effect.succeed(own) })).toThrow(
           "Runner deployment",
         )
       }).pipe(Effect.scoped),
