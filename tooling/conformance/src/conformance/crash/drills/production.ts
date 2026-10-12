@@ -6,6 +6,9 @@ import type { RunnerCredentials } from "../../../../../../packages/akter/src/run
 import { disposableDatabase } from "../../../../../../packages/akter/src/testing/database.ts"
 import { freePort, until } from "./failover.ts"
 
+/** Escalates cleanup so a stalled runner cannot hide the drill's original failure behind an endless SIGTERM wait. */
+export const drillCleanup = { forceKillAfter: "2 seconds" } as const
+
 export interface RunnerProcess {
   readonly port: number
   readonly child: ChildProcessSpawner.ChildProcessHandle
@@ -82,6 +85,7 @@ export const processTopology = Effect.fnUntraced(function* (
     }
     const child = yield* spawner.spawn(
       ChildProcess.make("bun", [new URL("./runner.ts", import.meta.url).pathname], {
+        ...drillCleanup,
         env: {
           DRILL_DATABASE_URL: Redacted.value(database),
           DRILL_PORT: String(port),
@@ -96,7 +100,6 @@ export const processTopology = Effect.fnUntraced(function* (
         extendEnv: true,
         stdin: { stream: "pipe", endOnDone: false },
         stderr: "inherit",
-        forceKillAfter: pooling === undefined ? undefined : "2 seconds",
       }),
     )
     const runner: RunnerProcess = {

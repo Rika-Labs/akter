@@ -1,7 +1,22 @@
 import { BunCrypto, BunServices } from "@effect/platform-bun"
 import { layerClientProtocol, layerSocketServer } from "@effect/platform-bun/BunClusterSocket"
 import { connect, type ConnectionOptions } from "node:tls"
-import { Config, Context, DateTime, Effect, Layer, ManagedRuntime, Redacted, Schema } from "effect"
+import {
+  Cause,
+  Config,
+  Context,
+  DateTime,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  ManagedRuntime,
+  Redacted,
+  Schema,
+  Stream,
+} from "effect"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
 import { Actor } from "../../../../../../packages/akter/src/index.ts"
@@ -17,11 +32,48 @@ import type { RunnerCredentials } from "../../../../../../packages/akter/src/run
 import { decompress } from "../../../../../../packages/akter/src/runtime/storage/codec.ts"
 import { disposableDatabase } from "../../../../../../packages/akter/src/testing/database.ts"
 import { freePort, until } from "./failover.ts"
-import { processTopology, type RunnerProcess } from "./production.ts"
+import { drillCleanup, processTopology, type RunnerProcess } from "./production.ts"
 
 describe("public production runner topology on Postgres", () => {
   const runtime = ManagedRuntime.make(Layer.merge(BunServices.layer, BunCrypto.layer))
   afterAll(() => runtime.dispose())
+
+  it("forces a stalled drill child to exit during cleanup without hiding its SIGKILL outcome", () =>
+    runtime.runPromise(
+      Effect.gen(function* () {
+        const ready = yield* Deferred.make<ChildProcessSpawner.ChildProcessHandle>()
+        const closing = yield* Effect.gen(function* () {
+          const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+          const child = yield* spawner.spawn(
+            ChildProcess.make(
+              "bun",
+              [
+                "-e",
+                'process.on("SIGTERM", () => {}); console.log("READY"); setInterval(() => {}, 1000)',
+              ],
+              drillCleanup,
+            ),
+          )
+          yield* child.stdout.pipe(
+            Stream.decodeText(),
+            Stream.splitLines,
+            Stream.take(1),
+            Stream.runDrain,
+          )
+          yield* Deferred.succeed(ready, child)
+        }).pipe(Effect.scoped, Effect.forkChild)
+        const child = yield* Deferred.await(ready)
+        const closed = yield* Fiber.await(closing).pipe(
+          Effect.timeout("10 seconds"),
+          Effect.ensuring(child.kill({ killSignal: "SIGKILL" }).pipe(Effect.ignore)),
+        )
+        expect(Exit.isSuccess(closed)).toBe(true)
+        const exited = yield* Effect.exit(child.exitCode)
+        expect(Exit.isFailure(exited) ? Cause.pretty(exited.cause) : "exited cleanly").toContain(
+          "SIGKILL",
+        )
+      }),
+    ))
 
   it(
     "fails closed on a different shard layout, an embedded join, and PGlite without changing the deployed configuration",
