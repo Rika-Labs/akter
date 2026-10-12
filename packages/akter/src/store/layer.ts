@@ -1,5 +1,5 @@
 import { Effect, Layer } from "effect"
-import type { CheckOptions } from "./check.ts"
+import { type CheckOptions, checkBucket } from "./check.ts"
 import { fileSystemBucket } from "./file-system.ts"
 import { memoryBucket } from "./memory.ts"
 import { type S3Options, s3Bucket } from "./s3.ts"
@@ -25,3 +25,15 @@ export const memory = (options: StoreOptions = {}) =>
 
 /** Runs the conformance probe against the provided store's bucket. */
 export const check = (options?: CheckOptions) => Store.use((store) => store.check(options))
+
+/**
+ * Runs the conformance probe against an S3-compatible bucket without opening a
+ * store in it: nothing is written outside the probe's own `check/` prefix, so
+ * a bucket can be tried before it holds a store.
+ */
+export const checkS3 = (options: S3Options, check?: CheckOptions) =>
+  Effect.flatMap(s3Bucket(options), (bucket) => checkBucket(bucket)(check))
+
+/** {@link checkS3} for a local directory. */
+export const checkFileSystem = (directory: string, check?: CheckOptions) =>
+  Effect.flatMap(fileSystemBucket(directory), (bucket) => checkBucket(bucket)(check))

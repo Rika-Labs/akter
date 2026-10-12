@@ -655,13 +655,18 @@ export const storeConformance = <OpenError, ClientError>(
         }),
     )
 
-    it.effect(
-      "passes its own conformance probe (rejects a backend whose conditional writes or listings are not atomic)",
+    it.live(
+      "passes its own conformance probe (rejects a backend whose conditional writes, listings or last-modified times do not behave like S3's)",
       () =>
         Effect.gen(function* () {
           const client = yield* backend.namespace
           const a = yield* owner(client, "a")
-          const report = yield* a.store.check({ writers: 8, rounds: 3, writes: 3 })
+          const report = yield* a.store.check({
+            writers: 8,
+            rounds: 3,
+            writes: 3,
+            settle: "2 seconds",
+          })
           expect(report.probes.filter((probe) => !probe.passed)).toEqual([])
           expect(report.passed).toBe(true)
           expect(yield* (yield* client).list("check/")).toEqual([])

@@ -233,6 +233,27 @@ export const s3Bucket = (options: S3Options) =>
           Effect.map((output) => Option.some(output.ContentLength ?? 0)),
           recover(NOT_FOUND, () => Option.none<number>()),
         ),
+      modified: (key) =>
+        call(
+          "modified",
+          key,
+          (abortSignal) =>
+            client.send(new HeadObjectCommand({ Bucket, Key: `${prefix}${key}` }), { abortSignal }),
+          "idempotent",
+        ).pipe(
+          Effect.flatMap((output) =>
+            output.LastModified === undefined
+              ? Effect.fail(
+                  StorageUnavailable.make({
+                    operation: "modified",
+                    key,
+                    reason: "the response has no last-modified time",
+                  }),
+                )
+              : Effect.succeedSome(output.LastModified.getTime()),
+          ),
+          recover(NOT_FOUND, () => Option.none<number>()),
+        ),
       create: (key, body) =>
         Effect.map(put("create", key, body, Condition.Absent()), Option.isSome),
       put: (key, body) => Effect.asVoid(put("put", key, body, Condition.Always())),

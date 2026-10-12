@@ -1,5 +1,6 @@
-import { Clock, Effect, Option, Random, Result } from "effect"
+import { Clock, Duration, Effect, Option, Random, Result } from "effect"
 import { type Bucket, Condition } from "./bucket.ts"
+import type { StorageUnavailable } from "./errors.ts"
 
 /** How hard the probe pushes the bucket. */
 export interface CheckOptions {
@@ -9,6 +10,8 @@ export interface CheckOptions {
   readonly rounds?: number
   /** Back-to-back writes to one key in the write-rate probe. Default 10. */
   readonly writes?: number
+  /** Wait between the two identical writes of the last-modified probe; it must exceed the provider's timestamp resolution, one second on S3. Default 2 seconds. */
+  readonly settle?: Duration.Input
 }
 
 /** One probe's verdict and what it observed. */
@@ -16,6 +19,8 @@ export interface Probe {
   readonly name: string
   readonly passed: boolean
   readonly detail: string
+  /** The numbers behind the verdict, such as rounds raced, violations seen and milliseconds elapsed. */
+  readonly measured: Readonly<Record<string, number>>
 }
 
 /** Every probe's verdict; the bucket is supported only when all passed. */
@@ -29,6 +34,17 @@ const THROTTLE_STATUSES = new Set([429, 503])
 
 const DELETED_KEYS = 50
 
+/**
+ * Key names for the listing-order probe, created out of order. Some are prefixes of others and
+ * some sort around digits and letters; none differ only by case, so a case-insensitive file system
+ * can hold them all.
+ */
+const ORDERED_NAMES = ["m", "a", "10", "9", "_", "z", "0", "-", "1", "a.b", "b", "1a"]
+
+const ORDERED_PAGE = 5
+
+const byteOrder = (left: string, right: string) => (left < right ? -1 : left > right ? 1 : 0)
+
 const encoder = new TextEncoder()
 
 const bytesEqual = (left: Uint8Array, right: Uint8Array) =>
@@ -38,10 +54,11 @@ const bytesEqual = (left: Uint8Array, right: Uint8Array) =>
  * The conformance probe that defines a supported bucket for Akter: the log's
  * fence needs create-once writes that never let two concurrent creators both
  * succeed, runner leases need compare-and-swap on etags, open needs listings
- * that show every completed write, and trim needs batch deletes. The probe
- * also records how the bucket treats rapid writes to one key, which bounds
- * heartbeat rates. It writes only under `check/<run>/` and removes what it
- * wrote.
+ * that show every completed write and return keys in byte order through
+ * `limit` and `startAfter`, garbage collection needs a plain `PUT` to
+ * refresh last-modified, and trim needs batch deletes. The probe also records
+ * how the bucket treats rapid writes to one key, which bounds heartbeat
+ * rates. It writes only under `check/<run>/` and removes what it wrote.
  */
 export const checkBucket =
   (bucket: Bucket) =>
@@ -50,6 +67,7 @@ export const checkBucket =
       const writers = options.writers ?? 16
       const rounds = options.rounds ?? 10
       const writes = options.writes ?? 10
+      const settle = Duration.toMillis(Duration.fromInputUnsafe(options.settle ?? "2 seconds"))
       const run = `check/${(yield* Random.nextIntBetween(0, 0xffff_ffff)).toString(16)}${(yield* Random.nextIntBetween(0, 0xffff_ffff)).toString(16)}/`
       const leaseKeys: Array<string> = []
       const objectKeys: Array<string> = []
@@ -89,6 +107,13 @@ export const checkBucket =
           name: "conditional create race",
           passed: doubles === 0 && lost === 0,
           detail: `${writers} writers x ${rounds} rounds: ${doubles} rounds with two successful creators, ${lost} winners not stored, ${unknown} unanswered writes`,
+          measured: {
+            writers,
+            rounds,
+            doubleWinners: doubles,
+            lostWinners: lost,
+            unanswered: unknown,
+          },
         }
       })
 
@@ -108,6 +133,7 @@ export const checkBucket =
             name: "compare-and-swap race",
             passed: false,
             detail: "the probe key already existed",
+            measured: { writers, rounds, doubleWinners: 0, lostWinners: 0, unanswered: 0 },
           }
         let etag = first.value
         for (let round = 0; round < rounds; round++) {
@@ -131,6 +157,13 @@ export const checkBucket =
               name: "compare-and-swap race",
               passed: false,
               detail: "the probe key vanished",
+              measured: {
+                writers,
+                rounds,
+                doubleWinners: doubles,
+                lostWinners: lost,
+                unanswered: unknown,
+              },
             }
           const winner = winners[0]
           if (
@@ -144,6 +177,13 @@ export const checkBucket =
           name: "compare-and-swap race",
           passed: doubles === 0 && lost === 0,
           detail: `${writers} writers x ${rounds} rounds: ${doubles} rounds with two successful swaps, ${lost} winners not stored, ${unknown} unanswered writes`,
+          measured: {
+            writers,
+            rounds,
+            doubleWinners: doubles,
+            lostWinners: lost,
+            unanswered: unknown,
+          },
         }
       })
 
@@ -162,6 +202,75 @@ export const checkBucket =
           name: "list after write",
           passed: missing === 0 && lingering === 0,
           detail: `${rounds} rounds: ${missing} created keys missing from the next listing, ${lingering} deleted keys still listed`,
+          measured: { rounds, missingFromListing: missing, lingeringInListing: lingering },
+        }
+      })
+
+      const orderedListing = Effect.gen(function* () {
+        const prefix = `${run}ordered/`
+        const keys = ORDERED_NAMES.map((name) => `${prefix}${name}`)
+        objectKeys.push(...keys)
+        yield* Effect.forEach(keys, (key) => bucket.create(key, encoder.encode(key)), {
+          concurrency: 4,
+          discard: true,
+        })
+        const expected = keys.toSorted(byteOrder)
+        const full = yield* bucket.list(prefix)
+        const paged: Array<string> = []
+        let pages = 0
+        let oversized = 0
+        while (pages <= expected.length) {
+          const after = paged[paged.length - 1]
+          const page = yield* bucket.list(
+            prefix,
+            after === undefined
+              ? { limit: ORDERED_PAGE }
+              : { limit: ORDERED_PAGE, startAfter: after },
+          )
+          pages += 1
+          if (page.length === 0) break
+          if (page.length > ORDERED_PAGE) oversized += 1
+          paged.push(...page)
+        }
+        const same = (found: ReadonlyArray<string>) =>
+          found.length === expected.length && found.every((key, index) => key === expected[index])
+        return {
+          name: "ordered listing with limit and start-after",
+          passed: same(full) && same(paged) && oversized === 0,
+          detail: `${keys.length} keys created out of order: the full listing is ${same(full) ? "in byte order" : "not in byte order"}; ${pages} pages of at most ${ORDERED_PAGE} by start-after ${same(paged) ? "return every key once, in order" : "do not return every key once, in order"}, ${oversized} pages over the limit`,
+          measured: {
+            keys: keys.length,
+            pageSize: ORDERED_PAGE,
+            pages,
+            fullListingInOrder: same(full) ? 1 : 0,
+            pagedKeys: paged.length,
+            oversizedPages: oversized,
+          },
+        }
+      })
+
+      const lastModified = Effect.gen(function* () {
+        const key = `${run}modified`
+        objectKeys.push(key)
+        const body = encoder.encode("modified")
+        yield* bucket.put(key, body)
+        const first = yield* bucket.modified(key)
+        yield* Effect.sleep(settle)
+        yield* bucket.put(key, body)
+        const second = yield* bucket.modified(key)
+        if (Option.isNone(first) || Option.isNone(second))
+          return {
+            name: "overwrite refreshes last-modified",
+            passed: false,
+            detail: "a written key has no last-modified time",
+            measured: { settleMillis: settle, advancedMillis: 0 },
+          }
+        const advanced = second.value - first.value
+        return {
+          name: "overwrite refreshes last-modified",
+          passed: advanced > 0,
+          detail: `a plain PUT of identical bytes ${settle} ms after the first moved last-modified by ${advanced} ms`,
+          measured: { settleMillis: settle, advancedMillis: advanced },
         }
       })
 
@@ -190,6 +299,7 @@ export const checkBucket =
           name: "per-key write rate",
           passed: failed === 0 && kept,
           detail: `${writes} back-to-back writes to one key in ${elapsed} ms: ${throttled} throttled, ${failed} failed otherwise, last accepted write ${kept ? "stored" : "not stored"}`,
+          measured: { writes, writeMillis: elapsed, throttled, failed },
         }
       })
 
@@ -210,15 +320,28 @@ export const checkBucket =
           name: "batch delete",
           passed: before === DELETED_KEYS && after === 0,
           detail: `${before} of ${DELETED_KEYS} keys listed before one batch delete, ${after} after`,
+          measured: { keys: DELETED_KEYS, listedBefore: before, listedAfter: after },
         }
       })
 
+      const timed = (
+        probe: Effect.Effect<Probe, StorageUnavailable>,
+      ): Effect.Effect<Probe, StorageUnavailable> =>
+        Effect.gen(function* () {
+          const started = yield* Clock.currentTimeMillis
+          const verdict = yield* probe
+          const elapsed = (yield* Clock.currentTimeMillis) - started
+          return { ...verdict, measured: { ...verdict.measured, elapsedMillis: elapsed } }
+        })
+
       const probes = yield* Effect.all([
-        conditionalCreate,
-        compareAndSwap,
-        listAfterWrite,
-        writeRate,
-        deleteBatch,
+        timed(conditionalCreate),
+        timed(compareAndSwap),
+        timed(listAfterWrite),
+        timed(orderedListing),
+        timed(lastModified),
+        timed(writeRate),
+        timed(deleteBatch),
       ]).pipe(
         Effect.ensuring(
           Effect.suspend(() =>

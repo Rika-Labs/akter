@@ -116,8 +116,10 @@ jobs:
           fi
           {
             bun run turbo run build --filter='!@rikalabs/akter' --concurrency=100% --summarize "${affected[@]}"
-            bun run turbo run test test:integration --filter='!@rikalabs/akter' --filter='!@akter/conformance' \
+            bun run turbo run test --filter='!@rikalabs/akter' --filter='!@akter/conformance' \
               --only --force --concurrency=100% --summarize "${affected[@]}"
+            bun run turbo run test:integration --filter='!@rikalabs/akter' --filter='!@akter/conformance' \
+              --filter='!@rikalabs/akter-cli' --only --force --concurrency=100% --summarize "${affected[@]}"
           } 2>&1 | tee evidence/workspaces/check.log
       - name: Collect Turbo run summaries
         if: always()
@@ -191,7 +193,8 @@ jobs:
               node-units)
                 bun run test:node:units ;;
               integration)
-                bun run --cwd packages/akter test:integration ;;
+                bun run --cwd packages/akter test:integration &&
+                bun run --cwd apps/cli test:integration ;;
               *)
                 echo "Unknown shard kind $kind"; false ;;
             esac 2>&1 | tee "evidence/$name/check.log"

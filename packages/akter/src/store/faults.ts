@@ -6,6 +6,7 @@ import { StorageUnavailable } from "./errors.ts"
 export type OperationKind =
   | "get"
   | "head"
+  | "modified"
   | "create"
   | "put"
   | "list"
@@ -129,6 +130,7 @@ const plan = (): Faults => {
     wrap: (bucket) => ({
       get: (key) => intercept({ kind: "get", key }, bucket.get(key)),
       head: (key) => intercept({ kind: "head", key }, bucket.head(key)),
+      modified: (key) => intercept({ kind: "modified", key }, bucket.modified(key)),
       create: (key, body) => intercept({ kind: "create", key }, bucket.create(key, body)),
       put: (key, body) => intercept({ kind: "put", key }, bucket.put(key, body)),
       list: (prefix, options) =>

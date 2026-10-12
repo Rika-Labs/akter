@@ -1,6 +1,6 @@
 # Akter CLI
 
-The `akter` command-line tool signs in to Akter Cloud, deploys applications, and manages their environments, keys and logs.
+The `akter` command-line tool signs in to Akter Cloud, deploys applications, and manages their environments, keys and logs. `akter storage check` runs the storage conformance probe against a bucket or directory before you rely on it for a store.
 
 Install the current alpha in a project with `bun add -d @rikalabs/akter-cli@alpha` or `npm i -D @rikalabs/akter-cli@alpha`, then run `bunx akter --help` or `npx akter --help`. For one-off use, run `npx -p @rikalabs/akter-cli@alpha akter login`; for a global install, run `npm i -g @rikalabs/akter-cli@alpha`. The package supports Node 24 or later and Bun 1.4.2 or later. Before 1.0, tagged alphas also advance `latest`; `next` is a separate channel for verified main canaries.
 

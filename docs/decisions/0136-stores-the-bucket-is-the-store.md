@@ -54,13 +54,13 @@ The S3 adapter uses the AWS SDK as a signer only, without server-side-encryption
 5. **Per-key write rate** is measured and reported (R2 allows one write per second per key; the key layout never needs more).
 6. **Batch delete** works.
 
-A store that fails any of 1–4 is unsupported. The supported-provider list in the support matrix names each provider and the date and version of its passing run; MinIO runs in CI and the chosen Cloud provider runs nightly. Simulator and MinIO passes are never relabeled as provider passes.
+A store that fails any of 1–4 is unsupported. The supported-provider list in the [support matrix](../verification/store-providers.md) names each provider and the date and version of its passing run; MinIO runs in CI and the chosen Cloud provider runs nightly. Simulator and MinIO passes are never relabeled as provider passes.
 
 ### 3. Store lifecycle
 
 - The first runner of a new store creates `meta/store` with `If-None-Match: *` (store id, shard count, format version, retention, created-at). A runner whose configuration disagrees with an existing `meta/store` refuses to start. There are no schema migrations: the format version changes only through a new ADR.
 - **Development:** `akter dev` uses `Store.fileSystem` with no flags and no services.
-- **Self-hosted:** one container image plus a bucket: `AKTER_BUCKET`, an endpoint and credentials. The compose reference runs MinIO. Multi-runner self-hosting coordinates through the bucket.
+- **Self-hosted:** one container image plus a bucket: `AKTER_STORAGE_BUCKET`, `AKTER_STORAGE_ENDPOINT` and credentials (`AKTER_STORAGE_ACCESS_KEY_ID`, `AKTER_STORAGE_SECRET_ACCESS_KEY`). The compose reference runs MinIO. Multi-runner self-hosting coordinates through the bucket.
 - **Akter Cloud:** one bucket per environment incarnation in a Cloudflare account dedicated to customer stores (D1, D12), created lazily at the first deployment, delivered to runners as temporary bucket-scoped credentials refreshed through the edge, retired 30 days after the environment is deleted (D13). Preview and pull-request stage stores live in a third Cloudflare account, so a preview stage token can never reach a production store (D26). The hosted runtime composes these public layers privately; there is no public `AkterCloud.layer`. Cloud ADRs own the lifecycle.
 
 ### 4. Isolation

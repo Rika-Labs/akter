@@ -108,6 +108,7 @@ const make = (
   const bucket: Bucket = {
     get: (key) => intercept("get", key, raw.get(key), false),
     head: (key) => intercept("head", key, raw.head(key), false),
+    modified: (key) => intercept("modified", key, raw.modified(key), false),
     create: (key, body) => intercept("create", key, raw.create(key, body), true),
     put: (key, body) => intercept("put", key, raw.put(key, body), true),
     list: (prefix, options) => intercept("list", prefix, raw.list(prefix, options), false),
