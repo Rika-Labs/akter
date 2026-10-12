@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased (0.2)
+
+- **Breaking cloud contract:** `Environment.database` is removed from `@rikalabs/akter-cli/cloud-api`. An environment is `{ name, projectId, currentDeploymentId }`; a hosted application's data lives in its environment's store bucket, so there is no database status to report. A response that still carries `database` has the field dropped by the default decode and refused by a strict one (`onExcessProperty: "error"`). `ProjectRegion.database` is unchanged.
+- `akter deploy` no longer reads the environment after the rollout is live or prints the database report (the p50 latency warning and `Database runner cap`). Its last output is `Deployment <id> is live in <environment>`.
+- `DATABASE_URL` is an ordinary customer variable with no platform meaning; removing it refuses no deployment.
+
 ## 0.1.0-alpha.6 (2026-10-11)
 
 The CLI and framework release together on the `alpha` and `latest` npm dist-tags. CLI credential storage is unchanged; the matching framework adds `0034_cold_tier`, `0035_hot_table_foreign_keys` and opt-in cold objects. Rolling-upgrade safety from alpha.5 is **not established**; see the [framework changelog](https://github.com/Rika-Labs/akter/blob/main/packages/akter/CHANGELOG.md) and [alpha upgrade notes](https://docs.akter.dev/operations/alpha-upgrades) before upgrading runners.
