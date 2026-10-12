@@ -48,22 +48,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
-    services:
-      postgres:
-        image: mirror.gcr.io/library/postgres:18.6
-        env:
-          POSTGRES_USER: project
-          POSTGRES_PASSWORD: project
-          POSTGRES_DB: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U project -d postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 12
-    env:
-      TEST_DATABASE_URL: postgres://project:project@127.0.0.1:5432/postgres
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -72,11 +56,9 @@ jobs:
         with:
           save-cache: ${{ matrix.run == 1 }}
       - run: sudo apt-get update -q && sudo apt-get install -yq stress-ng
-      - name: Start the streaming replica
-        run: echo "TEST_REPLICA_DATABASE_URL=$(bun .github/src/replica.ts)" >> "$GITHUB_ENV"
       # Timing-sensitive cases flake under load long before they do on an idle
       # runner, so every run shares its own machine with one busy worker per core.
-      # Each run owns a runner, so the runs no longer share a clock or a database.
+      # Each run owns a runner, so the runs do not share a clock.
       - name: Run the conformance suites under CPU load
         timeout-minutes: 75
         env:
@@ -89,8 +71,6 @@ jobs:
           trap 'kill %1' EXIT
           failed=0
           # Each suite is one Vitest command, so the reporter flags reach the run they name.
-          # The migration crash file walks hundreds of sequential kill points, so it runs
-          # as a suite of its own, as Verify gives it a job no other file competes with.
           while read -r suite workspace script projects; do
             name="$suite-$RUN"
             status=0
@@ -105,8 +85,6 @@ jobs:
           done <<'SUITES'
           test-framework ../../packages/akter test
           test . test
-          test-integration-postgres . test:integration:postgres
-          test-integration-drills . test:integration:drills
           SUITES
           exit "$failed"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -137,7 +115,7 @@ jobs:
         env:
           STRESS_DIR: stress
           STRESS_RUNS: ${{ needs.plan.outputs.runs }}
-          STRESS_SUITES: test test-integration-postgres test-integration-drills
+          STRESS_SUITES: test
         run: bun .github/src/stress-summary.ts
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()

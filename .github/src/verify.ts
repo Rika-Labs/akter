@@ -1,9 +1,8 @@
-import { Config, Effect, Option, Schedule, Schema } from "effect"
+import { Effect, Option, Schedule, Schema } from "effect"
 import { BunRuntime } from "@effect/platform-bun"
 
 interface Check {
   readonly command: ReadonlyArray<string>
-  readonly env?: Readonly<Record<string, string>>
 }
 
 const missingProcess = Schema.is(Schema.Struct({ code: Schema.Literal("ESRCH") }))
@@ -37,7 +36,6 @@ export const runChecks = (checks: ReadonlyArray<Check>) =>
         Effect.acquireRelease(
           Effect.sync(() =>
             Bun.spawn([...check.command], {
-              env: { ...Bun.env, ...check.env },
               stdout: "inherit",
               stderr: "inherit",
               detached: true,
@@ -69,32 +67,25 @@ export const runChecks = (checks: ReadonlyArray<Check>) =>
 
 if (import.meta.main) {
   BunRuntime.runMain(
-    Effect.gen(function* () {
-      const nodeReplica = yield* Config.String("TEST_NODE_REPLICA_DATABASE_URL")
-      const nodeDatabase = yield* Config.String("TEST_NODE_DATABASE_URL")
-      yield* runChecks([
-        {
-          command: ["bun", "run", "test:node:core"],
-          env: { TEST_DATABASE_URL: nodeDatabase, TEST_REPLICA_DATABASE_URL: nodeReplica },
-        },
-        {
-          command: [
-            "bun",
-            "run",
-            "turbo",
-            "run",
-            "lint",
-            "lint:root",
-            "typecheck",
-            "test",
-            "build",
-            "test:integration",
-            "--concurrency=100%",
-            "--summarize",
-            ...process.argv.slice(2),
-          ],
-        },
-      ])
-    }),
+    runChecks([
+      { command: ["bun", "run", "test:node:core"] },
+      {
+        command: [
+          "bun",
+          "run",
+          "turbo",
+          "run",
+          "lint",
+          "lint:root",
+          "typecheck",
+          "test",
+          "build",
+          "test:integration",
+          "--concurrency=100%",
+          "--summarize",
+          ...process.argv.slice(2),
+        ],
+      },
+    ]),
   )
 }

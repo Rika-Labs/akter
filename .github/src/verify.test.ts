@@ -7,7 +7,7 @@ const runtime = ManagedRuntime.make(BunServices.layer)
 const literal = Schema.encodeEffect(Schema.fromJsonString(Schema.String))
 afterAll(() => runtime.dispose())
 
-it("starts both independent checks before either completes and passes each child its own replica environment", () =>
+it("starts both independent checks before either completes", () =>
   runtime.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
@@ -15,21 +15,15 @@ it("starts both independent checks before either completes and passes each child
         const directory = yield* fs.makeTempDirectoryScoped({ prefix: "akter-verify-" })
         const path = yield* literal(`${directory}/`)
         const script = (self: "node" | "bun", other: "node" | "bun") => `
-    await Bun.write(${path} + "${self}", process.env.TEST_DATABASE_URL + ":" + process.env.TEST_REPLICA_DATABASE_URL);
+    await Bun.write(${path} + "${self}", "${self} started");
     while (!(await Bun.file(${path} + "${other}").exists())) await Bun.sleep(10);
   `
         yield* runChecks([
-          {
-            command: ["bun", "-e", script("node", "bun")],
-            env: { TEST_DATABASE_URL: "node-primary", TEST_REPLICA_DATABASE_URL: "node-replica" },
-          },
-          {
-            command: ["bun", "-e", script("bun", "node")],
-            env: { TEST_DATABASE_URL: "bun-primary", TEST_REPLICA_DATABASE_URL: "bun-replica" },
-          },
+          { command: ["bun", "-e", script("node", "bun")] },
+          { command: ["bun", "-e", script("bun", "node")] },
         ]).pipe(Effect.timeout("5 seconds"))
-        expect(yield* fs.readFileString(`${directory}/node`)).toBe("node-primary:node-replica")
-        expect(yield* fs.readFileString(`${directory}/bun`)).toBe("bun-primary:bun-replica")
+        expect(yield* fs.readFileString(`${directory}/node`)).toBe("node started")
+        expect(yield* fs.readFileString(`${directory}/bun`)).toBe("bun started")
       }),
     ),
   ))
