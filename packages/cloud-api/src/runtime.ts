@@ -1,4 +1,4 @@
-import * as Framework from "@rikalabs/akter/client"
+import * as Framework from "@rikalabs/akter"
 import { Schema, Struct } from "effect"
 
 import { DeploymentSummary } from "./deployments.ts"
