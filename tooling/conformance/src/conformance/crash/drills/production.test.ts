@@ -5,8 +5,10 @@ import {
   Cause,
   Config,
   Context,
+  Console,
   DateTime,
   Deferred,
+  type Duration,
   Effect,
   Exit,
   Fiber,
@@ -32,7 +34,7 @@ import type { RunnerCredentials } from "../../../../../../packages/akter/src/run
 import { decompress } from "../../../../../../packages/akter/src/runtime/storage/codec.ts"
 import { disposableDatabase } from "../../../../../../packages/akter/src/testing/database.ts"
 import { freePort, until } from "./failover.ts"
-import { drillCleanup, processTopology, type RunnerProcess } from "./production.ts"
+import { awaitDrillExit, drillCleanup, processTopology, type RunnerProcess } from "./production.ts"
 
 describe("public production runner topology on Postgres", () => {
   const runtime = ManagedRuntime.make(Layer.merge(BunServices.layer, BunCrypto.layer))
@@ -42,6 +44,7 @@ describe("public production runner topology on Postgres", () => {
     runtime.runPromise(
       Effect.gen(function* () {
         const ready = yield* Deferred.make<ChildProcessSpawner.ChildProcessHandle>()
+        const release = yield* Deferred.make<void>()
         const closing = yield* Effect.gen(function* () {
           const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
           const child = yield* spawner.spawn(
@@ -61,8 +64,17 @@ describe("public production runner topology on Postgres", () => {
             Stream.runDrain,
           )
           yield* Deferred.succeed(ready, child)
+          yield* Deferred.await(release)
         }).pipe(Effect.scoped, Effect.forkChild)
         const child = yield* Deferred.await(ready)
+        const stalled = yield* awaitDrillExit({ port: 0, child }, "100 millis").pipe(
+          Effect.timeout("1 second"),
+          Effect.exit,
+          Effect.ensuring(Deferred.succeed(release, undefined)),
+        )
+        expect(Exit.isFailure(stalled) ? Cause.pretty(stalled.cause) : "exited").toContain(
+          "Timed out waiting for runner 0 to exit after EXIT",
+        )
         const closed = yield* Fiber.await(closing).pipe(
           Effect.timeout("10 seconds"),
           Effect.ensuring(child.kill({ killSignal: "SIGKILL" }).pipe(Effect.ignore)),
@@ -305,6 +317,15 @@ describe("public production runner topology on Postgres", () => {
             const { query, spawn, all } = yield* processTopology(
               transport === "mutual TLS" ? yield* RunnerAuthority.make() : undefined,
             )
+            const wait = <E>(
+              condition: Effect.Effect<boolean, E>,
+              what: string,
+              within: Duration.Input,
+            ) =>
+              Console.log(`DRILL_STAGE begin ${what}`).pipe(
+                Effect.andThen(until(condition, what, within)),
+                Effect.onExit((exit) => Console.log(`DRILL_STAGE end ${what} ${exit._tag}`)),
+              )
             const events = query<{ value: Uint8Array; cursor: string }>(
               "SELECT value, sequence::text AS cursor FROM actor_events WHERE actor_type = 'DrillBeacon' ORDER BY sequence",
             ).pipe(
@@ -320,7 +341,7 @@ describe("public production runner topology on Postgres", () => {
             const owner = events.pipe(Effect.map((rows) => rows.at(-1)?.by))
             const drain = Effect.fnUntraced(function* (runner: RunnerProcess) {
               yield* runner.send("DRAIN")
-              yield* until(
+              yield* wait(
                 Effect.sync(() => runner.readiness !== undefined),
                 "a completed drain",
                 "15 seconds",
@@ -348,7 +369,7 @@ describe("public production runner topology on Postgres", () => {
                 )(runner.readiness!),
               ).toEqual({ ready: false, reason: "drained" })
               yield* runner.send("EXIT")
-              yield* runner.child.exitCode.pipe(Effect.ignore)
+              yield* awaitDrillExit(runner)
               expect(
                 (yield* query<{ count: number }>(
                   `SELECT count(*)::int AS count FROM cluster_locks WHERE address = '127.0.0.1:${runner.port}'`,
@@ -360,12 +381,12 @@ describe("public production runner topology on Postgres", () => {
             const third = yield* spawn(45, 1)
             const initial = [first, second, third]
             yield* Effect.forEach(initial, (runner) => runner.send("GO"), { discard: true })
-            yield* until(
+            yield* wait(
               Effect.sync(() => initial.every(({ acked }) => acked.size >= 2)),
               "three callers under load",
               "30 seconds",
             )
-            yield* until(
+            yield* wait(
               owner.pipe(Effect.map((port) => port !== undefined)),
               "the resident singleton",
               "15 seconds",
@@ -382,7 +403,7 @@ describe("public production runner topology on Postgres", () => {
             expect(String((yield* dead.child.exitCode.pipe(Effect.flip)).cause)).toContain(
               "SIGKILL",
             )
-            yield* until(
+            yield* wait(
               owner.pipe(Effect.map((port) => port !== undefined && port !== deadPort)),
               "singleton failover",
               "20 seconds",
@@ -394,7 +415,7 @@ describe("public production runner topology on Postgres", () => {
               (runner) => runner.send("GO").pipe(Effect.andThen(runner.send("RESUME"))),
               { discard: true },
             )
-            yield* until(
+            yield* wait(
               Effect.sync(() => survivors.every(({ finished }) => finished)),
               "all survivor commands",
               "60 seconds",
@@ -405,7 +426,7 @@ describe("public production runner topology on Postgres", () => {
             yield* drain(rolling)
             const afterDrain = yield* events
             survivors.splice(survivors.indexOf(rolling), 1)
-            yield* until(
+            yield* wait(
               owner.pipe(Effect.map((port) => port !== undefined && port !== rollingPort)),
               "graceful singleton handoff",
               "20 seconds",
@@ -413,12 +434,12 @@ describe("public production runner topology on Postgres", () => {
             const restarted = yield* spawn(20)
             survivors.push(restarted)
             yield* restarted.send("GO")
-            yield* until(
+            yield* wait(
               Effect.sync(() => restarted.finished),
               "the rolling replacement's commands",
               "30 seconds",
             )
-            yield* until(
+            yield* wait(
               events.pipe(
                 Effect.map(
                   (rows) =>
@@ -431,7 +452,7 @@ describe("public production runner topology on Postgres", () => {
               "cron ticks after both handoffs",
               "15 seconds",
             )
-            yield* until(
+            yield* wait(
               query<{ count: number }>(
                 "SELECT count(*)::int AS count FROM actor_outbox WHERE kind = 'intent' AND timer_key IS NULL",
               ).pipe(Effect.map((rows) => rows[0]!.count === 0)),
@@ -497,7 +518,12 @@ describe("public production runner topology on Postgres", () => {
             )
             expect(pending[0]!.count).toBe(0)
             expect(count("Add")).toBe(count("Send"))
-          }).pipe(Effect.scoped, Effect.timeout("3 minutes")),
+          }).pipe(
+            Effect.onExit((exit) => Console.log(`DRILL_STAGE body end ${exit._tag}`)),
+            Effect.scoped,
+            Effect.onExit((exit) => Console.log(`DRILL_STAGE scope closed ${exit._tag}`)),
+            Effect.timeout("3 minutes"),
+          ),
         ),
       200_000,
     )
