@@ -58,10 +58,9 @@ assert.throws(() => Schema.decodeUnknownSync(Role)("operator"))
 assert.equal(Schema.decodeUnknownSync(LogLimit)(200), 200)
 assert.throws(() => Schema.decodeUnknownSync(LogLimit)(201))
 
-const database = { source: "customer", state: "reachable", latency: 7.25, latencyWarning: true, runnerCap: 13 }
-const environment: Environment = Schema.decodeUnknownSync(Environment)({ name: "staging", projectId: project, currentDeploymentId: null, database })
-assert.deepEqual(environment.database, database)
-assert.throws(() => Schema.decodeUnknownSync(Environment)({ ...environment, database: { ...database, source: "managed" } }))
+const environment: Environment = Schema.decodeUnknownSync(Environment)({ name: "staging", projectId: project, currentDeploymentId: null })
+assert.deepEqual(environment, { name: "staging", projectId: project, currentDeploymentId: null })
+assert.throws(() => Schema.decodeUnknownSync(Environment, { onExcessProperty: "error" })({ ...environment, database: { source: "customer" } }))
 assert.equal(Schema.decodeUnknownSync(UsageMeterName)("runnerHours"), "runnerHours")
 assert.throws(() => Schema.decodeUnknownSync(UsageMeterName)("storageGb"))
 assert.deepEqual(Schema.decodeUnknownSync(UsagePricing)({ computeCentsPerUnitHour: 1.5 }), { computeCentsPerUnitHour: 1.5 })

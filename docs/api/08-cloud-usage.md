@@ -1,6 +1,6 @@
 # Cloud usage and pricing contract
 
-`@akter/cloud-api` describes hosted usage as compute unit-hours only. Akter Cloud hosts compute; every environment on every plan uses the customer's Postgres through `DATABASE_URL`. Database storage is not metered, capped or billed by Akter. Commands and reads have no per-use meter or price, and outbound traffic is not reported. `CloudApi.billing.listPlans` returns the `PlanCatalog`, and `CloudApi.usage.get` returns an organization's `Usage` for a billing period. This document defines the shape of those responses. Prices and allowances come from the hosted pricing configuration and are not part of the contract; the [Cloud pricing guide](/cloud/pricing-and-limits) lists them.
+`@akter/cloud-api` describes hosted usage as compute unit-hours only. Akter Cloud hosts compute. Commands and reads have no per-use meter or price, and outbound traffic is not reported. `CloudApi.billing.listPlans` returns the `PlanCatalog`, and `CloudApi.usage.get` returns an organization's `Usage` for a billing period. This document defines the shape of those responses. Prices and allowances come from the hosted pricing configuration and are not part of the contract; the [Cloud pricing guide](/cloud/pricing-and-limits) lists them.
 
 ## Compute units
 

@@ -81,82 +81,32 @@ describe("project models", () => {
     expect(decode(ProjectEndpoints, answer)).toEqual(answer)
   })
 
-  it("reports customer database reachability, nullable probe measurements and no URL-derived metadata", () => {
+  it("decodes an environment that carries no database field", () => {
     const environment = { name: "dev", projectId: "prj_test", currentDeploymentId: null }
-    expect(decode(Environment, environment).database).toBeUndefined()
-    const databases = [
-      {
-        source: "customer",
-        state: "missing",
-        latency: null,
-        latencyWarning: false,
-        runnerCap: null,
-      },
-      {
-        source: "customer",
-        state: "reachable",
-        latency: 7.25,
-        latencyWarning: true,
-        runnerCap: 13,
-      },
-      { source: "customer", state: "reachable", latency: 5, latencyWarning: false, runnerCap: 0 },
-      { source: "customer", state: "reachable", latency: 0, latencyWarning: false, runnerCap: -1 },
-      {
-        source: "customer",
-        state: "unreachable",
-        latency: null,
-        latencyWarning: false,
-        runnerCap: null,
-      },
-    ]
-    for (const database of databases) {
-      expect(decode(Environment, { ...environment, database }).database).toEqual(database)
-      for (const field of ["url", "host", "user", "password", "databaseName"]) {
-        const input = { ...environment, database: { ...database, [field]: "private" } }
-        expect(decode(Environment, input).database).toEqual(database)
-        expect(
-          Exit.isFailure(
-            Effect.runSyncExit(
-              Schema.decodeUnknownEffect(Environment, { onExcessProperty: "error" })(input),
-            ),
-          ),
-        ).toBe(true)
-      }
-    }
+    expect(decode(Environment, environment)).toEqual(environment)
+    expect(Object.keys(Environment.fields).toSorted()).toEqual([
+      "currentDeploymentId",
+      "name",
+      "projectId",
+    ])
   })
 
-  it("refuses managed and legacy states, incomplete probes and invalid measurements", () => {
-    const environment = { name: "dev", projectId: "prj_test", currentDeploymentId: null }
-    const database = {
+  it("drops a database a response still carries, and refuses it under a strict decode", () => {
+    const environment = { name: "dev", projectId: "prj_test", currentDeploymentId: "dep_1" }
+    const strict = Schema.decodeUnknownEffect(Environment, { onExcessProperty: "error" })
+    const reachable = {
       source: "customer",
       state: "reachable",
-      latency: 4.5,
-      latencyWarning: false,
-      runnerCap: 12,
+      latency: 7.25,
+      latencyWarning: true,
+      runnerCap: 13,
     }
-    for (const bad of [
-      { configured: true, engine: "postgres" },
-      { configured: false, engine: "neki" },
-      { ...database, engine: "postgres" },
-      { ...database, source: "managed" },
-      { ...database, source: "byo" },
-      ...["provisioning", "ready", "read-only", "failed", "migrating"].map((state) => ({
-        ...database,
-        state,
-      })),
-      { ...database, latency: -0.1 },
-      { ...database, latencyWarning: "false" },
-      { ...database, runnerCap: 1.5 },
-      { source: "customer", state: "reachable" },
-    ]) {
-      const strict = Schema.decodeUnknownEffect(Environment, { onExcessProperty: "error" })
-      expect(Exit.isFailure(Effect.runSyncExit(strict({ ...environment, database: bad })))).toBe(
-        true,
-      )
-    }
-    for (const field of ["source", "state", "latency", "latencyWarning", "runnerCap"] as const) {
-      const { [field]: _omitted, ...incomplete } = database
-      expect(rejects(Environment, { ...environment, database: incomplete })).toBe(true)
+    for (const database of [reachable, null, "postgres://private", {}]) {
+      const input = { ...environment, database }
+      const decoded = decode(Environment, input)
+      expect(decoded).toEqual(environment)
+      expect("database" in decoded).toBe(false)
+      expect(Exit.isFailure(Effect.runSyncExit(strict(input)))).toBe(true)
     }
   })
 

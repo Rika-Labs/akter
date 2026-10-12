@@ -42,26 +42,15 @@ export const UpdateProject = Schema.Struct({
 export type UpdateProject = typeof UpdateProject.Type
 
 /**
- * Every environment uses the customer's Postgres through `DATABASE_URL`.
- * `latency` is the deploy probe's p50 in milliseconds from the runner region,
- * null when unmeasured. Above 5 ms, `latencyWarning` warns without refusing.
- * `runnerCap` is floor((max_connections - in_use - 10) / 4), null when unknown;
- * a non-positive cap means no runner fits the available connection budget.
- * The status carries no URL or URL-derived field.
+ * A deployment target inside a project, such as `production` or `staging`.
+ * `currentDeploymentId` is the deployment now serving it, null before the
+ * first deployment is live. Its application's data lives in the environment's
+ * own store bucket, so the status carries no storage or connection fields.
  */
 export const Environment = Schema.Struct({
   name: EnvironmentName,
   projectId: ProjectId,
   currentDeploymentId: Schema.NullOr(DeploymentId),
-  database: Schema.optionalKey(
-    Schema.Struct({
-      source: Schema.Literal("customer"),
-      state: Schema.Literals(["missing", "reachable", "unreachable"]),
-      latency: Schema.NullOr(NonNegative),
-      latencyWarning: Schema.Boolean,
-      runnerCap: Schema.NullOr(Schema.Int),
-    }),
-  ),
 })
 export type Environment = typeof Environment.Type
 
