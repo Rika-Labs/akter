@@ -825,7 +825,19 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
-          const target = yield* prepared(environment, { observe: false })
+          const target = yield* prepared(environment, { observe: true })
+          yield* onDatabase(
+            target,
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient
+              yield* sql`DELETE FROM actor_adoptions WHERE table_name = 'conformance_invoices'`
+              expect(
+                (yield* sql<{
+                  table_name: string
+                }>`SELECT table_name FROM actor_adoptions`).map(({ table_name }) => table_name),
+              ).toEqual(["conformance_shipments"])
+            }),
+          )
           const exit = yield* runtimeOn(target).pipe(Effect.exit)
 
           expect(defect(exit)).toContain(
