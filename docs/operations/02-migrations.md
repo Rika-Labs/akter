@@ -70,7 +70,7 @@ A rename of `rooms.title` to `rooms.name`, with drizzle-kit:
 4. **Validate.** Check that no row has `name IS NULL`, then add `CHECK (name IS NOT NULL) NOT VALID` and `VALIDATE CONSTRAINT` it, which scans without blocking writes.
 5. **Contract.** A later release stops writing `title` and a migration drops it.
 
-Owned tables keep their owner's key columns, so a backfill never changes which actor owns a row ([contract 06](../contracts/06-storage-ownership.md)). Build large indexes with `CREATE INDEX CONCURRENTLY` in a drizzle migration that runs outside a transaction.
+Owned tables keep their owner's key columns, so a backfill never changes which actor owns a row ([contract 06](../contracts/06-storage.md)). Build large indexes with `CREATE INDEX CONCURRENTLY` in a drizzle migration that runs outside a transaction.
 
 ### Framework tables
 

@@ -11,7 +11,7 @@ Effect Cluster sharding routes a volatile command message to the current activat
 
 1. begin the transaction and set tenant scope;
 2. `SELECT ... FOR UPDATE` the actor generation row;
-3. resolve the command receipt under the [receipt contract](../contracts/04-receipts.md), replaying a matching outcome only through the appropriate caller-access or trusted-recovery path;
+3. resolve the command receipt under the [receipt contract](../contracts/03-durability.md), replaying a matching outcome only through the appropriate caller-access or trusted-recovery path;
 4. decode state through migrations, or reuse the activation's decoded copy from the same generation, and run the handler;
 5. stage state, actor-table changes, events, intents, jobs, and the receipt;
 6. commit once, then notify delivery.
