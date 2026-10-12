@@ -73,15 +73,6 @@
       }
     },
     {
-      "files": [
-        "apps/cli/src/commands/defects/list.test.ts",
-        "packages/akter/src/actor/reads.test.ts",
-        "packages/akter/src/actor/turns.test.ts",
-        "packages/python-client/src/generate.test.ts"
-      ],
-      "rules": { "akter/synchronous-actions": "off" }
-    },
-    {
       "files": ["packages/akter/src/runtime/peering/transport.test.ts"],
       "rules": {
         "effecttsgo/process-env": "off"
