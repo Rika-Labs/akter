@@ -93,6 +93,7 @@ import { ExecutionTarget, INTERRUPT } from "../handles/workflow.ts"
 import { decodeExecutionId } from "../identity/execution.ts"
 import {
   coordinatedRunnerStorage,
+  recoveringRunnerStorage,
   keepAcquiredShards,
   ShardLease,
   tableShardLease,
@@ -113,6 +114,7 @@ import { RuntimeControl, runtimeControl, turnGate } from "./drain.ts"
 import { eventFeeds } from "./feeds.ts"
 import { committedReads } from "./queries.ts"
 import { servingReadiness } from "./readiness.ts"
+import { ResumeEpoch, resumeEpochLayer } from "./database/resume.ts"
 import {
   acquiredShards,
   checkRunnerConfiguration,
@@ -585,6 +587,18 @@ export const layer = (options: Options = {}) => {
         wait: admissionSettings.wait,
       })
       const requests = admissionLimit({ limit: admissionSettings.requests, wait: Duration.zero })
+      const resume = Option.getOrUndefined(yield* Effect.serviceOption(ResumeEpoch))
+      const available = Effect.suspend(() =>
+        resume !== undefined && !resume.ready()
+          ? Effect.fail(
+              ActorError.make({
+                reason: ActorUnavailable.make({
+                  cause: new Error("Runtime is reacquiring ownership after suspension"),
+                }),
+              }),
+            )
+          : Effect.void,
+      )
 
       let holder: Holder | undefined
 
@@ -749,6 +763,7 @@ export const layer = (options: Options = {}) => {
        * no turn until a refresh succeeds. The check is local.
        */
       const writable = Effect.gen(function* () {
+        yield* available
         if (refreshedAt === undefined) return
 
         if ((yield* Clock.currentTimeMillis) - refreshedAt > writerWindowMs)
@@ -1363,6 +1378,7 @@ export const layer = (options: Options = {}) => {
           ).pipe(Effect.provideContext(services)),
         execute: (request) =>
           Effect.gen(function* () {
+            yield* available
             const reply = yield* Deferred.make<Executed, ActorError>()
             const pending = new Set<Fiber.Fiber<unknown, unknown>>()
 
@@ -1393,7 +1409,7 @@ export const layer = (options: Options = {}) => {
             return yield* Deferred.await(reply)
           }),
         overloaded: admission.full,
-        admitRequest: requests.admit,
+        admitRequest: (request) => Effect.andThen(available, requests.admit(request)),
         deliver: (request) =>
           dispatch(request, false).pipe(
             Effect.tap(observe),
@@ -1595,6 +1611,7 @@ export const layer = (options: Options = {}) => {
         )
 
       yield* checkRunnerConfiguration(wiring)
+      const resume = Option.getOrUndefined(yield* Effect.serviceOption(ResumeEpoch))
 
       const sharding = (
         wiring?.sharding ?? Sharding.layer.pipe(Layer.provide(Runners.layerNoop))
@@ -1613,13 +1630,14 @@ export const layer = (options: Options = {}) => {
           runnerStorage === "memory"
             ? Layer.effect(
                 RunnerStorage.RunnerStorage,
-                Effect.map(RunnerStorage.makeMemory, keepAcquiredShards),
+                Effect.map(RunnerStorage.makeMemory, (storage) => keepAcquiredShards({ storage })),
               )
             : Layer.effect(
                 RunnerStorage.RunnerStorage,
                 coordinatedRunnerStorage.pipe(
                   Effect.map(wiring?.storage ?? ((storage) => storage)),
-                  Effect.map(keepAcquiredShards),
+                  Effect.flatMap(recoveringRunnerStorage),
+                  Effect.map((storage) => keepAcquiredShards({ storage, resume })),
                 ),
               ).pipe(Layer.orDie),
           RunnerHealth.layerNoop,
@@ -1735,7 +1753,10 @@ type PostgresOptions = Omit<PgClient.PgPoolConfig, "types"> & {
  */
 function postgres(
   options: PostgresOptions,
-): Layer.Layer<PgClient.PgClient | SqlClient.SqlClient | TurnConnections, SqlError.SqlError> {
+): Layer.Layer<
+  PgClient.PgClient | SqlClient.SqlClient | TurnConnections | ResumeEpoch,
+  SqlError.SqlError
+> {
   if (
     options.pooling === "transaction" &&
     (options.replica !== undefined || options.coordination !== undefined)
@@ -1791,7 +1812,7 @@ function postgres(
     coordinationLayer(
       coordination === undefined ? undefined : { ...withKeepalives(coordination), types },
     ),
-  )
+  ).pipe(Layer.provideMerge(resumeEpochLayer))
 }
 
 /** Database layers for `Actors.layer`: `postgres` for real deployments, `pglite` for embedded and test use. */

@@ -5,6 +5,7 @@ import { SqlClient } from "effect/sql"
 import type { Readiness } from "./drain.ts"
 import { PeerHealth } from "./peering/transport.ts"
 import { RunnerReadiness } from "./runner.ts"
+import { ResumeEpoch } from "./database/resume.ts"
 
 /** How long readiness waits for the database before it reports storage unavailable. */
 const READINESS_STORAGE_TIMEOUT = "2 seconds"
@@ -37,6 +38,7 @@ export const servingReadiness = Effect.fnUntraced(function* ({
   const embedded = Option.isSome(yield* Effect.serviceOption(PgliteClient.PgliteClient))
   const runner = yield* Effect.serviceOption(RunnerReadiness)
   const peering = yield* Effect.serviceOption(PeerHealth)
+  const resume = yield* Effect.serviceOption(ResumeEpoch)
 
   const storage = embedded
     ? Effect.succeed(true)
@@ -51,6 +53,8 @@ export const servingReadiness = Effect.fnUntraced(function* ({
       }).pipe(Effect.provideContext(services), Effect.cachedWithTTL(READINESS_CACHE))
 
   const serving = Effect.gen(function* () {
+    if (Option.isSome(resume) && !resume.value.ready())
+      return { ready: false, reason: "storage" } as const
     if (yield* sharding.isShutdown) return { ready: false, reason: "routing" } as const
 
     if (registrations.size + queryRegistrations.size + jobRegistrations.size === 0)

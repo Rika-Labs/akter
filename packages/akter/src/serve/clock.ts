@@ -1,6 +1,8 @@
-import { Clock, Effect, Semaphore } from "effect"
+import { Clock, Effect, Option, Semaphore } from "effect"
 import { ActorError, ActorUnavailable } from "../errors/actor.ts"
 import { InternalActors } from "../runtime/actors.ts"
+import { clockDiscontinuous, ClockReadings } from "../runtime/clock.ts"
+import { ResumeEpoch } from "../runtime/database/resume.ts"
 
 const SAMPLE_EVERY = "10 seconds"
 
@@ -27,16 +29,22 @@ export const sampledDatabaseClock = Effect.fnUntraced(function* (
   databaseNow: Effect.Effect<number, ActorError>,
 ) {
   const wallClock = yield* Clock.Clock
+  const read = yield* ClockReadings
+  const resume = yield* Effect.serviceOption(ResumeEpoch)
 
   const sample = Effect.gen(function* () {
-    const sent = performance.now()
-    const wall = wallClock.currentTimeMillisUnsafe()
+    if (Option.isSome(resume)) resume.value.check()
+    const { at: sent, wall } = read(wallClock)
     const database = yield* databaseNow
-    const received = performance.now()
-    const receivedWall = wallClock.currentTimeMillisUnsafe()
+    const { at: received, wall: receivedWall } = read(wallClock)
     const rtt = received - sent
 
-    if (rtt < 0 || Math.abs(receivedWall - wall - rtt) > DISCONTINUITY_MS)
+    if (
+      clockDiscontinuous({
+        before: { at: sent, wall },
+        after: { at: received, wall: receivedWall },
+      })
+    )
       return yield* ActorError.make({
         reason: ActorUnavailable.make({
           cause: new Error("The clock changed while sampling database time"),
@@ -54,13 +62,7 @@ export const sampledDatabaseClock = Effect.fnUntraced(function* (
   let best: Sample = yield* sample.pipe(Effect.orDie)
   const sampling = Semaphore.makeUnsafe(1)
 
-  const discontinuous = () => {
-    const elapsed = performance.now() - best.at
-    return (
-      elapsed < 0 ||
-      Math.abs(wallClock.currentTimeMillisUnsafe() - best.wall - elapsed) > DISCONTINUITY_MS
-    )
-  }
+  const discontinuous = () => clockDiscontinuous({ before: best, after: read(wallClock) })
 
   const refresh = Effect.gen(function* () {
     const next = yield* sample
@@ -82,11 +84,12 @@ export const sampledDatabaseClock = Effect.fnUntraced(function* (
   )
 
   const now = Effect.gen(function* () {
+    if (Option.isSome(resume)) resume.value.check()
     if (discontinuous())
       yield* Effect.suspend(() => (discontinuous() ? refresh : Effect.void)).pipe(
         sampling.withPermits(1),
       )
-    return Math.round(performance.now() + best.offset)
+    return Math.round(read(wallClock).at + best.offset)
   })
 
   return { now }

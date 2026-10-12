@@ -1,9 +1,11 @@
-import { Effect, Fiber, Layer, Result, Schedule, Schema } from "effect"
+import { Effect, Fiber, Layer, Option, Result, Schedule, Schema } from "effect"
 import { SqlClient } from "effect/sql"
 import { Actor, Actors, System, User } from "../../../../packages/akter/src/index.ts"
 import { InternalActors } from "../../../../packages/akter/src/runtime/actors.ts"
 import type { ActorRef } from "../../../../packages/akter/src/identity/caller.ts"
 import { ActorTest } from "../../../../packages/akter/src/testing/actor-test.ts"
+import { RuntimeControl } from "../../../../packages/akter/src/runtime/drain.ts"
+import { ResumeEpoch } from "../../../../packages/akter/src/runtime/database/resume.ts"
 import { clusterLayer, ActorCluster } from "../cluster.ts"
 import type { ConformanceCase, ConformanceEnvironment, ConformanceExpect } from "../conformance.ts"
 
@@ -122,6 +124,7 @@ const withCluster = <A, E>(
   environment: ConformanceEnvironment,
   runners: number,
   body: Effect.Effect<A, E, ActorCluster>,
+  productionReadiness = false,
 ) =>
   environment.run(
     Effect.gen(function* () {
@@ -132,6 +135,7 @@ const withCluster = <A, E>(
           database,
           runners,
           shardLockExpiration: `${EXPIRATION_SECONDS} seconds`,
+          productionReadiness,
           actors: Layer.merge(TallyLive, EnvoyLive),
           as: User.make({ subject: "alice" }),
           authorize: () => Effect.succeed(true),
@@ -487,6 +491,91 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
           expect(inspection).toMatchObject({ state: { count: 111 }, receipts: 3, events: 3 })
           expect(Number(inspection.generation) >= first + 2).toBe(true)
         }),
+      ),
+  },
+  {
+    name: "withdraws resumed runner readiness until real shard reacquisition and discards its staged stale turn",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withCluster(
+        environment,
+        2,
+        Effect.gen(function* () {
+          const cluster = yield* ActorCluster
+          const id = "resume"
+          const ref = yield* refOf(id)
+          const stale = (yield* cluster.owner(ref))!
+          const rival = 1 - stale
+          const readiness = cluster.on(stale)(RuntimeControl.use((control) => control.readiness))
+          const registry = yield* cluster.on(stale)(Effect.serviceOption(ResumeEpoch))
+          if (Option.isNone(registry))
+            return yield* Effect.die(new Error("Runner did not expose its shared socket epoch"))
+          const epoch = registry.value
+          expect(yield* add(stale, id, 1)).toBe(1)
+          const initial = yield* inspect(rival, ref)
+          const firstLock = yield* lockOf(rival, ref)
+          expect(yield* readiness).toEqual({ ready: true })
+          const firstEpoch = epoch.check()
+          const pause = yield* cluster.on(stale)(
+            ActorTest.use((test) => test.pauseNext("beforeCommit")),
+          )
+          const staged = yield* add(stale, id, 100).pipe(Effect.forkChild)
+          yield* pause.reached
+          const heartbeat = yield* cluster.pauseHeartbeat(stale)
+          yield* awaitOwner(ref, (current) => current === rival)
+          const takeover = yield* lockOf(rival, ref)
+          expect(takeover.address === firstLock.address).toBe(false)
+          expect(takeover.acquired - firstLock.acquired >= EXPIRATION_SECONDS * 1_000).toBe(true)
+          yield* cluster.holdRunnerReplies(stale)
+          yield* cluster.advanceWallClock(stale, 300_000)
+          expect(yield* readiness).toEqual({ ready: false, reason: "storage" })
+          expect(epoch.check()).toBe(firstEpoch + 1)
+          yield* epoch.settled
+          yield* pause.release
+          expect(yield* add(rival, id, 10)).toBe(11)
+          const advanced = yield* inspect(rival, ref)
+          expect(Number(advanced.generation) > Number(initial.generation)).toBe(true)
+          for (let poll = 0; poll < 5; poll++) {
+            expect(yield* readiness).toEqual({ ready: false, reason: "storage" })
+            expect((yield* lockOf(rival, ref)).address).toBe(takeover.address)
+            expect(epoch.check()).toBe(firstEpoch + 1)
+            yield* Effect.sleep("250 millis")
+          }
+          const beforeResume = (yield* lockOf(rival, ref)).now
+          yield* heartbeat.resume
+          yield* cluster.shutdown(rival)
+          yield* readiness.pipe(
+            Effect.repeat({
+              schedule: Schedule.spaced("25 millis"),
+              until: (value) => value.ready,
+            }),
+            Effect.timeout("20 seconds"),
+          )
+          const rows = yield* cluster.sql<{ address: string; acquired: number }>`
+        SELECT address, (EXTRACT(EPOCH FROM acquired_at) * 1000)::float8 AS acquired
+        FROM cluster_locks WHERE shard_id LIKE 'default:%'`
+          expect(rows.length).toBe(32)
+          expect(
+            rows.every((row) => row.address === firstLock.address && row.acquired >= beforeResume),
+          ).toBe(true)
+          expect(yield* Fiber.join(staged)).toBe(111)
+          expect(yield* inspect(stale, ref)).toMatchObject({
+            state: { count: 111 },
+            receipts: 3,
+            events: 3,
+          })
+          expect(yield* add(stale, id, 1_000)).toBe(1_111)
+          const final = yield* inspect(stale, ref)
+          expect(final).toMatchObject({ state: { count: 1_111 }, receipts: 4, events: 4 })
+          expect(Number(final.generation) > Number(advanced.generation)).toBe(true)
+          const log = yield* cluster.on(stale)(
+            Tally.get(id).pipe(Effect.flatMap((tally) => tally.Log())),
+          )
+          expect(log.map((event) => event.cursor)).toEqual(["1", "2", "3", "4"])
+          expect(new Set(log.map((event) => event.commandId)).size).toBe(4)
+        }),
+        true,
       ),
   },
   {

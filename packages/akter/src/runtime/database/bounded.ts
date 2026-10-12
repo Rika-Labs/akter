@@ -1,12 +1,13 @@
 import { PgClient, PgPool } from "@effect/sql-pg"
 import type { PgConnection } from "@effect/sql-pg"
-import { Duration, Effect, Schedule, Schema, Scope, Semaphore, Stream } from "effect"
+import { Duration, Effect, Option, Schedule, Schema, Scope, Semaphore, Stream } from "effect"
 import { SqlClient, SqlError, Statement } from "effect/sql"
 import type { SqlConnection } from "effect/sql"
 import { admissionLimit, isOverloaded } from "../admission.ts"
 import { ActorError } from "../../errors/actor.ts"
 import { asSqlConnection } from "./connection.ts"
 import { fairGate } from "./gate.ts"
+import { ResumeEpoch } from "./resume.ts"
 
 /** Extra checkouts each pool holds beyond its connections before refusing further work. */
 export const POOL_WAITERS = 64
@@ -79,11 +80,19 @@ interface Sessions {
  * leaks either.
  */
 const boundedSessions = Effect.fnUntraced(function* (options: PgClient.PgPoolConfig) {
-  const pool = yield* PgPool.make(options)
+  const resume = yield* Effect.serviceOption(ResumeEpoch)
+  const settled = Option.isSome(resume) ? resume.value.settled : Effect.void
+  const pool = yield* PgPool.make(Option.isSome(resume) ? resume.value.track(options) : options)
   const slots = options.maxConnections ?? 10
   const admission = admissionLimit({ limit: slots + POOL_WAITERS, wait: Duration.zero })
   const fair = fairGate(slots)
-  const enter = Effect.andThen(admission.take.pipe(Effect.mapError(poolRefusal)), fair.take)
+  const enter = Effect.andThen(
+    settled,
+    Effect.andThen(
+      admission.take.pipe(Effect.mapError(poolRefusal)),
+      Effect.andThen(fair.take, settled),
+    ),
+  )
   const connection = (session: Effect.Success<typeof pool.get>) =>
     asSqlConnection({ connection: session, send: direct })
 
@@ -117,11 +126,21 @@ const boundedSessions = Effect.fnUntraced(function* (options: PgClient.PgPoolCon
     acquire: Effect.andThen(enter, Effect.map(pool.get, connection)),
     reserve,
     borrow: (use) =>
-      admission
-        .admit(fair.use(pool.use((session) => use(connection(session)))))
-        .pipe(
-          Effect.mapError((error) => (Schema.is(ActorError)(error) ? poolRefusal(error) : error)),
-        ),
+      Effect.andThen(
+        settled,
+        admission
+          .admit(
+            fair.use(
+              Effect.andThen(
+                settled,
+                pool.use((session) => use(connection(session))),
+              ),
+            ),
+          )
+          .pipe(
+            Effect.mapError((error) => (Schema.is(ActorError)(error) ? poolRefusal(error) : error)),
+          ),
+      ),
     listen: (channel) =>
       Effect.andThen(
         enter,

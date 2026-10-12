@@ -24,6 +24,7 @@ import type { ActorRef } from "../../../packages/akter/src/identity/caller.ts"
 import { Database } from "../../../packages/akter/src/runtime/layer.ts"
 import { RunnerWiring } from "../../../packages/akter/src/runtime/runner.ts"
 import { admissionSharding } from "../../../packages/akter/src/runtime/topology/admission.ts"
+import { clockReading, ClockReadings } from "../../../packages/akter/src/runtime/clock.ts"
 import {
   ActorTest,
   ClusterMember,
@@ -59,6 +60,8 @@ export interface ClusterOptions<ROut, E, RIn> extends TestOptions {
    * holder alive.
    */
   readonly holdersOnly?: ReadonlyArray<number>
+  /** Exercises the public runner's routing readiness instead of embedded readiness. */
+  readonly productionReadiness?: boolean
 }
 
 /** Sessions per pool for each runner unless a cluster says otherwise; three runners hold 24 sessions at most. */
@@ -104,6 +107,8 @@ export class ActorCluster extends Context.Service<
      * sent meanwhile is made by the database and unknown to its runner.
      */
     readonly holdReplies: Effect.Effect<void>
+    /** Blackholes only one runner's existing sessions; its rival and the control pool remain readable. */
+    readonly holdRunnerReplies: (runner: number) => Effect.Effect<void>
     /**
      * Cuts every runner's open database connections at once, discarding held
      * replies, and lets the runners reconnect to the same database, as they
@@ -112,6 +117,8 @@ export class ActorCluster extends Context.Service<
      * rows, survive.
      */
     readonly failover: Effect.Effect<void>
+    /** Shifts one runner's wall clock without changing the database or its monotonic clock. */
+    readonly advanceWallClock: (runner: number, millis: number) => Effect.Effect<void>
     /** Starts a stopped runner again as a new process, under a new address. */
     readonly restart: (runner: number) => Effect.Effect<void>
     /**
@@ -141,6 +148,7 @@ interface Runner {
   heartbeat: "running" | "paused" | "killed"
   /** The runners this runner last saw; a paused runner keeps seeing them. */
   runners: Effect.Success<RunnerStorage.RunnerStorage["Service"]["getRunners"]> | undefined
+  wallOffset: number
 }
 
 const key = (address: RunnerAddress.RunnerAddress) => `${address.host}:${address.port}`
@@ -431,6 +439,7 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
         runner.address = RunnerAddress.RunnerAddress.make({ host, port: incarnation })
         runner.heartbeat = "running"
         runner.runners = undefined
+        runner.wallOffset = 0
         const sockets = new Set<NetSocket>()
         runner.sockets = sockets
         addresses.set(key(runner.address), runners.indexOf(runner))
@@ -449,7 +458,12 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
             }).pipe(
               Layer.provide([
                 Layer.succeed(ClusterMember, { tenant, connect: dial(runner, sockets) }),
+                Layer.succeed(ClockReadings, (clock) => {
+                  const reading = clockReading(clock)
+                  return { ...reading, wall: reading.wall + runner.wallOffset }
+                }),
                 Layer.succeed(RunnerWiring, {
+                  production: options.productionReadiness,
                   config: {
                     ...TIMINGS,
                     runnerAddress: Option.some(runner.address),
@@ -562,6 +576,7 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
           context: undefined,
           heartbeat: "killed",
           runners: undefined,
+          wallOffset: 0,
         })
 
       yield* start(runners[0]!)
@@ -580,6 +595,22 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
           for (const runner of runners) for (const socket of runner.sockets ?? []) socket.pause()
         }),
         failover,
+        holdRunnerReplies: (index) =>
+          at(index).pipe(
+            Effect.flatMap((runner) =>
+              Effect.sync(() => {
+                for (const socket of runner.sockets ?? []) socket.pause()
+              }),
+            ),
+          ),
+        advanceWallClock: (index, millis) =>
+          at(index).pipe(
+            Effect.flatMap((runner) =>
+              Effect.sync(() => {
+                runner.wallOffset += millis
+              }),
+            ),
+          ),
         kill: (index) => at(index).pipe(Effect.flatMap(stop)),
         shutdown: (index) => at(index).pipe(Effect.flatMap(shutdown)),
         restart: (index) =>

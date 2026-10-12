@@ -1,10 +1,11 @@
 import { PgPool, type PgConnection } from "@effect/sql-pg"
-import { Context, Duration, Effect, Exit, Fiber, Layer } from "effect"
+import { Context, Duration, Effect, Exit, Fiber, Layer, Option } from "effect"
 import type { Scope } from "effect"
-import type { SqlError } from "effect/sql"
+import { SqlError } from "effect/sql"
 import { fairGate } from "../database/gate.ts"
 import { admissionLimit } from "../admission.ts"
 import { POOL_WAITERS, poolRefusal } from "../database/bounded.ts"
+import { ResumeEpoch } from "../database/resume.ts"
 
 /**
  * Connections a turn leases for itself alone. Each one is multiplexed and
@@ -45,8 +46,9 @@ export const TurnPoolSettings = Context.Reference<Partial<PgPool.Config>>(
  * session.
  */
 const turnPool = Effect.fnUntraced(function* (config: PgPool.Config) {
+  const resume = yield* Effect.serviceOption(ResumeEpoch)
   const pool = yield* PgPool.make({
-    ...config,
+    ...(Option.isSome(resume) ? resume.value.track(config) : config),
     multiplex: true,
     multiplexConcurrency: 1,
   })
@@ -54,7 +56,27 @@ const turnPool = Effect.fnUntraced(function* (config: PgPool.Config) {
   const slots = config.maxConnections ?? 10
   const admission = admissionLimit({ limit: slots + POOL_WAITERS, wait: Duration.zero })
   const gate = fairGate(slots)
-  const acquire = Effect.andThen(gate.take, pool.get)
+  const acquire = Effect.andThen(
+    Option.isSome(resume) ? resume.value.settled : Effect.void,
+    Effect.andThen(
+      gate.take,
+      Effect.andThen(
+        Option.isSome(resume) ? resume.value.settled : Effect.void,
+        Effect.suspend(() =>
+          Option.isSome(resume) && !resume.value.ready()
+            ? Effect.fail(
+                SqlError.SqlError.make({
+                  reason: SqlError.ConnectionError.make({
+                    message: "Runtime is reacquiring ownership after suspension",
+                    cause: new Error("Postgres turn checkout refused during ownership recovery"),
+                  }),
+                }),
+              )
+            : pool.get,
+        ),
+      ),
+    ),
+  )
 
   return { pool, take: Effect.andThen(admission.take.pipe(Effect.mapError(poolRefusal)), acquire) }
 })

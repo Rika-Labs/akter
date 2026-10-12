@@ -43,6 +43,7 @@ import { InternalActors } from "../../../../packages/akter/src/runtime/actors.ts
 import type { ContentStore } from "../../../../packages/akter/src/handles/content.ts"
 import { RuntimeControl } from "../../../../packages/akter/src/runtime/drain.ts"
 import { DatabaseClock } from "../../../../packages/akter/src/client/clock.ts"
+import { clockReading, ClockReadings } from "../../../../packages/akter/src/runtime/clock.ts"
 import { ActorRef, System } from "../../../../packages/akter/src/identity/caller.ts"
 import {
   type AuthProvider,
@@ -897,23 +898,13 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
-          const original = performance.now.bind(performance)
-          const descriptor = Object.getOwnPropertyDescriptor(performance, "now")
           let shift = 0
-          yield* Effect.acquireRelease(
-            Effect.sync(() =>
-              Object.defineProperty(performance, "now", {
-                configurable: true,
-                value: () => original() + shift,
-              }),
-            ),
-            () =>
-              Effect.sync(() => {
-                if (descriptor === undefined) Reflect.deleteProperty(performance, "now")
-                else Object.defineProperty(performance, "now", descriptor)
-              }),
+          const server = yield* serveHttp().pipe(
+            Effect.provideService(ClockReadings, (clock) => {
+              const reading = clockReading(clock)
+              return { ...reading, at: reading.at + shift }
+            }),
           )
-          const server = yield* serveHttp()
           const actors = yield* InternalActors
           const token = `${yield* tenantOf}:alice`
           const crypto = yield* Crypto.Crypto
@@ -963,24 +954,13 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const actors = yield* InternalActors
           let available = true
-          const original = performance.now.bind(performance)
-          const descriptor = Object.getOwnPropertyDescriptor(performance, "now")
           let shift = 0
-          yield* Effect.acquireRelease(
-            Effect.sync(() =>
-              Object.defineProperty(performance, "now", {
-                configurable: true,
-                value: () => original() + shift,
-              }),
-            ),
-            () =>
-              Effect.sync(() => {
-                if (descriptor === undefined) Reflect.deleteProperty(performance, "now")
-                else Object.defineProperty(performance, "now", descriptor)
-              }),
-          )
           const origin = "https://clock-refresh.test"
           const server = yield* serveHttp({ origins: [origin] }).pipe(
+            Effect.provideService(ClockReadings, (clock) => {
+              const reading = clockReading(clock)
+              return { ...reading, at: reading.at + shift }
+            }),
             Effect.provideService(InternalActors, {
               ...actors,
               databaseNow: Effect.suspend(() =>

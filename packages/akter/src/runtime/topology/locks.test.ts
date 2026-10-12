@@ -25,16 +25,18 @@ const slowRefresh = Layer.effect(
   RunnerStorage.RunnerStorage,
   Effect.map(RunnerStorage.makeMemory, (storage) =>
     keepAcquiredShards({
-      ...storage,
-      acquire: (address, shardIds) =>
-        storage.acquire(address, shardIds).pipe(Effect.delay("100 millis")),
-      refresh: (address, shardIds) =>
-        storage.refresh(address, shardIds).pipe(
-          Effect.map((held) => held.filter((shard) => Array.from(shardIds).includes(shard))),
-          Effect.tap(() => Effect.sleep("500 millis")),
-        ),
-      release: (address, shardId) =>
-        storage.release(address, shardId).pipe(Effect.delay("2 seconds")),
+      storage: {
+        ...storage,
+        acquire: (address, shardIds) =>
+          storage.acquire(address, shardIds).pipe(Effect.delay("100 millis")),
+        refresh: (address, shardIds) =>
+          storage.refresh(address, shardIds).pipe(
+            Effect.map((held) => held.filter((shard) => Array.from(shardIds).includes(shard))),
+            Effect.tap(() => Effect.sleep("500 millis")),
+          ),
+        release: (address, shardId) =>
+          storage.release(address, shardId).pipe(Effect.delay("2 seconds")),
+      },
     }),
   ),
 )
@@ -63,7 +65,7 @@ describe("shard locks", () => {
 
   /** Lock storage that has lost every lock: an acquire succeeds, then no refresh finds it. */
   const lostLocks = Effect.map(RunnerStorage.makeMemory, (storage) =>
-    keepAcquiredShards({ ...storage, refresh: () => Effect.succeed([]) }),
+    keepAcquiredShards({ storage: { ...storage, refresh: () => Effect.succeed([]) } }),
   )
 
   const address = RunnerAddress.make("localhost", 34431)
@@ -112,8 +114,10 @@ describe("shard locks", () => {
 
       const storage = yield* Effect.map(RunnerStorage.makeMemory, (memory) =>
         keepAcquiredShards({
-          ...memory,
-          refresh: () => Deferred.await(answered).pipe(Effect.as([])),
+          storage: {
+            ...memory,
+            refresh: () => Deferred.await(answered).pipe(Effect.as([])),
+          },
         }),
       )
 
