@@ -10,7 +10,7 @@ import {
   Layer,
   ManagedRuntime,
   Schema,
-  type Scope,
+  Scope,
 } from "effect"
 import { SqlClient } from "effect/sql"
 import { afterAll, describe, expect, it } from "vitest"
@@ -24,7 +24,13 @@ import { AUTHORITY_BUCKET, authorityKey, routingKey } from "./codec.ts"
 import { AUTHORITY_MOVED_TABLES, checkPlacement } from "./placements.ts"
 
 const runtime = ManagedRuntime.make(BunCrypto.layer)
-afterAll(() => runtime.dispose())
+
+/** Shares teardown checkpoints for the file's databases without charging administrative drops to an actor's behavioral deadline. */
+const databaseScope = Scope.makeUnsafe("parallel")
+
+afterAll(() =>
+  runtime.runPromise(Scope.close(databaseScope, Exit.void)).finally(() => runtime.dispose()),
+)
 
 const TENANT = "ledger-tenant"
 
@@ -114,7 +120,9 @@ const database = <A, E>(
   runtime.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
-        const url = yield* disposableDatabase({ url: yield* Config.Redacted("TEST_DATABASE_URL") })
+        const url = yield* disposableDatabase({
+          url: yield* Config.Redacted("TEST_DATABASE_URL"),
+        }).pipe(Scope.provide(databaseScope))
         const client = yield* Layer.build(Database.postgres({ url, offTurnConnections: 4 }))
         yield* migrate.pipe(Effect.provideContext(client))
         yield* Effect.gen(function* () {
