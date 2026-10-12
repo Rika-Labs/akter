@@ -23,6 +23,7 @@ import { CommandIds } from "./command-ids.ts"
 import { Durable } from "./durable.ts"
 import { Entry, EntryCodec, Origin, Outcome } from "./entries.ts"
 import type { ActionEntry } from "./entries.ts"
+import { storeOf } from "../store/service.ts"
 import { Transports } from "./transport.ts"
 
 class Refused extends Schema.TaggedError<Refused>()("Refused", { reason: Schema.String }) {}
@@ -361,6 +362,28 @@ describe("admission", () => {
           ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) }),
         )
         expect((yield* actionsOf("a")).length).toBe(0)
+      }),
+    ))
+})
+
+describe("reads and the lease", () => {
+  it("answers reads from memory within validFor, and once it has passed refuses them on a lease another owner fenced", () =>
+    simulate(
+      { seed: 52 },
+      Effect.gen(function* () {
+        const simulator = yield* SimulationService
+        const wallet = yield* Wallet.client("a")
+        yield* wallet.deposit(5)
+        const other = yield* Effect.orDie(
+          storeOf(simulator.bucket.inspect, { writer: "another owner" }),
+        )
+        yield* Effect.orDie(other.open(simulator.engine.shardOf(Durable.addressOf("Wallet", "a"))))
+        expect((yield* simulator.engine.durableRecord(Wallet, "a")).image.state).toMatchObject({
+          balance: 5,
+        })
+        yield* TestClock.adjust("11 seconds")
+        const refused = yield* Effect.flip(simulator.engine.durableRecord(Wallet, "a"))
+        expect(Schema.is(ActorUnavailable)(refused.reason)).toBe(true)
       }),
     ))
 })

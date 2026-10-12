@@ -164,6 +164,7 @@ const layer = <const Actors extends ReadonlyArray<AnyActor>>(
       )
       const engine = yield* Engine.make(catalog, {
         shards: catalog.shards,
+        validFor: 10_000,
         policy: "matching",
         maxBatch: 64,
         checkpointEvery: options.checkpointEvery ?? 3,

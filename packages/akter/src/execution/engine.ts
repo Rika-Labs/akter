@@ -41,6 +41,8 @@ import { Store } from "../store/service.ts"
 /** How an engine runs: its shards, replay policy, batch bound and simulation hooks. */
 export interface EngineOptions {
   readonly shards: number
+  /** Milliseconds a shard answers reads from memory after its last append or lease check; at most the store's `validFor`. */
+  readonly validFor: number
   readonly policy: ReplayPolicy
   readonly maxBatch: number
   readonly checkpointEvery: number
@@ -85,6 +87,7 @@ interface Shard {
   settled: Deferred.Deferred<void>
   scope: Scope.Closeable
   lease: Lease | undefined
+  confirmedAt: number
   durable: ShardImage
   refusal: RecoveryError | undefined
   readonly speculative: Map<string, Image>
@@ -103,8 +106,11 @@ interface Shard {
 /** A shard rebuilt from the store: the lease that fenced earlier owners, and the image or why not. */
 interface Recovered {
   readonly lease: Lease | undefined
+  readonly startedAt: number
   readonly recovered: Result.Result<ShardImage, RecoveryError>
 }
+
+const monotonicMillis = Effect.map(Clock.monotonicTimeNanos, (nanos) => Number(nanos / 1_000_000n))
 
 /** Per-address publication channels; they live as long as the engine, across shard crashes. */
 interface Channel {
@@ -163,6 +169,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       settled: Deferred.makeUnsafe<void>(),
       scope: Scope.makeUnsafe(),
       lease: undefined,
+      confirmedAt: 0,
       durable: Durable.empty(id),
       refusal: undefined,
       speculative: new Map(),
@@ -237,6 +244,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
      */
     const recoverShard = (id: number): Effect.Effect<Recovered, ActorError> =>
       Effect.gen(function* () {
+        const startedAt = yield* monotonicMillis
         const lease = yield* store.open(id)
         const manifest = Option.getOrUndefined(lease.checkpoint)
         const page = manifest?.statePages[0]
@@ -248,11 +256,12 @@ const make = (catalog: Catalog, options: EngineOptions) =>
             new Error(`Shard ${id}'s open segment ${lease.open} is missing from its log`),
           )
         const recovered = Recovery.recover(catalog, id, checkpoint, tail, own.build, options.policy)
-        return { lease, recovered }
+        return { lease, startedAt, recovered }
       }).pipe(
         Effect.catchTag("CorruptSegment", (error) =>
           Effect.succeed({
             lease: undefined,
+            startedAt: 0,
             recovered: Result.fail(
               CorruptLog.make({ shard: id, offset: -1, detail: error.message }),
             ),
@@ -280,7 +289,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
         const settled = Deferred.makeUnsafe<void>()
         shard.settled = settled
         const attempt = Effect.andThen(Deferred.await(previous), recoverShard(shard.id)).pipe(
-          Effect.flatMap(({ lease, recovered }) =>
+          Effect.flatMap(({ lease, startedAt, recovered }) =>
             Effect.suspend(() => {
               if (shard.generation !== generation) return Effect.fail(unavailable())
               if (Result.isFailure(recovered)) {
@@ -295,6 +304,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
               }
               shard.durable = recovered.success
               shard.lease = lease
+              shard.confirmedAt = startedAt
               shard.lastAt = recovered.success.lastAt
               shard.sinceCheckpoint = 0
               shard.scope = Scope.makeUnsafe()
@@ -350,6 +360,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
             shard.inFlight = entries
             const lease = shard.lease
             if (lease === undefined) return
+            const startedAt = yield* monotonicMillis
             const appended = yield* Effect.exit(
               store.append(
                 lease,
@@ -365,6 +376,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
               return
             }
             const offset = Number(appended.value)
+            shard.confirmedAt = startedAt
             shard.inFlight = []
             for (const pending of entries) publish(shard, pending, offset)
             yield* after(shard)
@@ -727,12 +739,40 @@ const make = (catalog: Catalog, options: EngineOptions) =>
         yield* Deferred.await(pending.done)
       })
 
+    /**
+     * Opens the shard and, once it has gone `validFor` without an append or lease check, checks the
+     * lease in the store before a read is answered, so an owner fenced while idle stops answering
+     * from memory. Each confirmation counts from before its request was sent. A fenced shard
+     * closes; an unreachable store is unavailable.
+     */
+    const readable = (shard: Shard): Effect.Effect<Shard, ActorError> =>
+      Effect.gen(function* () {
+        yield* open(shard)
+        const lease = shard.lease
+        if (lease === undefined) return yield* unavailable()
+        const startedAt = yield* monotonicMillis
+        if (startedAt - shard.confirmedAt <= options.validFor) return shard
+        const generation = shard.generation
+        const verified = yield* Effect.exit(store.verify(lease))
+        if (Exit.isSuccess(verified)) {
+          if (shard.generation === generation)
+            shard.confirmedAt = Math.max(shard.confirmedAt, startedAt)
+          return shard
+        }
+        if (
+          shard.generation === generation &&
+          Exit.findErrorOption(verified).pipe(Option.exists(Schema.is(StaleEpoch)))
+        )
+          yield* Effect.forkIn(crash(shard, true), root)
+        return yield* unavailable()
+      })
+
     /** The durable record of an instance, opening its shard if needed; reads never see speculation. */
     const durableRecord = (
       actor: AnyActor,
       keyJson: Schema.Json,
     ): Effect.Effect<ActorRecord, ActorError> =>
-      Effect.map(ready(Durable.addressOf(actor.name, keyJson)), (shard) =>
+      Effect.map(readable(shardRuntime(shardOf(Durable.addressOf(actor.name, keyJson)))), (shard) =>
         Durable.resident(shard.durable, catalog, actor.name, keyJson),
       )
 
@@ -741,10 +781,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       Effect.map(
         Effect.forEach(
           Array.from({ length: catalog.shards }, (_, id) => id),
-          (id) => {
-            const shard = shardRuntime(id)
-            return Effect.as(open(shard), shard)
-          },
+          (id) => readable(shardRuntime(id)),
         ),
         (opened) =>
           opened.flatMap((shard) =>
