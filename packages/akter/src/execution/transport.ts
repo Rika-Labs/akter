@@ -75,8 +75,9 @@ const MemberJson = (schema: NonNullable<Action["payload"]>) => Schema.toCodecJso
 /**
  * Admits a client's call under its client id, in the contract's order: `access`, the member, the
  * payload, the id, then (on the owner) expiry and the duplicate lookup before anything runs.
+ * `replayed` comes from that admission, never from a later lookup.
  */
-const admit = (
+const admitted = (
   engine: Engine,
   caller: Caller,
   commandId: string,
@@ -98,7 +99,7 @@ const admit = (
     const now = yield* Clock.currentTimeMillis
     const parsed = CommandIds.parse(commandId, now)
     if (Result.isFailure(parsed)) return yield* ActorError.make({ reason: parsed.failure })
-    const outcome = yield* engine.execute({
+    const { outcome, replayed } = yield* engine.admitted({
       origin: Origin.cases.External.make({ expiresAt: parsed.success.expiresAt }),
       commandId,
       actor,
@@ -108,8 +109,12 @@ const admit = (
       caller,
       connection: undefined,
     })
-    return yield* reply(actor, member, outcome)
+    return { reply: yield* reply(actor, member, outcome), replayed }
   })
+
+/** {@link admitted} without the `replayed` flag, for callers that only need the reply. */
+const admit = (...args: Parameters<typeof admitted>) =>
+  Effect.map(admitted(...args), (result) => result.reply)
 
 /** The state fields a client sees: every encoded field except lists, which are never in it. */
 const clientState = (record: ActorRecord): Schema.Json => ({ ...record.image.encoded })
@@ -361,4 +366,4 @@ const client = (engine: Engine, caller: Caller): Transport => {
 }
 
 /** Every transport that reaches the in-process engine. */
-export const Transports = { admit, client, reads, reply, retryWhileUnavailable }
+export const Transports = { admit, admitted, client, reads, reply, retryWhileUnavailable }

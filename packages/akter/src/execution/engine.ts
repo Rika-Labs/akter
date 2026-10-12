@@ -670,19 +670,30 @@ const make = (catalog: Catalog, options: EngineOptions) =>
         return Effect.as(open(shard), shard)
       })
 
-    /** Runs a command on its owner and waits until its entry is durable; the outcome is the reply. */
-    const execute = (command: Command): Effect.Effect<Outcome, ActorError> =>
+    /**
+     * Runs a command on its owner and waits until its entry is durable. `replayed` is decided by
+     * admission: true when this command found its id's stored outcome or joined its pending run.
+     */
+    const admitted = (
+      command: Command,
+    ): Effect.Effect<{ readonly outcome: Outcome; readonly replayed: boolean }, ActorError> =>
       Effect.gen(function* () {
         const address = Durable.addressOf(command.actor.name, command.keyJson)
         const shard = yield* ready(address)
         const now = yield* Clock.currentTimeMillis
+        const pendingBefore = shard.pending.get(command.commandId)
         const admission = yield* Effect.sync(() =>
           shard.status === "open" ? admit(shard, command, now) : refuse(unavailable()),
         )
         if (admission.kind === "refused") return yield* admission.error
-        if (admission.kind === "done") return admission.outcome
-        return yield* Deferred.await(admission.pending.done)
+        if (admission.kind === "done") return { outcome: admission.outcome, replayed: true }
+        const replayed = pendingBefore !== undefined && admission.pending === pendingBefore
+        return { outcome: yield* Deferred.await(admission.pending.done), replayed }
       })
+
+    /** Runs a command on its owner and waits until its entry is durable; the outcome is the reply. */
+    const execute = (command: Command): Effect.Effect<Outcome, ActorError> =>
+      Effect.map(admitted(command), (result) => result.outcome)
 
     /** Stages an engine entry (journal, delivery acknowledgement, retirement) and waits until it is durable. */
     const journal = (shardId: number, entry: Entry): Effect.Effect<void, ActorError> =>
@@ -929,6 +940,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       catalog,
       options,
       execute,
+      admitted,
       journal,
       seed,
       durableRecord,
