@@ -95,6 +95,18 @@
       "rules": {
         "effecttsgo/node-builtin-import": "off"
       }
+    },
+    {
+      "files": ["packages/akter/src/testing/simulation.test.ts"],
+      "rules": {
+        "effecttsgo/global-random": "off"
+      }
+    },
+    {
+      "files": ["packages/akter/src/contract/make.test.ts"],
+      "rules": {
+        "akter/synchronous-actions": "off"
+      }
     }
   ],
   "ignorePatterns": [

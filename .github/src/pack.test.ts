@@ -39,20 +39,25 @@ const bundledSources = (source: string, target: "bun" | "node") =>
   }).pipe(Effect.scoped)
 
 it.each(["bun", "node"] as const)(
-  "bundles the root entry without AWS/Smithy modules for %s",
+  "bundles the root entry without AWS/Smithy or engine modules for %s",
   (target) =>
     runtime.runPromise(
       Effect.gen(function* () {
         const sources = yield* bundledSources(
-          `import { ActorError, ASSERTION_HEADER, User } from "@rikalabs/akter"
-export const header = ASSERTION_HEADER
+          `import { Actor, ActorError, User } from "@rikalabs/akter"
+export const actor = Actor.make
 export const caller = User.make({ subject: "bundle" })
 export const failure = ActorError
 `,
           target,
         )
-        expect(sources.some((source) => source.endsWith("errors/actor.ts"))).toBe(true)
+        expect(sources.some((source) => source.endsWith("contract/errors.ts"))).toBe(true)
         expect(sources.filter((source) => AWS.test(source))).toEqual([])
+        expect(
+          sources.filter((source) =>
+            /packages\/akter\/src\/(?:execution|snapshots|store|testing)\//.test(source),
+          ),
+        ).toEqual([])
       }),
     ),
 )

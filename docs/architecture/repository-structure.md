@@ -12,7 +12,7 @@ apps/
   cli/                      @rikalabs/akter-cli the `akter` bin: local development, inspection, repair and cloud client commands
   self-host/                @akter/self-host private example app and Docker Compose deployment recipe
 packages/
-  akter/                    @rikalabs/akter  the framework; published with browser-safe, runtime and testing entries
+  akter/                    @rikalabs/akter  the framework; published with browser-safe root, server and testing entries
   cloud-api/                @akter/cloud-api public Akter Cloud HTTP contract and Schema types
   react/                    @akter/react     React hooks over @rikalabs/akter/client
   python-client/            @akter/python-client  Python client generated from the served OpenAPI document
@@ -28,7 +28,7 @@ Dependency direction is `apps → packages → nothing app-ward`. Production cod
 
 ## The framework package
 
-`@rikalabs/akter` ships one distribution. On `rewrite/0.2` it has two entries while the 0.2 runtime lands: `.` (`src/index.ts`) and `./server` (`src/server.ts`); the 0.1 entries `./client`, `./runtime`, `./testing` and `./cold-storage/s3` were removed with the 0.1 runtime. The root entry never imports SQL, cluster or store modules. Only `./server` imports the S3 SDK: it carries the 0.2 store from `src/store/` as the `Store` namespace over `src/store/layer.ts`, and a build that does not read `Store.s3` drops the SDK. `X.toLayer` and `X.get` reach the runtime only through the `Actors` tag. Folders under `src/` are named for the responsibility they own; the source tree, not this page, lists them.
+`@rikalabs/akter` ships one distribution. On `rewrite/0.2` it has three entries while the 0.2 runtime lands: `.` (`src/index.ts`), `./server` (`src/server.ts`) and `./testing` (`src/testing/index.ts`); the 0.1 entries `./client`, `./runtime` and `./cold-storage/s3` were removed with the 0.1 runtime. The root entry carries the actor contract (`Actor`, callers, errors) and the Effect client, and never imports SQL, cluster, store, engine (`src/execution/`, `src/snapshots/`) or testing modules. Only `./server` imports the S3 SDK: it carries the 0.2 store from `src/store/` as the `Store` namespace over `src/store/layer.ts`, and a build that does not read `Store.s3` drops the SDK. `./testing` carries `Simulation`, which runs the engine over the store's memory bucket. `X.toLayer` provides an actor's implementation, and `X.client` and `X.find` reach the engine only through the `Client` tag. Folders under `src/` are named for the responsibility they own; the source tree, not this page, lists them.
 
 `./testing` contains application testing: `ActorTest`, cleanup/content sweeps, database fixtures, batch-law checks, and fault controls. The complete conformance suite, foundation fixtures, and cluster/simulation helpers live in the private `@akter/conformance` tooling workspace, which owns their Vitest configurations and imports framework internals for verification. It is not published or imported by production framework code.
 
