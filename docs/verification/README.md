@@ -25,6 +25,7 @@ Startup migration evidence lives in `runtime/database/migrations.test.ts`: six c
 - [Pipeline performance: repeated local timings, retained coverage and failure controls](pipeline-performance.md)
 - [Docs appearance and font loading: local Mintlify evidence and provider limits](docs-appearance.md)
 - [Cold tier: owner-side fetch, guarded garbage, Postgres crashes and S3-compatible evidence](cold-tier.md)
+- [Store protocol: the 0.2 bucket log, pages, leases and runner storage on memory, a local directory and MinIO](store-protocol.md)
 - [Low-connection Postgres: direct four-session floor and explicit transaction-pooler evidence](low-connection-postgres.md)
 - [Performance and capacity](../../BENCHMARKS.md)
 - [Named invariants](invariants.md)

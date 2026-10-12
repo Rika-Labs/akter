@@ -5,46 +5,79 @@ import { afterAll, expect, it } from "vitest"
 const runtime = ManagedRuntime.make(BunServices.layer)
 afterAll(() => runtime.dispose())
 
+const AWS = /@(?:aws-sdk|smithy)\//
+
+/** The source files a Bun build of `source`, importing the framework as a consumer would, reads. */
+const bundledSources = (source: string, target: "bun" | "node") =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const work = yield* fs.makeTempDirectoryScoped({ prefix: "akter-bundle-" })
+    yield* fs.makeDirectory(path.join(work, "node_modules/@rikalabs"), { recursive: true })
+    yield* fs.symlink(
+      path.resolve(import.meta.dirname, "../../packages/akter"),
+      path.join(work, "node_modules/@rikalabs/akter"),
+    )
+    yield* fs.symlink(
+      path.resolve(import.meta.dirname, "../../node_modules/effect"),
+      path.join(work, "node_modules/effect"),
+    )
+    const entrypoint = path.join(work, "server.ts")
+    yield* fs.writeFileString(entrypoint, source)
+    const build = yield* Effect.promise(() =>
+      Bun.build({
+        entrypoints: [entrypoint],
+        target,
+        splitting: false,
+        sourcemap: "external",
+        metafile: true,
+      }),
+    )
+    expect(build.success).toBe(true)
+    expect(build.metafile).toBeDefined()
+    return Object.keys(build.metafile!.inputs)
+  }).pipe(Effect.scoped)
+
 it.each(["bun", "node"] as const)(
   "bundles the root entry without AWS/Smithy modules for %s",
   (target) =>
     runtime.runPromise(
       Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem
-        const path = yield* Path.Path
-        const work = yield* fs.makeTempDirectoryScoped({ prefix: "akter-root-bundle-" })
-        yield* fs.makeDirectory(path.join(work, "node_modules/@rikalabs"), { recursive: true })
-        yield* fs.symlink(
-          path.resolve(import.meta.dirname, "../../packages/akter"),
-          path.join(work, "node_modules/@rikalabs/akter"),
-        )
-        yield* fs.symlink(
-          path.resolve(import.meta.dirname, "../../node_modules/effect"),
-          path.join(work, "node_modules/effect"),
-        )
-        const entrypoint = path.join(work, "server.ts")
-        yield* fs.writeFileString(
-          entrypoint,
+        const sources = yield* bundledSources(
           `import { ActorError, ASSERTION_HEADER, User } from "@rikalabs/akter"
 export const header = ASSERTION_HEADER
 export const caller = User.make({ subject: "bundle" })
 export const failure = ActorError
 `,
+          target,
         )
-        const build = yield* Effect.promise(() =>
-          Bun.build({
-            entrypoints: [entrypoint],
-            target,
-            splitting: false,
-            sourcemap: "external",
-            metafile: true,
-          }),
-        )
-        expect(build.success).toBe(true)
-        expect(build.metafile).toBeDefined()
-        const sources = Object.keys(build.metafile!.inputs)
         expect(sources.some((source) => source.endsWith("errors/actor.ts"))).toBe(true)
-        expect(sources.filter((source) => /@(?:aws-sdk|smithy)\//.test(source))).toEqual([])
-      }).pipe(Effect.scoped),
+        expect(sources.filter((source) => AWS.test(source))).toEqual([])
+      }),
+    ),
+)
+
+it.each(["bun", "node"] as const)(
+  "bundles a server that composes only Store.fileSystem and Store.memory without AWS/Smithy modules for %s, and Store.s3 with them",
+  (target) =>
+    runtime.runPromise(
+      Effect.gen(function* () {
+        const local = yield* bundledSources(
+          `import { Store } from "@rikalabs/akter/server"
+export const stores = [Store.fileSystem("/srv/store"), Store.memory()]
+`,
+          target,
+        )
+        expect(local.some((source) => source.endsWith("store/file-system.ts"))).toBe(true)
+        expect(local.filter((source) => AWS.test(source))).toEqual([])
+
+        const remote = yield* bundledSources(
+          `import { Store } from "@rikalabs/akter/server"
+export const store = Store.s3({ bucket: "store" })
+`,
+          target,
+        )
+        expect(remote.some((source) => source.includes("@aws-sdk/client-s3/"))).toBe(true)
+      }),
     ),
 )

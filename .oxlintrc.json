@@ -79,6 +79,18 @@
       }
     },
     {
+      "files": ["packages/akter/src/store/layer.ts"],
+      "rules": {
+        "effecttsgo/missing-pipeable-signature": "off"
+      }
+    },
+    {
+      "files": ["packages/akter/src/store/s3.test.ts"],
+      "rules": {
+        "effecttsgo/node-builtin-import": "off"
+      }
+    },
+    {
       "files": ["packages/akter/src/runtime/peering/*.ts"],
       "rules": {
         "effecttsgo/node-builtin-import": "off"

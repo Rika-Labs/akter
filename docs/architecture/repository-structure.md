@@ -28,7 +28,7 @@ Dependency direction is `apps → packages → nothing app-ward`. Production cod
 
 ## The framework package
 
-`@rikalabs/akter` ships one distribution with five entries: `.` (`src/index.ts`), `./client`, `./runtime`, `./testing` and `./cold-storage/s3`. The root and `client/` entries never import SQL or cluster modules; `runtime/` and `testing/` do. Only `./cold-storage/s3` imports the S3 SDK; the root and runtime entries do not reach it. `X.toLayer` and `X.get` reach the runtime only through the `Actors` tag. Folders under `src/` are named for the responsibility they own; the source tree, not this page, lists them.
+`@rikalabs/akter` ships one distribution. On `rewrite/0.2` it has two entries while the 0.2 runtime lands: `.` (`src/index.ts`) and `./server` (`src/server.ts`); the 0.1 entries `./client`, `./runtime`, `./testing` and `./cold-storage/s3` were removed with the 0.1 runtime. The root entry never imports SQL, cluster or store modules. Only `./server` imports the S3 SDK: it carries the 0.2 store from `src/store/` as the `Store` namespace over `src/store/layer.ts`, and a build that does not read `Store.s3` drops the SDK. `X.toLayer` and `X.get` reach the runtime only through the `Actors` tag. Folders under `src/` are named for the responsibility they own; the source tree, not this page, lists them.
 
 `./testing` contains application testing: `ActorTest`, cleanup/content sweeps, database fixtures, batch-law checks, and fault controls. The complete conformance suite, foundation fixtures, and cluster/simulation helpers live in the private `@akter/conformance` tooling workspace, which owns their Vitest configurations and imports framework internals for verification. It is not published or imported by production framework code.
 
@@ -57,4 +57,4 @@ The oxlint rules in `tooling/oxlint` check names, runtime-import boundaries, dec
 
 ## Verification and release
 
-The workspace resolves the framework entries to TypeScript sources during development. `bun run --cwd packages/akter build` emits `dist/`, `publishConfig` points the tarball's exports and types there, `.github/src/pack.ts` stages and checks the tarball, and the release workflow publishes it on a `v<version>` tag. Public CI tests with a Postgres server 18.6 where the framework's integration suites require one.
+The workspace resolves the framework entries to TypeScript sources during development. `bun run --cwd packages/akter build` emits `dist/`, `publishConfig` points the tarball's exports and types there, `.github/src/pack.ts` stages and checks the tarball, and the release workflow publishes it on a `v<version>` tag. Public CI runs the framework's integration suites (`packages/akter` `test:integration`, today the store's S3 suite) against a MinIO server.

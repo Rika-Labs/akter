@@ -74,7 +74,7 @@ Refusals happen before an action runs, write nothing, and are retryable under th
 
 ### 8. Runner leases are advisory
 
-Runner registration and shard assignment use Effect Cluster's `RunnerStorage` implemented on the bucket: `cluster/runners/<id>` heartbeats and `cluster/assignments`, each updated with `If-Match` on its ETag. These objects decide who should open a shard and how peers find each other. They never authorize a write: only the segment chain does. Nothing in the framework uses Cluster's SQL storage, advisory locks or message storage.
+Runner registration and shard locks use Effect Cluster's `RunnerStorage` implemented on the bucket: `cluster/runners/<address>` registrations, `cluster/beats/<address>` heartbeats, `cluster/locks/<shard>` shard locks and `cluster/machines/<id>` machine-id claims; registrations, locks and claims are updated with `If-Match` on their ETag. Shard assignment is not stored: each runner computes it from the runner leases with `HashRing`. These objects decide who should open a shard and how peers find each other. They never authorize a write: only the segment chain does. Nothing in the framework uses Cluster's SQL storage, advisory locks or message storage.
 
 ### 9. Release handoff: drain, then open
 
