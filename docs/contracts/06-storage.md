@@ -19,10 +19,14 @@ Status: proposal (0.2), owned by ADR 0127; promoted when E2 (store, log and chec
   s/<nn>/cp/<inverted offset> checkpoint manifest, created once
   pages/<sha256>              page or manifest, plain PUT
   gc/<epoch>                  GC lease, created once
-  cluster/runners/<id>        runner lease, If-Match (advisory)
-  cluster/assignments         shard assignment, If-Match (advisory)
+  cluster/runners/<address>   runner registration, If-Match (advisory)
+  cluster/beats/<address>     runner heartbeat (advisory)
+  cluster/locks/<shard>       shard lock, If-Match (advisory)
+  cluster/machines/<id>       machine id claim, If-Match (advisory)
   audit/<date>/<id>           operator read audit record, created once
   ```
+
+- Shard assignments MUST NOT be stored: each runner computes them from the runner leases with `HashRing`. The lease objects stay advisory; the log fence is the only authority.
 
 - `Store.fileSystem(dir)` MUST implement the same protocol on one host (`O_EXCL` create, atomic rename). `Store.memory()` is for tests and MUST NOT be presented as durable.
 

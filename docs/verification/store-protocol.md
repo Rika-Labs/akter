@@ -5,11 +5,11 @@
 **Owner role:** runtime/storage reliability.  
 **Change policy:** a new store transition or bucket requirement needs a conformance scenario that names the wrong implementation it rejects.
 
-`Store` is exported from `@rikalabs/akter/server` as a namespace: the layers `Store.s3`, `Store.fileSystem` and `Store.memory`, the probe `Store.check` and the service `Store.Store`. Its source is `packages/akter/src/store/`, and its normative target is the [storage contract](../contracts/06-storage.md) and [ADR 0136](../decisions/0136-stores-the-bucket-is-the-store.md). One bucket holds each shard's log segments (`s/<shard>/log/<offset>`), checkpoint manifests (`s/<shard>/cp/<inverted offset>`), content-addressed pages (`pages/<sha256>`), the identity record `meta/store` and lease objects under `cluster/` and `gc/`. A segment is created once at `head + 1`, and that create-once write is the fence. No clock sits in the commit path. The adapters are `Store.s3` (S3-compatible, through `@aws-sdk/client-s3`), `Store.fileSystem` (one local directory) and `Store.memory`. The 0.1 runtime does not use the store yet, so nothing here is a claim about 0.1 behavior.
+`Store` is exported from `@rikalabs/akter/server` as a namespace: the layers `Store.s3`, `Store.fileSystem` and `Store.memory`, the probe `Store.check` and the service `Store.Store`. Its source is `packages/akter/src/store/`, and its normative target is the [storage contract](../contracts/06-storage.md) and [ADR 0136](../decisions/0136-stores-the-bucket-is-the-store.md). One bucket holds each shard's log segments (`s/<shard>/log/<offset>`), checkpoint manifests (`s/<shard>/cp/<inverted offset>`), content-addressed pages (`pages/<sha256>`), the identity record `meta/store` and lease objects under `cluster/` and `gc/`; the layout is the storage contract's. A segment is created once at `head + 1`, and that create-once write is the fence. No clock sits in the commit path. The adapters are `Store.s3` (S3-compatible, through `@aws-sdk/client-s3`), `Store.fileSystem` (one local directory) and `Store.memory`. The 0.1 runtime does not use the store yet, so nothing here is a claim about 0.1 behavior.
 
 ## Suite and backends
 
-[`conformance/store.ts`](../../tooling/conformance/src/conformance/store.ts) runs the same thirteen scenarios against every backend. The owners in a scenario are separate store instances, each with its own client and fault plan, over one shared location. The test clock drives `validFor` (10 s) and `trimAfter` (10 min), so the timing rules are tested at their boundaries, not by sleeping.
+[`conformance/store.ts`](../../tooling/conformance/src/conformance/store.ts) runs the same sixteen scenarios against every backend. The owners in a scenario are separate store instances, each with its own client and fault plan, over one shared location. The test clock drives `validFor` (10 s) and `trimAfter` (10 min), so the timing rules are tested at their boundaries, not by sleeping.
 
 | Backend         | Test file                                             | Bun                                                    | Node              |
 | --------------- | ----------------------------------------------------- | ------------------------------------------------------ | ----------------- |
@@ -21,27 +21,34 @@ CI starts MinIO RELEASE.2026-09-22 (`cgr.dev/chainguard/minio`, pinned by digest
 
 Faults come from `Faults.plan()`, which wraps a bucket between the store and its adapter. `Delay` and `Hold` postpone a matching call. `Unavailable` fails it before it reaches the bucket. `LoseResponse` performs it and then fails, the way a write lands but its response is lost. Faults model what a client can observe; they do not change how the provider behaves.
 
-| Scenario                                                                               | Wrong implementation it rejects                                                    |
-| -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| A stale owner's append fails after another owner opens                                 | A fence kept only in process memory, or a plain `PUT` for segments                 |
-| Six concurrent opens get distinct epochs; only the newest lease appends                | An open without create-once, which lets two owners share an epoch                  |
-| A lost-response append is recognized as the owner's own and stored once                | Retrying at the next offset, or failing a write that committed                     |
-| A lost-response append that another owner overtook fails `StaleEpoch`                  | Treating every `412` after a retry as the owner's own write                        |
-| A failed manifest write leaves the previous checkpoint authoritative                   | Recovering from pages that no durable manifest names                               |
-| Recovery returns every acknowledged batch once, in order, from the newest checkpoint   | Reading the oldest checkpoint, duplicating lost-response batches, reordering       |
-| Trim deletes only segments covered by a checkpoint known for `trimAfter`               | Trimming segments no checkpoint covers, or trimming as soon as a checkpoint exists |
-| An owner idle past `validFor` whose next key was trimmed fails before it writes        | Appending without re-checking after `validFor`, which would recreate a trimmed key |
-| An owner re-checks once after `validFor` and not within it                             | Never re-checking, or checking on every append                                     |
-| Pages are stored once per content hash and verified on load                            | Keys not derived from content, or loads that trust stored bytes                    |
-| Concurrent creators all read one `meta/store`                                          | A last-writer-wins identity record                                                 |
-| Runner storage splits shards, moves a dead runner's shards and drops a paused runner's | Locks taken while their owner's heartbeat still moves                              |
-| The backend passes `Store.check`, which removes everything it wrote                    | A backend whose conditional writes, compare-and-swap or listings are not atomic    |
+| Scenario                                                                                                                                              | Wrong implementation it rejects                                                     |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| A stale owner's append fails after another owner opens; each segment carries its writer's build                                                       | A fence kept only in process memory, or a plain `PUT` for segments                  |
+| Six concurrent opens get distinct epochs; only the newest lease appends                                                                               | An open without create-once, which lets two owners share an epoch                   |
+| A lost-response append is recognized as the owner's own and stored once                                                                               | Retrying at the next offset, or failing a write that committed                      |
+| A lost-response append that another owner overtook fails `StaleEpoch`                                                                                 | Treating every `412` after a retry as the owner's own write                         |
+| A failed manifest write leaves the previous checkpoint authoritative                                                                                  | Recovering from pages that no durable manifest names                                |
+| Recovery returns every acknowledged batch once, in order, from the newest checkpoint                                                                  | Reading the oldest checkpoint, duplicating lost-response batches, reordering        |
+| Trim deletes only segments covered by a checkpoint known for `trimAfter`                                                                              | Trimming segments no checkpoint covers, or trimming as soon as a checkpoint exists  |
+| An owner idle past `validFor` whose next key was trimmed fails before it writes                                                                       | Appending without re-checking after `validFor`, which would recreate a trimmed key  |
+| An owner re-checks once after `validFor` and not within it                                                                                            | Never re-checking, or checking on every append                                      |
+| Pages are stored once per content hash; an absent or altered page is the `PageCorrupt` defect                                                         | Keys not derived from content, or loads that trust stored bytes                     |
+| A `412` or `429` on a page write succeeds only when the key holds an object of the page's length                                                      | Trusting every refused or throttled write, or trusting a key that holds other bytes |
+| Concurrent creators write one `meta/store` with its creation time and retention; a runner configured with another shard count or retention is refused | A last-writer-wins identity record, or adopting the stored shard count              |
+| Open skips newer checkpoints that do not decode or name a missing page, reports them, and recovers from the previous checkpoint and the longer tail   | Trusting the newest manifest, or opening from empty state                           |
+| Open refuses a shard when the log after the intact checkpoint no longer reaches a skipped one                                                         | Reopening at an offset whose entries were trimmed                                   |
+| Runner storage splits shards, moves a dead runner's shards and drops a paused runner's                                                                | Locks taken while their owner's heartbeat still moves                               |
+| The backend passes `Store.check`, which removes everything it wrote                                                                                   | A backend whose conditional writes, compare-and-swap or listings are not atomic     |
+
+Errors follow the [error model](../contracts/error-model.md): bucket calls, pages, leases and `meta/store` fail with `StorageUnavailable`; the log operations (`open`, `append`, `read`, `checkpoint`, `trim`, `verify`) with `LogUnavailable` or `StaleEpoch`; an undecodable segment, manifest or `meta/store` with `CorruptSegment`; a configuration that disagrees with `meta/store` with `StoreMismatch`. A page that is absent or does not hash to its key is the `PageCorrupt` defect. The store raises no `PageMiss`: in the [actions contract](../contracts/02-actions.md) that is the engine's signal that an action touched a page not yet in memory, which it loads and reruns, and a page missing from the bucket would make that rerun loop forever.
+
+Every segment carries a `build`: the runtime and its version, the engine and its version, platform, architecture and the ICU, Unicode and time-zone database versions, read from the running process, plus the application bundle digest and framework version the server passes as `build` (both empty until it does). [`build.test.ts`](../../packages/akter/src/store/build.test.ts) checks the runtime fields on Bun and Node; Bun reports no time-zone database version, and its `process.versions.v8` names the Node version it emulates, so the engine version comes from `process.versions.webkit`.
 
 `Store.check` is the probe that defines a supported bucket. It races concurrent create-once writers and concurrent compare-and-swap writers, checks that listings show completed creates and deletes, measures back-to-back writes to one key, and runs one batch delete. Applications can run it against their own bucket before they rely on it. [`check.test.ts`](../../packages/akter/src/store/check.test.ts) runs it against a bucket whose conditional create and compare-and-swap check and then write in two steps: exactly those two probes fail, and the same bucket with atomic writes passes. Running the race writers one at a time fails that test.
 
 ## Adapter-specific evidence
 
-The S3 adapter turns off the SDK's own retries, so every repeated write goes through the store's retry schedule, which reads a create-once write back to recognize its own. `s3.test.ts` also runs a local stand-in server that answers a conditional create with `412` and then drops the next request on that kept-alive connection without responding. MinIO RELEASE.2025-09-07 does this; RELEASE.2026-09-22 keeps the connection open. The test shows that the adapter sends a dropped read again exactly once, on a fresh connection, and never sends a write again. Removing the read resend, or resending writes too, fails the test.
+The S3 adapter answers a `412` on a plain `PUT` with a failure that carries the status, so the page writer can resolve it, and `s3.test.ts` checks that against a stand-in server. It turns off the SDK's own retries, so every repeated write goes through the store's retry schedule, which reads a create-once write back to recognize its own. `s3.test.ts` also runs a local stand-in server that answers a conditional create with `412` and then drops the next request on that kept-alive connection without responding. MinIO RELEASE.2025-09-07 does this; RELEASE.2026-09-22 keeps the connection open. The test shows that the adapter sends a dropped read again exactly once, on a fresh connection, and never sends a write again. Removing the read resend, or resending writes too, fails the test.
 
 The file-system adapter writes each object to a temporary file, fsyncs it, then links it into place for create-once or renames it for a plain put. A lease is a directory of numbered versions, and its etag is the version number. These guarantees hold on one host's local file system only.
 
@@ -49,23 +56,20 @@ The file-system adapter writes each object to a temporary file, fsyncs it, then 
 
 [`pack.test.ts`](../../.github/src/pack.test.ts) builds a consumer of `@rikalabs/akter/server` with Bun, without code splitting, for the Bun and Node targets. A server that composes only `Store.fileSystem` and `Store.memory` bundles no AWS or Smithy module, and one that composes `Store.s3` does, which shows the check can see the SDK. When `Store.s3` was a static member of the `Store` service class, the same filesystem-only build pulled in 111 AWS/Smithy modules for Bun and 41 for Node.
 
-## Differences from the storage contract
+## Left to later milestones
 
-The [storage contract](../contracts/06-storage.md) is a proposal that this branch does not yet meet in full. These differences are open, not settled:
+The [storage contract](../contracts/06-storage.md) is a proposal; these parts of it belong to later milestones and are not met here:
 
-- `meta/store` records the format, the store id and the shard count, not retention or a creation time. A store opened with a different `shards` option adopts the stored count instead of refusing to start.
-- Segments carry `writer`, `open` and `entries`; there is no `build` field yet.
-- Runner storage uses `cluster/runners/`, `cluster/beats/`, `cluster/locks/` and `cluster/machines/` and writes no `cluster/assignments` object, because assignments are computed from the runner list. `gc/` keys are accepted by the lease interface but no collector exists, and nothing writes `audit/`.
-- A throttled (`429`) page write is accepted when the key exists; its length is not compared, and a `412` on a page write is not resolved.
-- A page whose bytes do not hash to its key fails with the typed `CorruptSegment` error, not the `PageCorrupt` defect. The errors are named `StoreUnavailable` and `MissingPage`, where the error model names `StorageUnavailable`, `LogUnavailable` and `PageMiss`.
-- Trim deletes covered segments once a checkpoint is `trimAfter` old; it does not wait for the store's retention period.
-- Recovery reads only the newest checkpoint; it does not fall back to an older one when pages are missing.
-- `Store.check` is the probe; there is no `akter storage check` command yet.
+- **E6 (history and garbage collection):** trim deletes covered segments once a checkpoint is `trimAfter` old; it does not yet wait for the retention recorded in `meta/store`, and no history archive is written before trim. `gc/` keys are accepted by the lease interface, but no collector exists.
+- **E7 (operator commands):** `Store.check` is the probe; the `akter storage check` command and the support matrix entries it feeds do not exist yet, and nothing writes `audit/`.
+- The probe does not yet check that a plain `PUT` refreshes last-modified, which the contract lists for supported providers and garbage collection relies on.
+
+Checkpoint fallback checks that a manifest decodes, matches its key and names only stored pages; it checks the existence of the pages the manifest names directly, not their digests or the pages they reference. A damaged page found later is the `PageCorrupt` defect.
 
 ## Not established
 
-- No evidence for Cloudflare R2, Tigris or AWS S3. The adapter maps AWS's `409` for a concurrent conditional write to `StoreUnavailable` from documentation, not from a test.
+- No evidence for Cloudflare R2, Tigris or AWS S3. The adapter maps AWS's `409` for a concurrent conditional write to `StorageUnavailable` from documentation, not from a test.
 - MinIO runs as one node in one container. Distributed erasure sets, network partitions, real clock behavior and provider throttling are not exercised. The per-key write-rate probe records throttling but sets no bound.
 - A crash between page writes and the manifest is simulated by failing the manifest write, not by killing a process. The 30-second request timeout that bounds how late a paused owner's write can land is configured but not measured.
-- With MinIO RELEASE.2025-09-07, many concurrent `412` responses can leave more than one dropped connection in the pool. A resent read can then meet a second one and surface `StoreUnavailable` to the store's retry schedule. This was seen once locally, in `Store.check`'s race probe.
+- With MinIO RELEASE.2025-09-07, many concurrent `412` responses can leave more than one dropped connection in the pool. A resent read can then meet a second one and surface `StorageUnavailable` to the store's retry schedule. This was seen once locally, in `Store.check`'s race probe.
 - No throughput, latency or cost measurement.
