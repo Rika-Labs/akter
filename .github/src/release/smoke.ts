@@ -74,8 +74,9 @@ console.log("cloud-api contract passed")
 `
 
 const consumerMain = `import assert from "node:assert/strict"
-import { ActorError, InvalidInput, User } from "@rikalabs/akter"
-import { ASSERTION_HEADER, requestDigest } from "@rikalabs/akter/server"
+import { Actor, ActorError, InvalidInput, User } from "@rikalabs/akter"
+import { ASSERTION_HEADER, requestDigest, Store } from "@rikalabs/akter/server"
+import { Simulation } from "@rikalabs/akter/testing"
 import { Effect, Schema } from "effect"
 
 const caller = Schema.decodeUnknownSync(User)({ _tag: "User", subject: "smoke" })
@@ -94,7 +95,29 @@ const [first, again, other] = await Promise.all([digest("a"), digest("a"), diges
 assert.match(first, /^[0-9a-f]{64}$/)
 assert.equal(first, again)
 assert.notEqual(first, other)
-console.log("root and server entries passed")
+assert.equal(typeof Store.memory, "function")
+
+const Counter = Actor.make("Counter", {
+  state: Schema.Struct({ n: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
+  actions: { bump: Actor.action({ success: Schema.Finite }) },
+})
+const counted = await Simulation.run(
+  { actors: [Counter], seed: 1 },
+  Effect.gen(function* () {
+    const counter = yield* Counter.client("c")
+    assert.equal(yield* counter.bump(), 1)
+    yield* Simulation.settle
+    return (yield* Simulation.state(Counter, "c")).n
+  }).pipe(Effect.scoped),
+  Counter.toLayer({
+    bump: (counter) => {
+      counter.n += 1
+      return counter.n
+    },
+  }),
+)
+assert.equal(counted, 1)
+console.log("root, server and testing entries passed")
 `
 
 const cliSmoke = Effect.fn("cliSmoke")(function* ({
@@ -247,15 +270,15 @@ const program = Effect.gen(function* () {
 
   const output = (yield* run([engine, "main.ts"], consumer)).trim()
 
-  if (output !== "root entry passed")
-    return yield* Effect.die(new Error(`Root entry check failed: ${output}`))
+  if (output !== "root, server and testing entries passed")
+    return yield* Effect.die(new Error(`Entry check failed: ${output}`))
 
   yield* cliSmoke({ engine, consumer, bin: path.join(consumer, "node_modules/.bin/akter") }).pipe(
     Effect.scoped,
   )
 
   yield* Console.log(
-    `${staged.name}@${staged.version}: ${tarball} installs into a clean project, typechecks, and its root entry runs on ${engine}; ${cliStaged.name}@${cliStaged.version}: cloud-api types, import, endpoint and schema checks, help and offline login help pass`,
+    `${staged.name}@${staged.version}: ${tarball} installs into a clean project, typechecks, and its root, server and testing entries run on ${engine}; ${cliStaged.name}@${cliStaged.version}: cloud-api types, import, endpoint and schema checks, help and offline login help pass`,
   )
 }).pipe(Effect.scoped)
 
