@@ -11,7 +11,44 @@ import {
 } from "effect"
 import { Activity, Workflow } from "effect/workflow"
 import type { WorkflowEngine } from "effect/workflow"
-import type { ConformanceExpect, ConformanceRegistrar } from "../conformance.ts"
+
+/**
+ * Assertions injected by the test framework running the suite, e.g. Vitest's
+ * `expect`. The framework itself is never imported here.
+ */
+export interface ConformanceMatchers {
+  readonly not: ConformanceMatchers
+  readonly toBe: <T>(expected: T) => void
+  readonly toEqual: <T>(expected: T) => void
+  readonly toContain: <T>(expected: T) => void
+  readonly toMatchObject: <T extends object | ReadonlyArray<unknown>>(expected: T) => void
+  readonly toBeInstanceOf: <T>(expected: T) => void
+}
+
+export type ConformanceExpect = <T>(actual: T) => ConformanceMatchers
+
+/**
+ * The subset of `describe`/`it`/lifecycle a registrar must supply. Vitest's
+ * exported functions satisfy this shape.
+ */
+export interface ConformanceRegistrar {
+  readonly describe: (name: string, body: () => void) => void
+  /**
+   * Registers one case. A runner that aborts `signal` when the case times
+   * out or is cancelled, as Vitest does, interrupts the case's effects so
+   * their finalizers run before the next case starts.
+   */
+  readonly it: (
+    name: string,
+    body: (context: { readonly signal?: AbortSignal | undefined }) => Promise<void>,
+    timeout?: number,
+  ) => void
+  readonly beforeAll: (body: () => Promise<void> | void, timeout?: number) => void
+  readonly afterAll: (body: () => Promise<void> | void) => void
+  readonly expect: ConformanceExpect
+  /** Registers an inapplicable case by name so it is reported, never silently dropped. */
+  readonly skip: (name: string) => void
+}
 
 /**
  * The shared workflow-engine suite. Every case runs the same body against
