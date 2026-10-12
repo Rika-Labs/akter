@@ -127,9 +127,9 @@ describe("Postgres test databases", () => {
             SqlClient.SqlClient,
           )
           const opened = yield* Effect.promise(() =>
-            postgresBackend({ url: Effect.succeed(Redacted.value(url)), dropsAtOnce: 1 }).open(),
+            postgresBackend({ url: Effect.succeed(Redacted.value(url)), dropsAtOnce: 2 }).open(),
           )
-          const fresh = yield* Effect.forEach(Array.from({ length: 3 }), () => opened.freshDatabase)
+          const fresh = yield* Effect.forEach(Array.from({ length: 2 }), () => opened.freshDatabase)
           const names = [opened.database, ...fresh].map((database) =>
             new URL(Redacted.value(database as Redacted.Redacted<string>)).pathname.slice(1),
           )
