@@ -1,46 +1,98 @@
-import { Effect } from "effect"
+import { Clock, Effect, Semaphore } from "effect"
+import { ActorError, ActorUnavailable } from "../errors/actor.ts"
 import { InternalActors } from "../runtime/actors.ts"
 
 const SAMPLE_EVERY = "10 seconds"
 
 /** A sample older than this is replaced even if its round trip was shorter. */
 const STALE_MS = 60_000
+const DISCONTINUITY_MS = 250
 
 interface Sample {
   readonly offset: number
   readonly rtt: number
   readonly at: number
+  readonly wall: number
 }
 
 /**
  * The database clock without a database read per request: an offset from the
  * monotonic clock, resampled every 10 seconds, keeping the sample with the
- * shortest round trip, so the estimate is off by at most that round trip.
+ * shortest round trip. Wall-clock divergence forces a new database read
+ * before exposing time, because suspension can pause or reset the monotonic
+ * clock without pausing the database. Sample age only affects the background
+ * refresh, so warm requests never wait for a merely old sample.
  */
-export const databaseClock = Effect.gen(function* () {
-  const actors = yield* InternalActors
+export const sampledDatabaseClock = Effect.fnUntraced(function* (
+  databaseNow: Effect.Effect<number, ActorError>,
+) {
+  const wallClock = yield* Clock.Clock
 
   const sample = Effect.gen(function* () {
     const sent = performance.now()
-    const database = yield* actors.databaseNow
+    const wall = wallClock.currentTimeMillisUnsafe()
+    const database = yield* databaseNow
     const received = performance.now()
+    const receivedWall = wallClock.currentTimeMillisUnsafe()
+    const rtt = received - sent
 
-    return { offset: database - (sent + received) / 2, rtt: received - sent, at: received }
+    if (rtt < 0 || Math.abs(receivedWall - wall - rtt) > DISCONTINUITY_MS)
+      return yield* ActorError.make({
+        reason: ActorUnavailable.make({
+          cause: new Error("The clock changed while sampling database time"),
+        }),
+      })
+
+    return {
+      offset: database - (sent + received) / 2,
+      rtt,
+      at: received,
+      wall: receivedWall,
+    }
   })
 
   let best: Sample = yield* sample.pipe(Effect.orDie)
+  const sampling = Semaphore.makeUnsafe(1)
 
-  yield* sample.pipe(
+  const discontinuous = () => {
+    const elapsed = performance.now() - best.at
+    return (
+      elapsed < 0 ||
+      Math.abs(wallClock.currentTimeMillisUnsafe() - best.wall - elapsed) > DISCONTINUITY_MS
+    )
+  }
+
+  const refresh = Effect.gen(function* () {
+    const next = yield* sample
+    if (
+      discontinuous() ||
+      next.at - best.at >= STALE_MS ||
+      Math.abs(next.offset - best.offset) > DISCONTINUITY_MS + (next.rtt + best.rtt) / 2 ||
+      next.rtt <= best.rtt
+    )
+      best = next
+  })
+
+  yield* refresh.pipe(
+    sampling.withPermits(1),
     Effect.delay(SAMPLE_EVERY),
-    Effect.tap((next) =>
-      Effect.sync(() => {
-        if (next.rtt <= best.rtt || next.at - best.at >= STALE_MS) best = next
-      }),
-    ),
     Effect.ignore,
     Effect.forever,
     Effect.forkScoped,
   )
 
-  return { now: () => Math.round(performance.now() + best.offset) }
+  const now = Effect.gen(function* () {
+    if (discontinuous())
+      yield* Effect.suspend(() => (discontinuous() ? refresh : Effect.void)).pipe(
+        sampling.withPermits(1),
+      )
+    return Math.round(performance.now() + best.offset)
+  })
+
+  return { now }
 })
+
+/** Samples the runtime's authoritative database clock for served responses. */
+export const databaseClock = Effect.flatMap(InternalActors, (actors) =>
+  sampledDatabaseClock(actors.databaseNow),
+)
