@@ -10,8 +10,8 @@ import { s3Bucket } from "./s3.ts"
 /**
  * `TEST_S3_URL` names an S3-compatible endpoint, its credentials and a bucket
  * as `http://<access key>:<secret>@<host>:<port>/<bucket>`, such as the MinIO
- * service in `compose.yaml`; the bucket is created if missing and each
- * scenario gets a fresh key prefix in it.
+ * service in `packages/akter/compose.yaml`; the bucket is created if missing
+ * and each scenario gets a fresh key prefix in it.
  */
 const target = Effect.gen(function* () {
   const url = new URL(yield* Config.String("TEST_S3_URL"))

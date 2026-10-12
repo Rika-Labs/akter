@@ -44,7 +44,7 @@
       "dependsOn": ["^build", "transit"],
       "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "!docs/**", "$TURBO_ROOT$/vitest.config.ts"],
       "cache": false,
-      "passThroughEnv": ["CI"]
+      "passThroughEnv": ["CI", "TEST_S3_URL"]
     },
     "test:e2e": {
       "dependsOn": ["^build"],

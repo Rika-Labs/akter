@@ -135,7 +135,7 @@ jobs:
           retention-days: 14
 
   # The framework units run on Bun; the units that depend on the platform also
-  # run on Node.
+  # run on Node. The framework's integration suites need MinIO and run on both.
   suites:
     name: ${{ matrix.name }}
     needs: changes
@@ -150,12 +150,29 @@ jobs:
             shards: |
               framework-unit unit
               node-units node-units
+              framework-integration integration
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ env.HEAD_SHA }}
           persist-credentials: false
       - uses: ./.github/actions/setup
+      # MinIO starts here rather than as a service container because the image
+      # needs `server /data` after its entrypoint.
+      - name: Start MinIO for the integration shard
+        if: contains(matrix.shards, ' integration')
+        env:
+          MINIO_IMAGE: cgr.dev/chainguard/minio@sha256:4b862594d23cb20ae0fbeb93311ed312a5b566ecba2293220b204c89ef3c1fe2
+        run: |
+          docker run --detach --name minio --user 0 --publish 127.0.0.1:9000:9000 \
+            --env MINIO_ROOT_USER=project --env MINIO_ROOT_PASSWORD=project-minio \
+            --entrypoint /usr/bin/minio "$MINIO_IMAGE" server /data
+          for _ in $(seq 60); do
+            curl --silent --fail --output /dev/null http://127.0.0.1:9000/minio/health/ready && break
+            sleep 1
+          done
+          curl --silent --fail --output /dev/null http://127.0.0.1:9000/minio/health/ready
+          echo "TEST_S3_URL=http://project:project-minio@127.0.0.1:9000/akter-store" >> "$GITHUB_ENV"
       - name: Run the shards of ${{ matrix.name }}
         env:
           SHARDS: ${{ matrix.shards }}
@@ -173,6 +190,8 @@ jobs:
                 bun run --cwd tooling/conformance test ;;
               node-units)
                 bun run test:node:units ;;
+              integration)
+                bun run --cwd packages/akter test:integration ;;
               *)
                 echo "Unknown shard kind $kind"; false ;;
             esac 2>&1 | tee "evidence/$name/check.log"

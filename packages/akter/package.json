@@ -58,7 +58,8 @@
     "prepublishOnly": "echo 'Publish through the release workflow: push a v<version> tag.' && exit 1",
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
     "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
-    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. packages/akter/src --exclude packages/akter/src/store/s3.test.ts"
+    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. packages/akter/src --exclude packages/akter/src/store/s3.test.ts",
+    "test:integration": "bun --bun ../../node_modules/vitest/vitest.mjs run --config vitest.integration.config.ts && node ../../node_modules/vitest/vitest.mjs run --config vitest.integration.config.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.1148.0",
