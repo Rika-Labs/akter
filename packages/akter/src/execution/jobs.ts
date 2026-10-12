@@ -1,4 +1,15 @@
-import { Cause, Context, Duration, Effect, Exit, Option, Predicate, PubSub, Schema, Semaphore } from "effect"
+import {
+  Cause,
+  Context,
+  Duration,
+  Effect,
+  Exit,
+  Option,
+  Predicate,
+  PubSub,
+  Schema,
+  Semaphore,
+} from "effect"
 import { System } from "../contract/caller.ts"
 import { ActorError, InvalidInput } from "../contract/errors.ts"
 import { Client, Handles } from "../contract/handle.ts"
@@ -21,7 +32,9 @@ interface Scope {
 }
 
 /** The enclosing step of a job call. */
-class JobScope extends Context.Service<JobScope, Scope>()("@rikalabs/akter/execution/jobs/JobScope") {}
+class JobScope extends Context.Service<JobScope, Scope>()(
+  "@rikalabs/akter/execution/jobs/JobScope",
+) {}
 
 const ReplyJson = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("Success"), value: Schema.Json }),
@@ -41,9 +54,11 @@ interface Opaque {
 /** Why the last attempt of a job ended, as `Actor.JobFailure` reports it. */
 type JobCause = typeof JobFailure.fields.cause.Type
 
-const bodyCall = (attempt: number, ordinal: number): string => `\u0000call\u0000${attempt}\u0000${ordinal}`
+const bodyCall = (attempt: number, ordinal: number): string =>
+  `\u0000call\u0000${attempt}\u0000${ordinal}`
 
-const stepValue = (value: Schema.Json | undefined): Schema.Json => (value === undefined ? { void: true } : { value })
+const stepValue = (value: Schema.Json | undefined): Schema.Json =>
+  value === undefined ? { void: true } : { value }
 
 const fromStepValue = (journaled: Schema.Json): Decoded =>
   Predicate.hasProperty(journaled, "value") ? journaled.value : undefined
@@ -58,7 +73,12 @@ const install = (engine: Engine) => {
   const running = new Map<string, number>()
   const permits = new Map<string, Semaphore.Semaphore>()
 
-  const semaphore = (shard: number, actor: string, job: string, concurrency: number): Semaphore.Semaphore => {
+  const semaphore = (
+    shard: number,
+    actor: string,
+    job: string,
+    concurrency: number,
+  ): Semaphore.Semaphore => {
     const key = `${shard}/${actor}/${job}`
     const existing = permits.get(key)
     if (existing !== undefined) return existing
@@ -67,7 +87,8 @@ const install = (engine: Engine) => {
     return created
   }
 
-  const journal = (shard: number, entry: Entry) => engine.journal(shard, entry).pipe(Transports.retryWhileUnavailable)
+  const journal = (shard: number, entry: Entry) =>
+    engine.journal(shard, entry).pipe(Transports.retryWhileUnavailable)
 
   const retire = (jobId: string): Effect.Effect<void> =>
     Effect.forEach(
@@ -80,7 +101,12 @@ const install = (engine: Engine) => {
     )
 
   const caller = (record: JobRecord) =>
-    System.make({ source: "job", subject: `job:${record.jobId}`, ref: record.address, onBehalfOf: record.onBehalfOf })
+    System.make({
+      source: "job",
+      subject: `job:${record.jobId}`,
+      ref: record.address,
+      onBehalfOf: record.onBehalfOf,
+    })
 
   /** The transport a job attempt's handles use: calls get derived ids, reads go to the engine. */
   const transport = (record: JobRecord, owner: ActorRecord, attempt: number): Transport => {
@@ -137,7 +163,11 @@ const install = (engine: Engine) => {
     if (handler === undefined) return Effect.die(new Error(`no handler for job ${record.job}`))
     const jobTransport = transport(record, owner, attempt)
     let ids = 0
-    const step = (name: string, first: Decoded, second?: Decoded): Effect.Effect<Decoded, Opaque, Opaque> => {
+    const step = (
+      name: string,
+      first: Decoded,
+      second?: Decoded,
+    ): Effect.Effect<Decoded, Opaque, Opaque> => {
       const schema: MemberSchema | undefined = second === undefined ? undefined : first
       const effect: Effect.Effect<Decoded, Opaque, Opaque> = second === undefined ? first : second
       return Effect.suspend(() => {
@@ -175,13 +205,18 @@ const install = (engine: Engine) => {
           event,
           (value: Decoded) =>
             Effect.flatMap(engine.channel(owner.address), (channel) =>
-              PubSub.publish(channel.events, { event, value: Layouts.codec(schema.schema).encode(value) }),
+              PubSub.publish(channel.events, {
+                event,
+                value: Layouts.codec(schema.schema).encode(value),
+              }),
             ),
         ]),
       ),
     }
     const payload = Layouts.codec(declaration.payload).decode(record.payload)
-    const body: Effect.Effect<Decoded, Opaque> = Effect.suspend((): Effect.Effect<Decoded, Opaque> => handler(payload, ctx)).pipe(
+    const body: Effect.Effect<Decoded, Opaque> = Effect.suspend(
+      (): Effect.Effect<Decoded, Opaque> => handler(payload, ctx),
+    ).pipe(
       Effect.provideService(Client, jobTransport),
       Effect.provideContext(bound.registered.context),
     )
@@ -190,7 +225,9 @@ const install = (engine: Engine) => {
         ? body
         : body.pipe(
             Effect.timeoutOption(declaration.timeout),
-            Effect.flatMap(Option.match({ onNone: () => Effect.fail(timedOut), onSome: Effect.succeed })),
+            Effect.flatMap(
+              Option.match({ onNone: () => Effect.fail(timedOut), onSome: Effect.succeed }),
+            ),
           )
     return Effect.asVoid(limited)
   }
@@ -210,7 +247,10 @@ const install = (engine: Engine) => {
       if (owner === undefined) return
       const declaration: Job | undefined = owner.actor.jobs[record.job]
       if (declaration === undefined) return
-      yield* Semaphore.withPermits(semaphore(shard, owner.actor.name, record.job, declaration.concurrency), 1)(
+      yield* Semaphore.withPermits(
+        semaphore(shard, owner.actor.name, record.job, declaration.concurrency),
+        1,
+      )(
         Effect.gen(function* () {
           let attempt = record.attempt
           if (attempt === 0) {
@@ -219,9 +259,14 @@ const install = (engine: Engine) => {
           }
           while (true) {
             const progress = { inStep: false }
-            const exit = yield* Effect.exit(attemptOnce(shard, record, owner, declaration, attempt, progress))
+            const exit = yield* Effect.exit(
+              attemptOnce(shard, record, owner, declaration, attempt, progress),
+            )
             if (Exit.isSuccess(exit)) {
-              yield* journal(shard, Entry.cases.Done.make({ jobId: record.jobId, outcome: "Succeeded" }))
+              yield* journal(
+                shard,
+                Entry.cases.Done.make({ jobId: record.jobId, outcome: "Succeeded" }),
+              )
               yield* retire(record.jobId)
               return
             }
@@ -232,7 +277,14 @@ const install = (engine: Engine) => {
               yield* journal(shard, Entry.cases.Attempt.make({ jobId: record.jobId, attempt }))
               continue
             }
-            yield* deliverFailure(record, owner, declaration, attempt, causeOf(exit.cause), progress.inStep)
+            yield* deliverFailure(
+              record,
+              owner,
+              declaration,
+              attempt,
+              causeOf(exit.cause),
+              progress.inStep,
+            )
             yield* journal(shard, Entry.cases.Done.make({ jobId: record.jobId, outcome: "Failed" }))
             yield* retire(record.jobId)
             return
@@ -252,8 +304,18 @@ const install = (engine: Engine) => {
     const member = declaration.onFailure
     const target: Action | undefined = owner.actor.actions[member]
     if (target === undefined) return Effect.void
-    const fields = { job: record.jobId, declaration: record.job, payload: record.payload, attempts, cause, ambiguous }
-    const failure = record.key === undefined ? JobFailure.make(fields) : JobFailure.make({ ...fields, key: record.key })
+    const fields = {
+      job: record.jobId,
+      declaration: record.job,
+      payload: record.payload,
+      attempts,
+      cause,
+      ambiguous,
+    }
+    const failure =
+      record.key === undefined
+        ? JobFailure.make(fields)
+        : JobFailure.make({ ...fields, key: record.key })
     return engine
       .execute({
         origin: Origin.cases.JobCall.make({ jobId: record.jobId }),
@@ -299,7 +361,12 @@ const install = (engine: Engine) => {
     active: (): number => {
       let count = 0
       for (const [jobId, generation] of running) {
-        const shard = engine.shards().find((candidate) => candidate.status === "open" && engine.durableImage(candidate.id)?.jobs.has(jobId))
+        const shard = engine
+          .shards()
+          .find(
+            (candidate) =>
+              candidate.status === "open" && engine.durableImage(candidate.id)?.jobs.has(jobId),
+          )
         if (shard !== undefined && shard.generation === generation) count++
       }
       return count

@@ -41,7 +41,6 @@ export interface Ran {
   readonly image: Image
 }
 
-
 const rotl = (x: number, k: number): number => ((x << k) | (x >>> (32 - k))) >>> 0
 
 /** A xoshiro128** stream seeded from the command id, so a replay draws the same values. */
@@ -99,7 +98,11 @@ const run = (invocation: Invocation): Ran => {
   const defect = (kind: DefectKind, detail: string): ActionDefect =>
     ActionDefect.make({ kind, actor: actor.name, member: invocation.member, detail })
   const guard = (): void => {
-    if (!open) throw defect("SynchronousActionViolation", "the action context was used after the action returned")
+    if (!open)
+      throw defect(
+        "SynchronousActionViolation",
+        "the action context was used after the action returned",
+      )
   }
   const sender = (target: AnyActor, stage: (member: string, payload: Schema.Json) => void) => {
     const methods: Record<string, (payload?: Decoded) => void> = {}
@@ -136,14 +139,26 @@ const run = (invocation: Invocation): Ran => {
       guard()
       const key = Layouts.of(target).key.encode(id)
       return sender(target, (member, payload) => {
-        sends.push({ commandId: CommandIds.derive(commandId, "send", staged++), actor: target.name, key, member, payload })
+        sends.push({
+          commandId: CommandIds.derive(commandId, "send", staged++),
+          actor: target.name,
+          key,
+          member,
+          payload,
+        })
       })
     },
     schedule: (when: When) => {
       guard()
       const due = dueAt(when, at)
       return sender(actor, (member, payload) => {
-        timers.push({ commandId: CommandIds.derive(commandId, "timer", staged++), at: due, member, payload, cron: false })
+        timers.push({
+          commandId: CommandIds.derive(commandId, "timer", staged++),
+          at: due,
+          member,
+          payload,
+          cron: false,
+        })
       })
     },
     start: Object.fromEntries(
@@ -157,7 +172,12 @@ const run = (invocation: Invocation): Ran => {
           starts.push(
             key === undefined
               ? { jobId: CommandIds.derive(commandId, "job", ordinal), job, payload: encoded }
-              : { jobId: CommandIds.derive(invocation.address, "job", job, key), job, payload: encoded, key },
+              : {
+                  jobId: CommandIds.derive(invocation.address, "job", job, key),
+                  job,
+                  payload: encoded,
+                  key,
+                },
           )
         },
       ]),
@@ -173,7 +193,18 @@ const run = (invocation: Invocation): Ran => {
     ),
   }
   const discarded = (outcome: Outcome): Ran => ({
-    effects: { outcome, set: {}, unset: [], lists: [], sends: [], timers: [], starts: [], events: [], ids, randoms },
+    effects: {
+      outcome,
+      set: {},
+      unset: [],
+      lists: [],
+      sends: [],
+      timers: [],
+      starts: [],
+      events: [],
+      ids,
+      randoms,
+    },
     image,
   })
   let result: Decoded
@@ -181,7 +212,8 @@ const run = (invocation: Invocation): Ran => {
     result = invocation.handler(session.draft, invocation.payload, ctx)
   } catch (thrown) {
     open = false
-    if (Schema.is(ActionDefect)(thrown)) return discarded(Outcome.cases.Defect.make({ kind: thrown.kind, detail: thrown.detail }))
+    if (Schema.is(ActionDefect)(thrown))
+      return discarded(Outcome.cases.Defect.make({ kind: thrown.kind, detail: thrown.detail }))
     return discarded(Outcome.cases.Defect.make({ kind: "Thrown", detail: describe(thrown) }))
   }
   open = false
@@ -191,7 +223,9 @@ const run = (invocation: Invocation): Ran => {
     try {
       return discarded(Outcome.cases.Failure.make({ error: Layouts.codec(fails).encode(result) }))
     } catch (thrown) {
-      return discarded(Outcome.cases.Defect.make({ kind: "DecodeFailure", detail: describe(thrown) }))
+      return discarded(
+        Outcome.cases.Defect.make({ kind: "DecodeFailure", detail: describe(thrown) }),
+      )
     }
   }
   if (isThenable(result))
@@ -202,7 +236,8 @@ const run = (invocation: Invocation): Ran => {
       }),
     )
   try {
-    const value = declaration?.success === undefined ? null : Layouts.codec(declaration.success).encode(result)
+    const value =
+      declaration?.success === undefined ? null : Layouts.codec(declaration.success).encode(result)
     const finished = session.finish()
     const set: Record<string, Schema.Json> = {}
     const unset: Array<string> = []
@@ -211,12 +246,14 @@ const run = (invocation: Invocation): Ran => {
     for (const name of finished.changed) {
       const field = layout.fields.get(name)
       if (field === undefined) {
-        if (layout.lists.has(name)) throw defect("Thrown", `list field '${name}' was replaced; use its methods`)
+        if (layout.lists.has(name))
+          throw defect("Thrown", `list field '${name}' was replaced; use its methods`)
         throw defect("Thrown", `'${name}' is not a state field of ${actor.name}`)
       }
       const next = finished.value[name]
       if (next === undefined) {
-        if (!field.optional) throw defect("DecodeFailure", `state field '${name}' was removed but is not optional`)
+        if (!field.optional)
+          throw defect("DecodeFailure", `state field '${name}' was removed but is not optional`)
         delete state[name]
         delete encoded[name]
         unset.push(name)
@@ -229,7 +266,10 @@ const run = (invocation: Invocation): Ran => {
     if (finished.changed.length > 0) {
       const size = new TextEncoder().encode(JSON.stringify(encoded)).length
       if (size > maxStateBytes)
-        throw defect("StateTooLarge", `${actor.name} state is ${size} bytes encoded; the limit is ${maxStateBytes}`)
+        throw defect(
+          "StateTooLarge",
+          `${actor.name} state is ${size} bytes encoded; the limit is ${maxStateBytes}`,
+        )
     }
     const writes: Array<ListWrite> = []
     const nextLists = new Map<string, Items>(image.lists)
@@ -239,15 +279,31 @@ const run = (invocation: Invocation): Ran => {
       const item = layout.lists.get(name)?.item
       if (item === undefined) continue
       nextLists.set(name, done.items)
-      writes.push({ field: name, put: done.writes.put.map(item.encode), delete: done.writes.delete })
+      writes.push({
+        field: name,
+        put: done.writes.put.map(item.encode),
+        delete: done.writes.delete,
+      })
     }
     const changed = finished.changed.length > 0 || writes.length > 0
     return {
-      effects: { outcome: Outcome.cases.Success.make({ value }), set, unset, lists: writes, sends, timers, starts, events, ids, randoms },
+      effects: {
+        outcome: Outcome.cases.Success.make({ value }),
+        set,
+        unset,
+        lists: writes,
+        sends,
+        timers,
+        starts,
+        events,
+        ids,
+        randoms,
+      },
       image: changed ? { state, encoded, lists: nextLists } : image,
     }
   } catch (thrown) {
-    if (Schema.is(ActionDefect)(thrown)) return discarded(Outcome.cases.Defect.make({ kind: thrown.kind, detail: thrown.detail }))
+    if (Schema.is(ActionDefect)(thrown))
+      return discarded(Outcome.cases.Defect.make({ kind: thrown.kind, detail: thrown.detail }))
     return discarded(Outcome.cases.Defect.make({ kind: "DecodeFailure", detail: describe(thrown) }))
   }
 }
@@ -256,7 +312,13 @@ const run = (invocation: Invocation): Ran => {
  * Applies recorded effects to an image without running a handler: how a seed entry, and an
  * action whose replayed outcome already matched, reach the state.
  */
-const apply = (actor: AnyActor, image: Image, set: Readonly<Record<string, Schema.Json>>, unset: ReadonlyArray<string>, writes: ReadonlyArray<ListWrite>): Image => {
+const apply = (
+  actor: AnyActor,
+  image: Image,
+  set: Readonly<Record<string, Schema.Json>>,
+  unset: ReadonlyArray<string>,
+  writes: ReadonlyArray<ListWrite>,
+): Image => {
   if (Object.keys(set).length === 0 && unset.length === 0 && writes.length === 0) return image
   const layout = Layouts.of(actor)
   const state: Decoded = { ...image.state }

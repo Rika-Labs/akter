@@ -54,7 +54,9 @@ export const failure = ActorError
         expect(sources.some((source) => source.endsWith("contract/errors.ts"))).toBe(true)
         expect(sources.filter((source) => AWS.test(source))).toEqual([])
         expect(
-          sources.filter((source) => /packages\/akter\/src\/(?:execution|snapshots|store|testing)\//.test(source)),
+          sources.filter((source) =>
+            /packages\/akter\/src\/(?:execution|snapshots|store|testing)\//.test(source),
+          ),
         ).toEqual([])
       }),
     ),

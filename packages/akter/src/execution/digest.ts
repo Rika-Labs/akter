@@ -52,7 +52,13 @@ const sha256 = (text: string): Uint8Array => {
     let g = at(hash, 6)
     let h = at(hash, 7)
     for (let i = 0; i < 64; i++) {
-      const t1 = (h + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + at(K, i) + at(w, i)) >>> 0
+      const t1 =
+        (h +
+          (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) +
+          ((e & f) ^ (~e & g)) +
+          at(K, i) +
+          at(w, i)) >>>
+        0
       const t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) >>> 0
       h = g
       g = f

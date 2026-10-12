@@ -120,8 +120,11 @@ export interface ActionContext<Name extends string, D extends Def, C extends Cal
 }
 
 /** The context of `connect` and `disconnect`: an action context with the connection id. */
-export interface PresenceContext<Name extends string, D extends Def>
-  extends ActionContext<Name, D, D["caller"] | System> {
+export interface PresenceContext<Name extends string, D extends Def> extends ActionContext<
+  Name,
+  D,
+  D["caller"] | System
+> {
   readonly connection: string
 }
 

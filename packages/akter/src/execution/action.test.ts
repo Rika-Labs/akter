@@ -23,7 +23,10 @@ const Probe = Actor.make("Probe", {
 
 const initial = Layouts.of(Probe).initial
 
-const run = (handler: AnyHandler, commandId = "v1.0.600000.9b2f3c1e-7a4d-4e8b-9c0d-1f2e3a4b5c6d"): Ran =>
+const run = (
+  handler: AnyHandler,
+  commandId = "v1.0.600000.9b2f3c1e-7a4d-4e8b-9c0d-1f2e3a4b5c6d",
+): Ran =>
   Actions.run({
     actor: Probe,
     handler,
@@ -67,7 +70,12 @@ const busyThen =
 const discardedEverything = (ran: Ran) => {
   expect(ran.image).toBe(initial)
   expect([ran.effects.set, ran.effects.unset, ran.effects.lists]).toEqual([{}, [], []])
-  expect([ran.effects.sends, ran.effects.timers, ran.effects.starts, ran.effects.events]).toEqual([[], [], [], []])
+  expect([ran.effects.sends, ran.effects.timers, ran.effects.starts, ran.effects.events]).toEqual([
+    [],
+    [],
+    [],
+    [],
+  ])
 }
 
 describe("Actions.run", () => {
@@ -96,7 +104,9 @@ describe("Actions.run", () => {
         throw new Error("boom")
       }),
     )
-    expect(ran.effects.outcome).toEqual(Outcome.cases.Defect.make({ kind: "Thrown", detail: "Error: boom" }))
+    expect(ran.effects.outcome).toEqual(
+      Outcome.cases.Defect.make({ kind: "Thrown", detail: "Error: boom" }),
+    )
     discardedEverything(ran)
   })
 
@@ -107,7 +117,9 @@ describe("Actions.run", () => {
     ]
     for (const end of ends) {
       const ran = run(busyThen(end))
-      expect(Outcome.guards.Defect(ran.effects.outcome) && ran.effects.outcome.kind).toBe("SynchronousActionViolation")
+      expect(Outcome.guards.Defect(ran.effects.outcome) && ran.effects.outcome.kind).toBe(
+        "SynchronousActionViolation",
+      )
       discardedEverything(ran)
     }
   })
@@ -131,12 +143,15 @@ describe("Actions.run", () => {
     const atCap = run(fill(maxStateBytes - overhead))
     expect(Outcome.guards.Success(atCap.effects.outcome)).toBe(true)
     const over = run(fill(maxStateBytes - overhead + 1))
-    expect(Outcome.guards.Defect(over.effects.outcome) && over.effects.outcome.kind).toBe("StateTooLarge")
+    expect(Outcome.guards.Defect(over.effects.outcome) && over.effects.outcome.kind).toBe(
+      "StateTooLarge",
+    )
     discardedEverything(over)
   })
 
   it("derives ids, time and randomness from the command id and admission time alone", () => {
-    const draw = (state: ProbeState, _amount: number, ctx: ProbeContext) => `${ctx.id()}|${ctx.now()}|${ctx.random()}`
+    const draw = (state: ProbeState, _amount: number, ctx: ProbeContext) =>
+      `${ctx.id()}|${ctx.now()}|${ctx.random()}`
     const first = run(draw)
     const again = run(draw)
     const other = run(draw, "v1.0.600000.0c1d2e3f-4a5b-4c6d-8e7f-a0b1c2d3e4f5")

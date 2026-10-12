@@ -143,7 +143,10 @@ const fuzz = (seed: number, pool: ReadonlyArray<Edit>, rounds: number): Failures
     const changed = fields.filter((field) => !Object.is(out.value[field], base[field]))
     if (changed.join() !== [...out.changed].join()) failures.changed++
     const ops = [...out.changed].flatMap((field) =>
-      JsonPatch.get(original[field] ?? null, next[field] ?? null).map((op) => ({ ...op, path: `/${field}${op.path}` })),
+      JsonPatch.get(original[field] ?? null, next[field] ?? null).map((op) => ({
+        ...op,
+        path: `/${field}${op.path}`,
+      })),
     )
     if (!same(JsonPatch.apply(ops, original), next)) failures.patch++
   }
@@ -156,7 +159,12 @@ describe("Draft", () => {
   })
 
   it("keeps one object when a drafted value is aliased into another slot", () => {
-    expect(fuzz(7, [...edits, aliasing, aliasing], 20_000)).toEqual({ value: 0, base: 0, changed: 0, patch: 0 })
+    expect(fuzz(7, [...edits, aliasing, aliasing], 20_000)).toEqual({
+      value: 0,
+      base: 0,
+      changed: 0,
+      patch: 0,
+    })
   })
 
   it("shares untouched branches with the base and reports no change for a no-op recipe", () => {
@@ -164,7 +172,11 @@ describe("Draft", () => {
     const session = Draft.begin(base)
     session.draft.obj.y.z.push(4)
     const out = session.finish()
-    expect([out.value.list === base.list, out.value.rec === base.rec, out.value.obj === base.obj]).toEqual([true, true, false])
+    expect([
+      out.value.list === base.list,
+      out.value.rec === base.rec,
+      out.value.obj === base.obj,
+    ]).toEqual([true, true, false])
     expect(out.value.obj.y.z).toEqual([1, 2, 3, 4])
     expect(base.obj.y.z).toEqual([1, 2, 3])
     expect([...out.changed]).toEqual(["obj"])

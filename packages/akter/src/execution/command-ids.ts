@@ -42,7 +42,8 @@ type Refusal = typeof InvalidCommandId.Type
  * the caller against the same `now`, after this.
  */
 const parse = (id: string, now: number): Result.Result<ExternalId, Refusal> => {
-  const refuse = (code: Refusal["code"]) => Result.fail(InvalidCommandId.make({ commandId: id, code }))
+  const refuse = (code: Refusal["code"]) =>
+    Result.fail(InvalidCommandId.make({ commandId: id, code }))
   if (uuidAny.test(id)) return refuse("version")
   const match = external.exec(id)
   if (match === null) return refuse("malformed")

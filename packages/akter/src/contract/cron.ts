@@ -33,14 +33,18 @@ const parse = (expression: string): CronSchedule => {
   if (interval !== null) {
     const millis = Number(interval[1]) * (units.get(interval[2] ?? "") ?? Number.NaN)
     if (!(millis >= 1_000))
-      throw new Error(`Invalid cron schedule '${expression}': @every needs a duration of at least one second`)
+      throw new Error(
+        `Invalid cron schedule '${expression}': @every needs a duration of at least one second`,
+      )
     return { next: (after) => (Math.floor(after / millis) + 1) * millis }
   }
   const explicit = zoned.exec(expression.trim())
   const zoneName = explicit?.[1] ?? "UTC"
   const zone = /^[+-]/.test(zoneName) ? Option.none() : DateTime.zoneMakeNamed(zoneName)
   if (Option.isNone(zone))
-    throw new Error(`Invalid cron schedule '${expression}': '${zoneName}' is not a named IANA time zone`)
+    throw new Error(
+      `Invalid cron schedule '${expression}': '${zoneName}' is not a named IANA time zone`,
+    )
   const cron = Cron.parseUnsafe(explicit?.[2] ?? expression, zone.value)
   return { next: (after) => Cron.next(cron, after).getTime() }
 }

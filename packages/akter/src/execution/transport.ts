@@ -1,4 +1,15 @@
-import { Clock, DateTime, Duration, Effect, JsonPatch, Predicate, PubSub, Result, Schema, Stream } from "effect"
+import {
+  Clock,
+  DateTime,
+  Duration,
+  Effect,
+  JsonPatch,
+  Predicate,
+  PubSub,
+  Result,
+  Schema,
+  Stream,
+} from "effect"
 import type { Caller } from "../contract/caller.ts"
 import type { Bounds } from "../contract/context.ts"
 import { ActionDefect, ActorError, InvalidInput, Unauthorized } from "../contract/errors.ts"
@@ -14,16 +25,28 @@ import { Origin, Outcome } from "./entries.ts"
 import { Layouts } from "./layout.ts"
 import type { Decoded } from "./layout.ts"
 
-const denied = (): ActorError => ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
+const denied = (): ActorError =>
+  ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
 
 const unknownMember = (member: string): ActorError =>
-  ActorError.make({ reason: InvalidInput.make({ code: "unknown_member", issues: [{ path: member, message: "not a public member" }] }) })
+  ActorError.make({
+    reason: InvalidInput.make({
+      code: "unknown_member",
+      issues: [{ path: member, message: "not a public member" }],
+    }),
+  })
 
 const invalid = (member: string, message: string): ActorError =>
-  ActorError.make({ reason: InvalidInput.make({ code: "decode", issues: [{ path: member, message }] }) })
+  ActorError.make({
+    reason: InvalidInput.make({ code: "decode", issues: [{ path: member, message }] }),
+  })
 
 /** Runs the actor's `access` guard; a guard that throws refuses. */
-const allowed = (actor: AnyActor, caller: Caller, request: AccessRequest): Effect.Effect<void, ActorError> =>
+const allowed = (
+  actor: AnyActor,
+  caller: Caller,
+  request: AccessRequest,
+): Effect.Effect<void, ActorError> =>
   Effect.suspend(() => {
     try {
       return actor.access(caller, request) ? Effect.void : Effect.fail(denied())
@@ -37,7 +60,8 @@ const reply = (actor: AnyActor, member: string, outcome: Outcome): Effect.Effect
   Outcome.match(outcome, {
     Success: ({ value }) => Effect.succeed<Reply>({ kind: "Success", value }),
     Failure: ({ error }) => Effect.succeed<Reply>({ kind: "Failure", error }),
-    Defect: ({ kind, detail }) => Effect.die(ActionDefect.make({ kind, actor: actor.name, member, detail })),
+    Defect: ({ kind, detail }) =>
+      Effect.die(ActionDefect.make({ kind, actor: actor.name, member, detail })),
   })
 
 const decodes = (schema: Action["payload"], value: Schema.Json): string | undefined => {
@@ -52,7 +76,17 @@ const MemberJson = (schema: NonNullable<Action["payload"]>) => Schema.toCodecJso
  * Admits a client's call under its client id, in the contract's order: `access`, the member, the
  * payload, the id, then (on the owner) expiry and the duplicate lookup before anything runs.
  */
-const admit = (engine: Engine, caller: Caller, commandId: string, request: { readonly actor: AnyActor; readonly id: Schema.Json; readonly member: string; readonly payload: Schema.Json }) =>
+const admit = (
+  engine: Engine,
+  caller: Caller,
+  commandId: string,
+  request: {
+    readonly actor: AnyActor
+    readonly id: Schema.Json
+    readonly member: string
+    readonly payload: Schema.Json
+  },
+) =>
   Effect.gen(function* () {
     const { actor, member } = request
     yield* allowed(actor, caller, { kind: "action", member })
@@ -89,7 +123,11 @@ const readState = (record: ActorRecord): Decoded => {
 }
 
 /** A stream of the durable record, read now and again after each durable change. */
-const changes = (engine: Engine, actor: AnyActor, id: Schema.Json): Stream.Stream<{ readonly version: number; readonly record: ActorRecord }, ActorError> =>
+const changes = (
+  engine: Engine,
+  actor: AnyActor,
+  id: Schema.Json,
+): Stream.Stream<{ readonly version: number; readonly record: ActorRecord }, ActorError> =>
   Stream.unwrap(
     Effect.gen(function* () {
       const channel = yield* engine.channel(Durable.addressOf(actor.name, id))
@@ -98,13 +136,16 @@ const changes = (engine: Engine, actor: AnyActor, id: Schema.Json): Stream.Strea
       return Stream.concat(
         Stream.make({ version: channel.version, record: first }),
         Stream.fromSubscription(subscription).pipe(
-          Stream.mapEffect((version) => Effect.map(engine.durableRecord(actor, id), (record) => ({ version, record }))),
+          Stream.mapEffect((version) =>
+            Effect.map(engine.durableRecord(actor, id), (record) => ({ version, record })),
+          ),
         ),
       )
     }),
   )
 
-const scalar = (value: Decoded): Decoded => (DateTime.isDateTime(value) ? DateTime.toEpochMillis(value) : value)
+const scalar = (value: Decoded): Decoded =>
+  DateTime.isDateTime(value) ? DateTime.toEpochMillis(value) : value
 
 const matches = (state: Decoded, where: Readonly<Record<string, Decoded>>): boolean => {
   for (const [field, condition] of Object.entries(where)) {
@@ -129,11 +170,17 @@ const matches = (state: Decoded, where: Readonly<Record<string, Decoded>>): bool
 const reads = (engine: Engine, caller: Caller): Omit<Transport, "call"> => ({
   state: (target: Target) =>
     Stream.unwrap(
-      Effect.as(allowed(target.actor, caller, { kind: "state", member: "state" }), changes(engine, target.actor, target.id)),
+      Effect.as(
+        allowed(target.actor, caller, { kind: "state", member: "state" }),
+        changes(engine, target.actor, target.id),
+      ),
     ).pipe(
       Stream.mapAccum(
         (): Schema.Json | undefined => undefined,
-        (last, { version, record }): readonly [Schema.Json | undefined, ReadonlyArray<StateFrame>] => {
+        (
+          last,
+          { version, record },
+        ): readonly [Schema.Json | undefined, ReadonlyArray<StateFrame>] => {
           const value = clientState(record)
           if (last === undefined) return [value, [{ kind: "Frame", version, value }]]
           const ops = JsonPatch.get(last, value)
@@ -157,9 +204,18 @@ const reads = (engine: Engine, caller: Caller): Omit<Transport, "call"> => ({
           Stream.mapEffect(({ record }) =>
             Effect.suspend(() => {
               try {
-                return Effect.succeed(success.encode(handler(readState(record), params, { caller, self: record.key })))
+                return Effect.succeed(
+                  success.encode(handler(readState(record), params, { caller, self: record.key })),
+                )
               } catch (thrown) {
-                return Effect.die(ActionDefect.make({ kind: "Thrown", actor: actor.name, member, detail: String(thrown) }))
+                return Effect.die(
+                  ActionDefect.make({
+                    kind: "Thrown",
+                    actor: actor.name,
+                    member,
+                    detail: String(thrown),
+                  }),
+                )
               }
             }),
           ),
@@ -174,7 +230,9 @@ const reads = (engine: Engine, caller: Caller): Omit<Transport, "call"> => ({
         const channel = yield* engine.channel(Durable.addressOf(request.actor.name, request.id))
         const subscription = yield* PubSub.subscribe(channel.events)
         return Stream.fromSubscription(subscription).pipe(
-          Stream.filterMap((emitted) => (emitted.event === request.member ? Result.succeed(emitted.value) : Result.failVoid)),
+          Stream.filterMap((emitted) =>
+            emitted.event === request.member ? Result.succeed(emitted.value) : Result.failVoid,
+          ),
         )
       }),
     ),
@@ -184,7 +242,11 @@ const reads = (engine: Engine, caller: Caller): Omit<Transport, "call"> => ({
       const list = Layouts.of(request.actor).lists.get(request.member)
       if (list === undefined) return yield* unknownMember(request.member)
       const record = yield* engine.durableRecord(request.actor, request.id)
-      return Lists.window(record.image.lists.get(request.member) ?? Lists.empty, list.ordering, request.range).map(list.item.encode)
+      return Lists.window(
+        record.image.lists.get(request.member) ?? Lists.empty,
+        list.ordering,
+        request.range,
+      ).map(list.item.encode)
     }),
   watch: (request) =>
     Stream.unwrap(
@@ -194,7 +256,11 @@ const reads = (engine: Engine, caller: Caller): Omit<Transport, "call"> => ({
         if (list === undefined) return yield* unknownMember(request.member)
         return changes(engine, request.actor, request.id).pipe(
           Stream.map(({ record }) =>
-            Lists.window(record.image.lists.get(request.member) ?? Lists.empty, list.ordering, request.range).map(list.item.encode),
+            Lists.window(
+              record.image.lists.get(request.member) ?? Lists.empty,
+              list.ordering,
+              request.range,
+            ).map(list.item.encode),
           ),
           Stream.changesWith((left, right) => JSON.stringify(left) === JSON.stringify(right)),
         )
@@ -211,7 +277,16 @@ const reads = (engine: Engine, caller: Caller): Omit<Transport, "call"> => ({
       const connection = yield* CommandIds.mint(now)
       const presence = (member: "connect" | "disconnect", commandId: string, origin: Origin) =>
         engine
-          .execute({ origin, commandId, actor, keyJson: request.id, member, payload: request.presence, caller, connection })
+          .execute({
+            origin,
+            commandId,
+            actor,
+            keyJson: request.id,
+            member,
+            payload: request.presence,
+            caller,
+            connection,
+          })
           .pipe(
             retryWhileUnavailable,
             Effect.flatMap((outcome) => reply(actor, member, outcome)),
@@ -219,8 +294,17 @@ const reads = (engine: Engine, caller: Caller): Omit<Transport, "call"> => ({
       const parsed = CommandIds.parse(connection, now)
       if (Result.isFailure(parsed)) return yield* ActorError.make({ reason: parsed.failure })
       yield* Effect.acquireRelease(
-        presence("connect", connection, Origin.cases.External.make({ expiresAt: parsed.success.expiresAt })),
-        () => presence("disconnect", CommandIds.derive(connection, "disconnect"), Origin.cases.Local.make({})).pipe(Effect.ignore),
+        presence(
+          "connect",
+          connection,
+          Origin.cases.External.make({ expiresAt: parsed.success.expiresAt }),
+        ),
+        () =>
+          presence(
+            "disconnect",
+            CommandIds.derive(connection, "disconnect"),
+            Origin.cases.Local.make({}),
+          ).pipe(Effect.ignore),
       )
     }),
   find: (request) =>
@@ -242,15 +326,22 @@ const reads = (engine: Engine, caller: Caller): Omit<Transport, "call"> => ({
           return (a < b ? -1 : 1) * direction
         })
       }
-      return selected.slice(0, Math.min(query.limit ?? 1_000, 1_000)).map((record) => record.keyJson)
+      return selected
+        .slice(0, Math.min(query.limit ?? 1_000, 1_000))
+        .map((record) => record.keyJson)
     }),
 })
 
-const retryWhileUnavailable = <A>(effect: Effect.Effect<A, ActorError>): Effect.Effect<A, ActorError> =>
+const retryWhileUnavailable = <A>(
+  effect: Effect.Effect<A, ActorError>,
+): Effect.Effect<A, ActorError> =>
   effect.pipe(
     Effect.catchIf(
       (error) => error.isRetryable,
-      (error) => Effect.flatMap(Effect.sleep(Duration.millis(error.retryAfter ?? 100)), () => Effect.fail(error)),
+      (error) =>
+        Effect.flatMap(Effect.sleep(Duration.millis(error.retryAfter ?? 100)), () =>
+          Effect.fail(error),
+        ),
     ),
     Effect.retry({ while: (error) => error.isRetryable, times: 200 }),
   )

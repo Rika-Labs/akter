@@ -9,7 +9,15 @@ import type { ActorError } from "./errors.ts"
 import { Client, Handles, MemberCodec } from "./handle.ts"
 import type { Handle } from "./handle.ts"
 import { isList } from "./members.ts"
-import type { Action, Event, Job, JobFailure, MemberSchema, OptionalSchema, View } from "./members.ts"
+import type {
+  Action,
+  Event,
+  Job,
+  JobFailure,
+  MemberSchema,
+  OptionalSchema,
+  View,
+} from "./members.ts"
 
 /** The state of an actor: a struct whose encoded side is fully optional. */
 export type State = Schema.Struct<Fields>
@@ -44,7 +52,9 @@ export interface TypeError<Message extends string> {
 }
 
 type NoExtraHandlers<H, Expected, Name extends string> = {
-  readonly [K in Exclude<keyof H, keyof Expected>]: TypeError<`'${K & string}' is not declared in contract '${Name}'`>
+  readonly [
+    K in Exclude<keyof H, keyof Expected>
+  ]: TypeError<`'${K & string}' is not declared in contract '${Name}'`>
 }
 
 type JobServices<H, J> = {
@@ -122,7 +132,7 @@ type NamesCheck<A, V, E, J, L> = [Duplicates<A, V, E, J, L>] extends [never]
   ? unknown
   : TypeError<`member name '${Duplicates<A, V, E, J, L> & string}' is used twice or reserved (state, join, connect, disconnect)`>
 
-type CallerOf<Acc> = Acc extends (caller: any, ...rest: Array<any>) => caller is infer C
+type CallerOf<Acc> = Acc extends ((caller: any, ...rest: Array<any>) => caller is infer C)
   ? Extract<C, Caller>
   : Caller
 
@@ -202,8 +212,7 @@ const make = <
   Acc extends (caller: Caller, request: AccessRequest) => boolean = DefaultAccess,
 >(
   name: Name,
-  options: MakeOptions<K, S, A, V, E, J, P, Acc> &
-    NamesCheck<A, V, E, J, ListKeys<S["fields"]>>,
+  options: MakeOptions<K, S, A, V, E, J, P, Acc> & NamesCheck<A, V, E, J, ListKeys<S["fields"]>>,
 ): Actor<
   Name,
   {
@@ -236,7 +245,9 @@ const make = <
       Effect.flatMap(Client, (transport) =>
         Result.match(encodeKey(id), {
           onSuccess: (encoded) =>
-            Effect.succeed(Handles.derive<Handle<any, any>>({ actor, id: encoded, self: false }, transport)),
+            Effect.succeed(
+              Handles.derive<Handle<any, any>>({ actor, id: encoded, self: false }, transport),
+            ),
           onFailure: (error) => Effect.die(error),
         }),
       ),

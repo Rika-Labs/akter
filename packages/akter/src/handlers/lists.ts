@@ -25,7 +25,8 @@ export interface Staged {
 /** An empty list. */
 export const emptyItems: Items = HashMap.empty()
 
-const compare = (left: Ordered, right: Ordered): number => (left < right ? -1 : left > right ? 1 : 0)
+const compare = (left: Ordered, right: Ordered): number =>
+  left < right ? -1 : left > right ? 1 : 0
 
 /** The ordering of a list: by its `by` field, ties broken by key. */
 export interface Ordering {
@@ -41,7 +42,8 @@ const slot = (key: Ordered): string => JSON.stringify(key)
 const sorted = (items: Iterable<Item>, ordering: Ordering): Array<Item> =>
   Array.from(items).sort(
     (left, right) =>
-      compare(left[ordering.by], right[ordering.by]) || compare(left[ordering.key], right[ordering.key]),
+      compare(left[ordering.by], right[ordering.by]) ||
+      compare(left[ordering.key], right[ordering.key]),
   )
 
 const select = (
@@ -61,8 +63,11 @@ const select = (
 }
 
 /** A window over items in `by` order: `from` inclusive, `to` exclusive, then `reverse`, then `limit`. */
-const window = (items: Items, ordering: Ordering, options: RangeOptions<Ordered> | undefined): ReadonlyArray<Item> =>
-  select(HashMap.values(items), ordering, options)
+const window = (
+  items: Items,
+  ordering: Ordering,
+  options: RangeOptions<Ordered> | undefined,
+): ReadonlyArray<Item> => select(HashMap.values(items), ordering, options)
 
 /** A list as a view reads it. */
 const reader = (items: Items, ordering: Ordering): ListReader<Item, Ordered, Ordered> => ({
@@ -91,7 +96,8 @@ class StagedList implements ListDraft<Item, Ordered, Ordered> {
 
   #merged(): Array<Item> {
     const out: Array<Item> = []
-    for (const [key, item] of HashMap.entries(this.#items)) if (!this.#staged.has(key)) out.push(item)
+    for (const [key, item] of HashMap.entries(this.#items))
+      if (!this.#staged.has(key)) out.push(item)
     for (const item of this.#staged.values()) if (item !== undefined) out.push(item)
     return out
   }
@@ -154,7 +160,8 @@ const apply = (items: Items, ordering: Ordering, writes: ListWrites): Items => {
 }
 
 /** Every item in `by` order. */
-const all = (items: Items, ordering: Ordering): ReadonlyArray<Item> => sorted(HashMap.values(items), ordering)
+const all = (items: Items, ordering: Ordering): ReadonlyArray<Item> =>
+  sorted(HashMap.values(items), ordering)
 
 /** In-memory lists: every item resident, ordered on read. */
 export const Lists = { reader, draft, apply, all, window, empty: emptyItems }

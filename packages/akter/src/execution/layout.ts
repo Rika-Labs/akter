@@ -90,13 +90,18 @@ const of = (actor: AnyActor): Layout => {
   const state = codec(Schema.Struct(scalar)).decode({})
   const encoded: Record<string, Schema.Json> = {}
   for (const [name, field] of fields)
-    if (Object.hasOwn(state, name) && state[name] !== undefined) encoded[name] = field.encode(state[name])
+    if (Object.hasOwn(state, name) && state[name] !== undefined)
+      encoded[name] = field.encode(state[name])
   const layout: Layout = {
     actor,
     key: codec(actor.key),
     fields,
     lists,
-    initial: { state, encoded, lists: new Map(Array.from(lists.keys(), (name) => [name, emptyItems])) },
+    initial: {
+      state,
+      encoded,
+      lists: new Map(Array.from(lists.keys(), (name) => [name, emptyItems])),
+    },
     codec,
   }
   layouts.set(actor, layout)

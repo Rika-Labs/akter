@@ -113,11 +113,13 @@ const addressOf = (actor: string, key: Schema.Json): string => `${actor}/${JSON.
 
 const shardOf = (address: string, shards: number): number => {
   let hash = 0x811c9dc5
-  for (let i = 0; i < address.length; i++) hash = Math.imul(hash ^ address.charCodeAt(i), 0x01000193)
+  for (let i = 0; i < address.length; i++)
+    hash = Math.imul(hash ^ address.charCodeAt(i), 0x01000193)
   return (hash >>> 0) % shards
 }
 
-const bucketOf = (expiresAt: number): number => Math.ceil(expiresAt / clientBucketWidth) * clientBucketWidth
+const bucketOf = (expiresAt: number): number =>
+  Math.ceil(expiresAt / clientBucketWidth) * clientBucketWidth
 
 const streamOf = (from: number, to: number): string => `${from}>${to}`
 
@@ -129,7 +131,12 @@ const bound = (catalog: Catalog, name: string): Bound => {
 }
 
 /** The resident record of an actor instance, created at its initial image on first use. */
-const resident = (image: ShardImage, catalog: Catalog, name: string, keyJson: Schema.Json): ActorRecord => {
+const resident = (
+  image: ShardImage,
+  catalog: Catalog,
+  name: string,
+  keyJson: Schema.Json,
+): ActorRecord => {
   const address = addressOf(name, keyJson)
   const existing = image.actors.get(address)
   if (existing !== undefined) return existing
@@ -155,16 +162,30 @@ const armCrons = (image: ShardImage, record: ActorRecord, from: number): void =>
   }
 }
 
-const armCron = (image: ShardImage, address: string, member: string, expression: string, from: number): void => {
+const armCron = (
+  image: ShardImage,
+  address: string,
+  member: string,
+  expression: string,
+  from: number,
+): void => {
   const at = Crons.parse(expression).next(from)
   const commandId = CommandIds.derive(address, "cron", member, at)
-  image.timers.set(commandId, { address, timer: { commandId, at, member, payload: null, cron: true } })
+  image.timers.set(commandId, {
+    address,
+    timer: { commandId, at, member, payload: null, cron: true },
+  })
 }
 
 /** The digest admission compares a retried payload against. */
 const payloadDigest = (payload: Schema.Json): string => Digest.hex(JSON.stringify(payload))
 
-const recordAction = (image: ShardImage, catalog: Catalog, entry: ActionEntry, after: Image): void => {
+const recordAction = (
+  image: ShardImage,
+  catalog: Catalog,
+  entry: ActionEntry,
+  after: Image,
+): void => {
   const record = resident(image, catalog, entry.actor, entry.key)
   record.image = after
   image.lastAt = Math.max(image.lastAt, entry.at)
@@ -198,8 +219,10 @@ const recordAction = (image: ShardImage, catalog: Catalog, entry: ActionEntry, a
     Fired: () => {
       const fired = image.timers.get(entry.commandId)
       image.timers.delete(entry.commandId)
-      const expression = fired === undefined ? undefined : record.actor.actions[fired.timer.member]?.cron
-      if (expression !== undefined) armCron(image, record.address, entry.member, expression, entry.at)
+      const expression =
+        fired === undefined ? undefined : record.actor.actions[fired.timer.member]?.cron
+      if (expression !== undefined)
+        armCron(image, record.address, entry.member, expression, entry.at)
     },
     Local: () => {},
   })
@@ -213,7 +236,13 @@ const recordAction = (image: ShardImage, catalog: Catalog, entry: ActionEntry, a
     const sequence = image.sequences.get(stream) ?? 1
     image.sequences.set(stream, sequence + 1)
     const queue = image.outbox.get(stream) ?? []
-    queue.push({ stream, sequence, send, ref: record.address, onBehalfOf: principalOf(entry.caller) })
+    queue.push({
+      stream,
+      sequence,
+      send,
+      ref: record.address,
+      onBehalfOf: principalOf(entry.caller),
+    })
     image.outbox.set(stream, queue)
   }
   for (const start of entry.effects.starts) {
@@ -242,7 +271,12 @@ const principalOf = (caller: Caller): string | undefined =>
  * Records one durable entry in the shard image. `after` is the actor image the entry produced: the
  * live engine passes what it computed when it ran the action, recovery what replay computed.
  */
-const record = (image: ShardImage, catalog: Catalog, entry: Entry, after: Image | undefined): void =>
+const record = (
+  image: ShardImage,
+  catalog: Catalog,
+  entry: Entry,
+  after: Image | undefined,
+): void =>
   Entry.match(entry, {
     Action: (action) => {
       const record = resident(image, catalog, action.actor, action.key)

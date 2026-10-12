@@ -33,7 +33,8 @@ const isDraftable = (value: Container): boolean => {
   return proto === Object.prototype || proto === null
 }
 
-const shallowCopy = (base: Container): Container => (Array.isArray(base) ? base.slice() : { ...base })
+const shallowCopy = (base: Container): Container =>
+  Array.isArray(base) ? base.slice() : { ...base }
 
 /**
  * Begins a copy-on-write draft over plain objects and arrays with plain JavaScript semantics.

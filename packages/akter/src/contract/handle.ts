@@ -1,17 +1,18 @@
 import { Context, Effect, JsonPatch, Result, Schema, Stream } from "effect"
 import type { Scope } from "effect"
 import { ActionDefect, ActorError, InvalidInput } from "./errors.ts"
-import type {
-  Args,
-  ClientState,
-  FindQuery,
-  Fields,
-  ListKeys,
-  ListTypes,
-} from "./context.ts"
+import type { Args, ClientState, FindQuery, Fields, ListKeys, ListTypes } from "./context.ts"
 import type { AnyActor, Def } from "./make.ts"
 import { isList } from "./members.ts"
-import type { Action, Event, List, MemberSchema, OptionalSchema, RangeOptions, View } from "./members.ts"
+import type {
+  Action,
+  Event,
+  List,
+  MemberSchema,
+  OptionalSchema,
+  RangeOptions,
+  View,
+} from "./members.ts"
 
 /** A call's reply as the transport carries it: the encoded success value or declared failure. */
 export type Reply =
@@ -80,11 +81,11 @@ export interface Transport {
 }
 
 /** The connection handles talk through: the in-process engine, a job, or the `/rpc` client. */
-export class Client extends Context.Service<Client, Transport>()("@rikalabs/akter/contract/handle/Client") {}
+export class Client extends Context.Service<Client, Transport>()(
+  "@rikalabs/akter/contract/handle/Client",
+) {}
 
-type SuccessType<A extends Action> = A["success"] extends MemberSchema
-  ? A["success"]["Type"]
-  : void
+type SuccessType<A extends Action> = A["success"] extends MemberSchema ? A["success"]["Type"] : void
 type FailsType<A extends Action> = A["fails"] extends MemberSchema ? A["fails"]["Type"] : never
 
 type PublicActions<D extends Def> = {
@@ -127,10 +128,7 @@ export type Handle<Name extends string, D extends Def> = ActionMethods<D, Public
   Reads<D> & { readonly "~name"?: Name }
 
 /** A job's `self`: the handle with internal actions included. */
-export type SelfHandle<Name extends string, D extends Def> = ActionMethods<
-  D,
-  keyof D["actions"]
-> &
+export type SelfHandle<Name extends string, D extends Def> = ActionMethods<D, keyof D["actions"]> &
   Reads<D> & { readonly "~name"?: Name }
 
 /** The JSON codec of any member schema. */
@@ -209,7 +207,10 @@ export const clientStateSchema = (actor: AnyActor): MemberSchema => {
 /** Derives one handle; `self` includes internal actions, as a job's `self` does. */
 const derive = <H>(target: Target & { readonly self: boolean }, transport: Transport): H => {
   const { actor, id } = target
-  const handle = new Map<string, Function | Stream.Stream<MemberSchema["Type"], ActorError> | object>()
+  const handle = new Map<
+    string,
+    Function | Stream.Stream<MemberSchema["Type"], ActorError> | object
+  >()
   const actions: Record<string, Action> = actor.actions
   const fields: Fields = actor.state.fields
   const views: Record<string, View> = actor.views
@@ -233,7 +234,9 @@ const derive = <H>(target: Target & { readonly self: boolean }, transport: Trans
   for (const [member, field] of Object.entries(fields)) {
     if (!isList(field)) continue
     const decodeItem = MemberCodec.decode(field.item, actor.name, member)
-    const window = (options: RangeOptions<MemberSchema["Type"]> | undefined): RangeOptions<ByValue> => ({
+    const window = (
+      options: RangeOptions<MemberSchema["Type"]> | undefined,
+    ): RangeOptions<ByValue> => ({
       from: Schema.is(ByValue)(options?.from) ? options.from : undefined,
       to: Schema.is(ByValue)(options?.to) ? options.to : undefined,
       limit: options?.limit,
@@ -242,10 +245,7 @@ const derive = <H>(target: Target & { readonly self: boolean }, transport: Trans
     const decodeItems = (items: ReadonlyArray<Schema.Json>) => Effect.forEach(items, decodeItem)
     handle.set(member, {
       range: (options?: RangeOptions<MemberSchema["Type"]>) =>
-        Effect.flatMap(
-          transport.range({ actor, id, member, range: window(options) }),
-          decodeItems,
-        ),
+        Effect.flatMap(transport.range({ actor, id, member, range: window(options) }), decodeItems),
       watch: (options?: RangeOptions<MemberSchema["Type"]>) =>
         transport
           .watch({ actor, id, member, range: window(options) })
@@ -289,7 +289,9 @@ const derive = <H>(target: Target & { readonly self: boolean }, transport: Trans
   if (actor.presence !== undefined) {
     const encode = MemberCodec.encode(actor.presence)
     handle.set("join", (presence: MemberSchema["Type"]) =>
-      Effect.flatMap(encode(presence), (encoded) => transport.join({ actor, id, presence: encoded })),
+      Effect.flatMap(encode(presence), (encoded) =>
+        transport.join({ actor, id, presence: encoded }),
+      ),
     )
   }
   return Object.fromEntries(handle) as H

@@ -80,7 +80,10 @@ function action(first?: MemberSchema | ActionOptions, second?: PayloadActionOpti
 }
 
 /** A declared view: a derived shape computed synchronously from durable state. */
-export interface View<A extends MemberSchema = MemberSchema, P extends OptionalSchema = OptionalSchema> {
+export interface View<
+  A extends MemberSchema = MemberSchema,
+  P extends OptionalSchema = OptionalSchema,
+> {
   readonly kind: "View"
   readonly success: A
   readonly params: P
@@ -106,10 +109,7 @@ export interface Retry {
 }
 
 /** A declared job: the only place for I/O. */
-export interface Job<
-  P extends OptionalSchema = OptionalSchema,
-  F extends string = string,
-> {
+export interface Job<P extends OptionalSchema = OptionalSchema, F extends string = string> {
   readonly kind: "Job"
   readonly payload: P
   readonly retry: Retry
@@ -118,7 +118,10 @@ export interface Job<
   readonly onFailure: F
 }
 
-const job = <P extends MemberSchema | undefined = undefined, const F extends string = string>(options: {
+const job = <
+  P extends MemberSchema | undefined = undefined,
+  const F extends string = string,
+>(options: {
   readonly payload?: P
   readonly retry?: Retry
   readonly timeout?: Duration.Input

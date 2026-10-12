@@ -70,4 +70,11 @@ export type {
 } from "./contract/context.ts"
 
 export { ByValue, Client } from "./contract/handle.ts"
-export type { Handle, ListHandle, Reply, SelfHandle, StateFrame, Transport } from "./contract/handle.ts"
+export type {
+  Handle,
+  ListHandle,
+  Reply,
+  SelfHandle,
+  StateFrame,
+  Transport,
+} from "./contract/handle.ts"

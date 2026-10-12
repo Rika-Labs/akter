@@ -27,7 +27,10 @@ const Doc = Actor.make("Doc", {
     size: Actor.action({ success: Schema.Finite }),
     indexFailed: Actor.action(JobFailure, { internal: true }),
   },
-  views: { plain: Actor.view(Schema.Finite), page: Actor.view(Schema.Array(Schema.Finite), { params: Schema.Finite }) },
+  views: {
+    plain: Actor.view(Schema.Finite),
+    page: Actor.view(Schema.Array(Schema.Finite), { params: Schema.Finite }),
+  },
   events: { saved: Actor.event(Schema.String) },
   jobs: { index: Actor.job({ payload: Schema.String, onFailure: "indexFailed" }) },
 })
@@ -65,7 +68,11 @@ describe("Actor.make", () => {
     ).toThrow(/used twice or reserved/)
     expect(() =>
       // @ts-expect-error `state` is reserved for the client's state stream
-      Actor.make("Reserved", { state: Schema.Struct({ n: unit }), actions: {}, events: { state: Actor.event(Schema.String) } }),
+      Actor.make("Reserved", {
+        state: Schema.Struct({ n: unit }),
+        actions: {},
+        events: { state: Actor.event(Schema.String) },
+      }),
     ).toThrow(/used twice or reserved/)
   })
 
@@ -95,10 +102,16 @@ describe("Actor.make", () => {
     // @ts-expect-error a cron action takes no payload
     expect(() => Actor.action(Schema.String, { cron: "0 3 * * *" })).toThrow(/takes no payload/)
     expect(Actor.action({ cron: "0 3 * * *" }).internal).toBe(true)
-    expect(Actor.action({ cron: "CRON_TZ=Europe/Paris 0 3 * * *" }).cron).toBe("CRON_TZ=Europe/Paris 0 3 * * *")
+    expect(Actor.action({ cron: "CRON_TZ=Europe/Paris 0 3 * * *" }).cron).toBe(
+      "CRON_TZ=Europe/Paris 0 3 * * *",
+    )
     expect(Actor.action({ cron: "@every 90 seconds" }).internal).toBe(true)
-    expect(() => Actor.action({ cron: "CRON_TZ=+02:00 0 3 * * *" })).toThrow(/not a named IANA time zone/)
-    expect(() => Actor.action({ cron: "CRON_TZ=Mars/Olympus 0 3 * * *" })).toThrow(/not a named IANA time zone/)
+    expect(() => Actor.action({ cron: "CRON_TZ=+02:00 0 3 * * *" })).toThrow(
+      /not a named IANA time zone/,
+    )
+    expect(() => Actor.action({ cron: "CRON_TZ=Mars/Olympus 0 3 * * *" })).toThrow(
+      /not a named IANA time zone/,
+    )
     expect(() => Actor.action({ cron: "@every 500 millis" })).toThrow(/at least one second/)
   })
 
@@ -118,14 +131,18 @@ describe("X.toLayer", () => {
     // @ts-expect-error `renmae` is not declared
     expect(() => Doc.toLayer({ ...handlers, renmae: () => {} })).toThrow(/'renmae' is not declared/)
     // @ts-expect-error a non-presence actor takes no connect handler
-    expect(() => Doc.toLayer({ ...handlers, connect: () => {} })).toThrow(/'connect' is not declared/)
+    expect(() => Doc.toLayer({ ...handlers, connect: () => {} })).toThrow(
+      /'connect' is not declared/,
+    )
     const Lobby = Actor.make("Lobby", {
       state: Schema.Struct({ online: unit }),
       actions: { ping: Actor.action() },
       presence: Schema.Struct({ name: Schema.String }),
     })
     // @ts-expect-error presence needs both connect and disconnect
-    expect(() => Lobby.toLayer({ ping: () => {}, connect: () => {} })).toThrow(/no handler for 'disconnect'/)
+    expect(() => Lobby.toLayer({ ping: () => {}, connect: () => {} })).toThrow(
+      /no handler for 'disconnect'/,
+    )
   })
 
   it("types action handlers as synchronous functions of the draft, payload and context", () => {
@@ -167,9 +184,19 @@ describe("X.toLayer", () => {
   })
 
   it("types the caller from access: a type guard narrows it, a plain boolean keeps Anonymous", () => {
-    const state = Schema.Struct({ admins: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))) })
-    const Guarded = Actor.make("Guarded", { state, actions: { claim: Actor.action() }, access: isUser })
-    const Open = Actor.make("Open", { state, actions: { claim: Actor.action() }, access: () => true })
+    const state = Schema.Struct({
+      admins: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+    })
+    const Guarded = Actor.make("Guarded", {
+      state,
+      actions: { claim: Actor.action() },
+      access: isUser,
+    })
+    const Open = Actor.make("Open", {
+      state,
+      actions: { claim: Actor.action() },
+      access: () => true,
+    })
     expect(
       Guarded.toLayer({
         claim: (room, _, { caller }) => {
@@ -191,14 +218,16 @@ describe("X.toLayer", () => {
     expect(
       Doc.toLayer({
         ...handlers,
-        // @ts-expect-error a class instance is not JSON; name its schema
-        index: (text, { step }) => step("load", Effect.succeed(Note.make({ id: text, at: 0, tags: [] }))),
+        index: (text, { step }) =>
+          // @ts-expect-error a class instance is not JSON; name its schema
+          step("load", Effect.succeed(Note.make({ id: text, at: 0, tags: [] }))),
       }),
     ).toBeDefined()
     expect(
       Doc.toLayer({
         ...handlers,
-        index: (text, { step }) => step("load", Note, Effect.succeed(Note.make({ id: text, at: 0, tags: [] }))),
+        index: (text, { step }) =>
+          step("load", Note, Effect.succeed(Note.make({ id: text, at: 0, tags: [] }))),
       }),
     ).toBeDefined()
     const scoped = Doc.toLayer({ ...handlers, index: () => Effect.addFinalizer(() => Effect.void) })
