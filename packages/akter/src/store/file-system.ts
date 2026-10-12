@@ -210,6 +210,13 @@ export const fileSystemBucket = Effect.fnUntraced(function* (directory: string) 
         Effect.catchReason("PlatformError", "NotFound", () => Effect.succeedNone),
         Effect.mapError(failure("head", key)),
       ),
+    modified: (key) =>
+      pathOf(key).pipe(
+        Effect.flatMap((path) => fs.stat(path)),
+        Effect.map((info) => Option.map(info.mtime, (time) => time.getTime())),
+        Effect.catchReason("PlatformError", "NotFound", () => Effect.succeedNone),
+        Effect.mapError(failure("modified", key)),
+      ),
     create: (key, body) =>
       pathOf(key).pipe(
         Effect.flatMap((target) => createAt(target, body)),

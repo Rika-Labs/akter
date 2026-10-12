@@ -60,6 +60,8 @@ export interface Bucket {
   ) => Effect.Effect<Option.Option<Uint8Array<ArrayBuffer>>, StorageUnavailable>
   /** The stored object's length in bytes; none when the key is absent. */
   readonly head: (key: string) => Effect.Effect<Option.Option<number>, StorageUnavailable>
+  /** When the object was last written, in milliseconds since the epoch, at the provider's resolution (one second on S3); none when the key is absent. */
+  readonly modified: (key: string) => Effect.Effect<Option.Option<number>, StorageUnavailable>
   /** Creates `key` only if it does not exist; false when it already does. */
   readonly create: (key: string, body: Uint8Array) => Effect.Effect<boolean, StorageUnavailable>
   /** Writes `key` whether or not it exists. */

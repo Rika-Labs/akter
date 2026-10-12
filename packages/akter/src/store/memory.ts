@@ -1,9 +1,10 @@
-import { Effect, Option } from "effect"
+import { Clock, Effect, Option } from "effect"
 import { type Bucket, Condition, type ListOptions, type Listed } from "./bucket.ts"
 
 interface Stored {
   readonly body: Uint8Array<ArrayBuffer>
   readonly etag: string
+  readonly modified: number
 }
 
 /**
@@ -16,10 +17,10 @@ export const memoryBucket = (): Bucket => {
   const objects = new Map<string, Stored>()
   let version = 0
 
-  const store = (key: string, body: Uint8Array) => {
+  const store = (key: string, body: Uint8Array, modified: number) => {
     version += 1
     const etag = `"${version.toString(16)}"`
-    objects.set(key, { body: Uint8Array.from(body), etag })
+    objects.set(key, { body: Uint8Array.from(body), etag, modified })
     return etag
   }
 
@@ -41,15 +42,19 @@ export const memoryBucket = (): Bucket => {
       Effect.sync(() =>
         Option.map(Option.fromNullishOr(objects.get(key)), (object) => object.body.length),
       ),
+    modified: (key) =>
+      Effect.sync(() =>
+        Option.map(Option.fromNullishOr(objects.get(key)), (object) => object.modified),
+      ),
     create: (key, body) =>
-      Effect.sync(() => {
+      Effect.map(Clock.currentTimeMillis, (now) => {
         if (objects.has(key)) return false
-        store(key, body)
+        store(key, body, now)
         return true
       }),
     put: (key, body) =>
-      Effect.sync(() => {
-        store(key, body)
+      Effect.map(Clock.currentTimeMillis, (now) => {
+        store(key, body, now)
       }),
     list: (prefix, options) => Effect.sync(() => keysUnder(prefix, options)),
     delete: (keys) =>
@@ -65,14 +70,14 @@ export const memoryBucket = (): Bucket => {
           })),
         ),
       write: (key, body, condition) =>
-        Effect.sync(() => {
+        Effect.map(Clock.currentTimeMillis, (now) => {
           const current = objects.get(key)
           const holds = Condition.$match(condition, {
             Absent: () => current === undefined,
             Matches: ({ etag }) => current?.etag === etag,
             Always: () => true,
           })
-          return holds ? Option.some(store(key, body)) : Option.none()
+          return holds ? Option.some(store(key, body, now)) : Option.none()
         }),
       list: (prefix) =>
         Effect.sync(() =>
