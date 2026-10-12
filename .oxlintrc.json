@@ -49,7 +49,8 @@
     "akter/no-generic-directory-segment": "error",
     "akter/no-runtime-import-outside-runtime": "error",
     "akter/no-decision-references": "error",
-    "akter/no-inline-comments": "error"
+    "akter/no-inline-comments": "error",
+    "akter/synchronous-actions": "error"
   },
   "overrides": [
     {
@@ -78,6 +79,22 @@
       "rules": {
         "effecttsgo/missing-pipeable-signature": "off"
       }
+    },
+    {
+      "files": ["tooling/oxlint/src/actors/*.ts"],
+      "rules": {
+        "effecttsgo/node-builtin-import": "off",
+        "effecttsgo/missing-pipeable-signature": "off"
+      }
+    },
+    {
+      "files": [
+        "apps/cli/src/commands/defects/list.test.ts",
+        "packages/akter/src/actor/reads.test.ts",
+        "packages/akter/src/actor/turns.test.ts",
+        "packages/python-client/src/generate.test.ts"
+      ],
+      "rules": { "akter/synchronous-actions": "off" }
     },
     {
       "files": ["packages/akter/src/runtime/peering/transport.test.ts"],
