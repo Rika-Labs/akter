@@ -109,6 +109,8 @@ export class ActorCluster extends Context.Service<
     readonly holdReplies: Effect.Effect<void>
     /** Blackholes only one runner's existing sessions; its rival and the control pool remain readable. */
     readonly holdRunnerReplies: (runner: number) => Effect.Effect<void>
+    /** Terminates one runner's actual server sessions while leaving its local sockets untouched. */
+    readonly terminateSessions: (runner: number) => Effect.Effect<void>
     /**
      * Cuts every runner's open database connections at once, discarding held
      * replies, and lets the runners reconnect to the same database, as they
@@ -595,6 +597,19 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
           for (const runner of runners) for (const socket of runner.sockets ?? []) socket.pause()
         }),
         failover,
+        terminateSessions: (index) =>
+          at(index).pipe(
+            Effect.flatMap((runner) => {
+              const ports = Array.from(runner.sockets ?? [], (socket) => socket.localPort).filter(
+                (port) => port !== undefined,
+              )
+              return sql`SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+            WHERE datname = current_database() AND client_port = ANY(${ports})`.pipe(
+                Effect.asVoid,
+                Effect.orDie,
+              )
+            }),
+          ),
         holdRunnerReplies: (index) =>
           at(index).pipe(
             Effect.flatMap((runner) =>

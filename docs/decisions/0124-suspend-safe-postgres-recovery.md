@@ -1,0 +1,25 @@
+# ADR 0124: Conditional Postgres session epochs after suspension
+
+Status: accepted, 2026-10-12.
+
+## Context
+
+A suspended runner can retain sessions whose peers have disappeared, including Cluster's lifetime lock reservation. Checkout validation does not reach that reservation. Waiting for the ordinary lock-refresh deadline and interrupted-query drain delays recovery even after the guest clock has corrected. Invalidating a pool alone does not immediately finalize a connection still leased by a turn or reservation. Destroying surviving sessions is also expensive: the native acquisition cadence then turns an otherwise healthy wake into a new ownership recovery.
+
+## Decision
+
+Each `Database.postgres` layer owns one socket epoch through the driver's public `stream` factory. Turn, off-turn, query, replica and coordination pools share it; Cluster's lock reservation uses the same bounded coordination client. Public connection `processId` values identify held sessions. Supplied factories are composed, and the driver still performs TLS negotiation and certificate verification. Caller application names retain PostgreSQL's startup precedence and 63-byte limit; unnamed pools share one generated runtime name. No private driver state or dependency patch is used.
+
+The served clock and runtime use the same wall/monotonic divergence comparison. A clock-only one-second background tick also checks idle runtimes. A backward monotonic clock or elapsed-time disagreement greater than 250 milliseconds gates readiness and checkouts while one differently named fresh connection per endpoint executes one combined SQL verification. Endpoints run concurrently, each bounded to 1.5 seconds. `pg_stat_activity` must match the retained session count and every held public backend identity; the fresh connection's `processId` must match `pg_backend_pid()`. For the coordination endpoint, the same statement renews only existing runner heartbeats after the session proof and, for table locks, matching nonexpired shard/address rows. It does not acquire or renew shard locks.
+
+When all proofs pass and no retained socket closes during verification, the epoch, sessions and native ownership remain intact. Otherwise missing sessions, ambiguous counts, pooler identity mismatches, permission failures, connection failures and timeouts fail closed into destructive reset. Checkouts wait for every old public close notification and an event-loop turn so the driver's pool cannot hand a replacement reservation a dying session. A later discontinuity supersedes both verification and recovery; old-scope identity finalizers cannot erase fresh-epoch identities. Warm checks perform no SQL.
+
+After teardown, readiness stays withdrawn until runner storage has refreshed its registration and Cluster has actually acquired all shards in the current healthy-runner assignment snapshot through its ordinary acquisition path. Recovery observes those successful new-epoch acquisitions; it never acquires or refreshes shard locks out of band, which could leave advisory locks held without Cluster bookkeeping. Pre-epoch refresh requests cannot certify unproven shards, so Cluster drops its stale belief and handles release and reacquisition itself. Cross-epoch results still reach Cluster for adoption or release but cannot populate fresh ownership proof or the concurrent-acquisition cache. A database probe or local `hasShardId` belief is insufficient, including for embedded Postgres readiness. Public command admission and actor turn admission return retryable `ActorUnavailable` while recovery is incomplete. Generations, leases, command identities and receipt rules remain unchanged.
+
+Framework defaults remain unchanged. An embedded runtime can explicitly provide the public Effect `ShardingConfig` service's lock-refresh and entity-poll intervals, without changing its topology or expiration. Local evidence selects a candidate 1-second refresh and 500-millisecond entity poll for an operator-controlled hosted companion: default dead-session recovery remains slow, while this candidate reaches under 1.4 seconds and adds approximately 1.8 SQL statements per second per awake runner. This record does not approve or deploy that hosted setting. A public upstream acquisition wake trigger could avoid the recurring cost; a whole Cluster layer rebuild would require registration replay and cached-client lifecycle changes and is not this revision.
+
+## Limits and evidence
+
+The detector starts working after a local clock reveals discontinuity. If a provider initially resumes both clocks together without correction, it cannot detect that residual interval; the limitation in [served-clock evidence](../verification/served-clock.md) remains. Recovery is not a provider wake-time guarantee or proof of the original packet-loss cause.
+
+[Postgres recovery evidence](../verification/postgres-resume.md) covers real two-runner expiry and takeover, rollback of a staged old turn, readiness mutants, real reserved advisory locks, all five pools, supplied/default factories, verified TLS and independent warm statement counts on Bun and Node. PGlite has no network socket epoch.

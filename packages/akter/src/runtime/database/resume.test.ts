@@ -69,14 +69,17 @@ it.each(["supplied", "default"])(
           if (ssl !== undefined) configured.searchParams.set("sslmode", "verify-full")
           const url = Redacted.make(configured.href)
           let sockets = 0
+          const openedSockets: Array<ReturnType<typeof connect>> = []
           let wallOffset = 0
           const stream = () => {
             sockets++
-            return connect({
+            const socket = connect({
               host: address.hostname,
               port: Number(address.port || 5432),
               noDelay: true,
             })
+            openedSockets.push(socket)
+            return socket
           }
           const options = {
             url,
@@ -133,13 +136,34 @@ it.each(["supplied", "default"])(
             ).toBe(true)
           }
           let recovered = false
-          yield* epoch.recover(Effect.sync(() => recovered))
+          let recoveryChecks = 0
+          yield* epoch.recover(
+            Effect.sync(() => {
+              recoveryChecks++
+              return recovered
+            }),
+          )
           const first = epoch.check()
+          const retained = Array.from(openedSockets)
+          wallOffset += 300_000
+          const aliveStarted = performance.now()
+          epoch.check()
+          yield* epoch.settled
+          expect(epoch.ready()).toBe(true)
+          expect(epoch.check()).toBe(first)
+          expect(recoveryChecks).toBe(0)
+          expect(retained.every((socket) => !socket.destroyed)).toBe(true)
+          expect(performance.now() - aliveStarted < 500).toBe(true)
+          const control = Context.get(
+            yield* Layer.build(PgClient.layer({ url, ssl })),
+            SqlClient.SqlClient,
+          )
+          yield* control`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid = ANY(${pids})`
           wallOffset += 300_000
           const started = performance.now()
           expect(epoch.ready()).toBe(false)
-          expect(epoch.check()).toBe(first + 1)
           yield* epoch.settled
+          expect(epoch.check()).toBe(first + 1)
           const results = yield* Effect.forEach(reservations, (connection) =>
             Effect.result(connection.executeValues(backendQuery, [])),
           )
@@ -154,6 +178,11 @@ it.each(["supplied", "default"])(
           const beforeRefusal = sockets
           expect(Result.isFailure(yield* Effect.result(Effect.scoped(turns.lease)))).toBe(true)
           expect(sockets).toBe(beforeRefusal)
+          wallOffset += 300_000
+          epoch.check()
+          yield* epoch.settled
+          expect(epoch.check()).toBe(first + 1)
+          expect(epoch.ready()).toBe(false)
           recovered = true
           yield* Effect.sync(epoch.ready).pipe(
             Effect.repeat({ schedule: Schedule.spaced("10 millis"), until: Boolean }),
@@ -263,6 +292,15 @@ it("reacquires real advisory locks on a new reserved backend before reopening th
       AND database = (SELECT oid FROM pg_database WHERE datname = current_database()) ORDER BY objid`
         const before = yield* locks
         expect(before.map((row) => row.objid)).toEqual([1_000_001, 1_000_002])
+        yield* control`UPDATE cluster_runners SET last_heartbeat = NOW() - INTERVAL '300 seconds'`
+        wallOffset += 300_000
+        epoch.check()
+        yield* epoch.settled
+        expect(epoch.ready()).toBe(true)
+        expect(epoch.check()).toBe(0)
+        expect(yield* locks).toEqual(before)
+        expect((yield* storage.getRunners).some(([, healthy]) => healthy)).toBe(true)
+        yield* control`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid = ${before[0]!.pid}`
         wallOffset += 300_000
         expect(epoch.ready()).toBe(false)
         yield* epoch.settled
@@ -296,6 +334,140 @@ it("reacquires real advisory locks on a new reserved backend before reopening th
         expect(new Set(after.map((row) => row.pid)).size).toBe(1)
         expect(after.every((row) => row.pid !== before[0]!.pid)).toBe(true)
         expect((yield* storage.refresh(address, shards)).length).toBe(2)
+      }),
+    ),
+  ))
+
+it("retains live table-lock sessions only while their stored leases remain valid", () =>
+  runtime.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const url = yield* disposableDatabase({ url: yield* Config.Redacted("TEST_DATABASE_URL") })
+        let wallOffset = 0
+        const sockets: Array<ReturnType<typeof connect>> = []
+        const context = yield* Layer.build(
+          Database.postgres({
+            url,
+            stream: () => {
+              const endpoint = new URL(Redacted.value(url))
+              const socket = connect({ host: endpoint.hostname, port: Number(endpoint.port) })
+              sockets.push(socket)
+              return socket
+            },
+          }).pipe(
+            Layer.provide(
+              Layer.succeed(ClockReadings, (clock) => {
+                const reading = clockReading(clock)
+                return { ...reading, wall: reading.wall + wallOffset }
+              }),
+            ),
+          ),
+        )
+        const sql = Context.get(context, SqlClient.SqlClient)
+        const epoch = Context.get(context, ResumeEpoch)
+        const address = RunnerAddress.RunnerAddress.make({ host: "table-resume", port: 9 })
+        const config = ShardingConfig.ShardingConfig.of({
+          ...ShardingConfig.defaults,
+          runnerAddress: Option.some(address),
+          shardsPerGroup: 2,
+          assignedShardGroups: ["default"],
+          shardLockDisableAdvisory: true,
+          shardLockExpiration: "7 seconds",
+        })
+        const storage = yield* SqlRunnerStorage.make({}).pipe(
+          Effect.flatMap(recoveringRunnerStorage),
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.provideService(ResumeEpoch, epoch),
+          Effect.provideService(ShardingConfig.ShardingConfig, config),
+        )
+        const shards = [ShardId.make("default", 1), ShardId.make("default", 2)]
+        yield* storage.register(
+          Runner.Runner.make({ address, groups: ["default"], weight: 1 }),
+          true,
+        )
+        expect((yield* storage.acquire(address, shards)).length).toBe(2)
+        const control = Context.get(
+          yield* Layer.build(PgClient.layer({ url })),
+          SqlClient.SqlClient,
+        )
+        const leases = control`SELECT shard_id, address, acquired_at FROM cluster_locks ORDER BY shard_id`
+        const original = yield* leases
+        const retained = Array.from(sockets)
+        yield* control`UPDATE cluster_runners SET last_heartbeat = NOW() - INTERVAL '300 seconds'`
+        wallOffset += 300_000
+        epoch.check()
+        yield* epoch.settled
+        expect(epoch.ready()).toBe(true)
+        expect(epoch.check()).toBe(0)
+        expect(retained.every((socket) => !socket.destroyed)).toBe(true)
+        expect(yield* leases).toEqual(original)
+        expect((yield* storage.getRunners).some(([, healthy]) => healthy)).toBe(true)
+        yield* control`UPDATE cluster_locks SET acquired_at = NOW() - INTERVAL '8 seconds' WHERE shard_id = ${"default:2"}`
+        const expired = yield* control<{
+          count: number
+        }>`SELECT count(*)::integer AS count FROM cluster_locks WHERE acquired_at < NOW() - INTERVAL '7 seconds'`
+        expect(expired[0]!.count).toBe(1)
+        wallOffset += 300_000
+        epoch.check()
+        yield* epoch.settled
+        expect(epoch.check()).toBe(1)
+        expect(epoch.ready()).toBe(false)
+        expect(retained.every((socket) => socket.destroyed)).toBe(true)
+        expect((yield* leases).length).toBe(2)
+      }),
+    ),
+  ))
+
+it("bounds concurrent fresh verification blackholes without destroying survivors before the timeout", () =>
+  runtime.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const url = yield* disposableDatabase({ url: yield* Config.Redacted("TEST_DATABASE_URL") })
+        let wallOffset = 0
+        let blackhole = false
+        const sockets: Array<ReturnType<typeof connect>> = []
+        const stream = () => {
+          const endpoint = new URL(Redacted.value(url))
+          const socket = connect({ host: endpoint.hostname, port: Number(endpoint.port) })
+          if (blackhole) socket.pause()
+          sockets.push(socket)
+          return socket
+        }
+        const context = yield* Layer.build(
+          Database.postgres({
+            url,
+            stream,
+            replica: { url, stream, applicationName: "resume-replica" },
+          }).pipe(
+            Layer.provide(
+              Layer.succeed(ClockReadings, (clock) => {
+                const reading = clockReading(clock)
+                return { ...reading, wall: reading.wall + wallOffset }
+              }),
+            ),
+          ),
+        )
+        const sql = Context.get(context, SqlClient.SqlClient)
+        const epoch = Context.get(context, ResumeEpoch)
+        yield* sql`SELECT 17`
+        const replica = Context.get(context, ReadReplica)!
+        yield* replica`SELECT 29`
+        const retained = Array.from(sockets)
+        expect(retained.length).toBe(2)
+        blackhole = true
+        wallOffset += 300_000
+        const started = performance.now()
+        epoch.check()
+        yield* Effect.sleep("100 millis")
+        expect(epoch.check()).toBe(0)
+        expect(retained.every((socket) => !socket.destroyed)).toBe(true)
+        expect(epoch.ready()).toBe(false)
+        yield* epoch.settled
+        const elapsed = performance.now() - started
+        expect(elapsed).toBeGreaterThanOrEqual(1_400)
+        expect(elapsed).toBeLessThan(2_000)
+        expect(epoch.check()).toBe(1)
+        expect(retained.every((socket) => socket.destroyed)).toBe(true)
       }),
     ),
   ))

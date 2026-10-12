@@ -528,6 +528,7 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
           expect(takeover.address === firstLock.address).toBe(false)
           expect(takeover.acquired - firstLock.acquired >= EXPIRATION_SECONDS * 1_000).toBe(true)
           yield* cluster.holdRunnerReplies(stale)
+          yield* cluster.terminateSessions(stale)
           yield* cluster.advanceWallClock(stale, 300_000)
           expect(yield* readiness).toEqual({ ready: false, reason: "storage" })
           expect(epoch.check()).toBe(firstEpoch + 1)

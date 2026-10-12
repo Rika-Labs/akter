@@ -72,7 +72,11 @@ const turnPool = Effect.fnUntraced(function* (config: PgPool.Config) {
                   }),
                 }),
               )
-            : pool.get,
+            : pool.get.pipe(
+                Effect.tap((session) =>
+                  Option.isSome(resume) ? resume.value.observe(config, session) : Effect.void,
+                ),
+              ),
         ),
       ),
     ),

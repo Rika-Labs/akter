@@ -1,4 +1,5 @@
 import { Context, Duration, Effect, HashRing, Option, PrimaryKey } from "effect"
+import { PgClient } from "@effect/sql-pg"
 import {
   type RunnerAddress,
   type RunnerStorage,
@@ -58,6 +59,19 @@ export const recoveringRunnerStorage = Effect.fnUntraced(function* (
   let epoch = resume.value.check()
   let revision = 0
   const held = new Map<string, Map<string, number>>()
+  const sql = (yield* Coordination) ?? (yield* SqlClient.SqlClient)
+  if (PgClient.TypeId in sql)
+    yield* resume.value.authority(
+      (sql as PgClient.PgClient).config,
+      () => Array.from(registered.keys()),
+      config.shardLockDisableAdvisory
+        ? () =>
+            Array.from(held).flatMap(([address, shards]) =>
+              Array.from(shards.keys(), (shard) => ({ address, shard })),
+            )
+        : undefined,
+      Math.ceil(Duration.toSeconds(Duration.fromInputUnsafe(config.shardLockExpiration))),
+    )
   const check = () => {
     const current = resume.value.check()
     if (current !== epoch) {
@@ -129,6 +143,7 @@ export const recoveringRunnerStorage = Effect.fnUntraced(function* (
             if (started !== check()) return acquired
             const owned = of(address)
             for (const shard of acquired) owned.set(PrimaryKey.value(shard), ++revision)
+            resume.value.changed()
             return acquired
           }),
         )

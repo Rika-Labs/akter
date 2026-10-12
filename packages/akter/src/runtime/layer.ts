@@ -588,16 +588,19 @@ export const layer = (options: Options = {}) => {
       })
       const requests = admissionLimit({ limit: admissionSettings.requests, wait: Duration.zero })
       const resume = Option.getOrUndefined(yield* Effect.serviceOption(ResumeEpoch))
-      const available = Effect.suspend(() =>
-        resume !== undefined && !resume.ready()
-          ? Effect.fail(
-              ActorError.make({
-                reason: ActorUnavailable.make({
-                  cause: new Error("Runtime is reacquiring ownership after suspension"),
+      const available = Effect.andThen(
+        resume?.settled ?? Effect.void,
+        Effect.suspend(() =>
+          resume !== undefined && !resume.ready()
+            ? Effect.fail(
+                ActorError.make({
+                  reason: ActorUnavailable.make({
+                    cause: new Error("Runtime is reacquiring ownership after suspension"),
+                  }),
                 }),
-              }),
-            )
-          : Effect.void,
+              )
+            : Effect.void,
+        ),
       )
 
       let holder: Holder | undefined
@@ -1553,6 +1556,10 @@ export const layer = (options: Options = {}) => {
       const sql = yield* SqlClient.SqlClient
       const coordination = (yield* Coordination) ?? sql
       const wiring = Option.getOrUndefined(yield* Effect.serviceOption(RunnerWiring))
+      const cadence =
+        wiring === undefined
+          ? Option.getOrUndefined(yield* Effect.serviceOption(ShardingConfig.ShardingConfig))
+          : undefined
       const transactionPooling = yield* TransactionPooling
       if (
         transactionPooling &&
@@ -1647,6 +1654,11 @@ export const layer = (options: Options = {}) => {
             shardsPerGroup: 1,
             simulateRemoteSerialization: yield* LocalRequestSerialization,
             maxResidentEntities: maxResidentActors,
+            shardLockRefreshInterval:
+              cadence?.shardLockRefreshInterval ?? ShardingConfig.defaults.shardLockRefreshInterval,
+            entityMessagePollInterval:
+              cadence?.entityMessagePollInterval ??
+              ShardingConfig.defaults.entityMessagePollInterval,
             ...wiring?.config,
             ...holderShardGroups(wiring?.config ?? {}),
           }),

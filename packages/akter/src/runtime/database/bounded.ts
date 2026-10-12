@@ -95,11 +95,14 @@ const boundedSessions = Effect.fnUntraced(function* (options: PgClient.PgPoolCon
   )
   const connection = (session: Effect.Success<typeof pool.get>) =>
     asSqlConnection({ connection: session, send: direct })
+  const observe = (session: Effect.Success<typeof pool.get>) =>
+    Option.isSome(resume) ? resume.value.observe(options, session) : Effect.void
 
   /** A reservation cannot return to the pool while an interrupted statement is still draining its wire response. */
   const reserve = Effect.gen(function* () {
     yield* enter
     const session = yield* pool.reserve
+    yield* observe(session)
     const statements = Semaphore.makeUnsafe(1)
     let closing = false
     yield* Effect.addFinalizer(() =>
@@ -123,7 +126,7 @@ const boundedSessions = Effect.fnUntraced(function* (options: PgClient.PgPoolCon
   })
 
   return {
-    acquire: Effect.andThen(enter, Effect.map(pool.get, connection)),
+    acquire: Effect.andThen(enter, pool.get.pipe(Effect.tap(observe), Effect.map(connection))),
     reserve,
     borrow: (use) =>
       Effect.andThen(
@@ -133,7 +136,9 @@ const boundedSessions = Effect.fnUntraced(function* (options: PgClient.PgPoolCon
             fair.use(
               Effect.andThen(
                 settled,
-                pool.use((session) => use(connection(session))),
+                pool.use((session) =>
+                  Effect.scoped(Effect.andThen(observe(session), use(connection(session)))),
+                ),
               ),
             ),
           )
@@ -144,7 +149,9 @@ const boundedSessions = Effect.fnUntraced(function* (options: PgClient.PgPoolCon
     listen: (channel) =>
       Effect.andThen(
         enter,
-        Effect.flatMap(pool.reserve, (session) => session.listen(channel)),
+        Effect.flatMap(pool.reserve.pipe(Effect.tap(observe)), (session) =>
+          session.listen(channel),
+        ),
       ),
   } satisfies Sessions
 })

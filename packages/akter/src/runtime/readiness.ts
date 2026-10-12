@@ -53,6 +53,7 @@ export const servingReadiness = Effect.fnUntraced(function* ({
       }).pipe(Effect.provideContext(services), Effect.cachedWithTTL(READINESS_CACHE))
 
   const serving = Effect.gen(function* () {
+    if (Option.isSome(resume)) yield* resume.value.settled
     if (Option.isSome(resume) && !resume.value.ready())
       return { ready: false, reason: "storage" } as const
     if (yield* sharding.isShutdown) return { ready: false, reason: "routing" } as const
@@ -60,7 +61,8 @@ export const servingReadiness = Effect.fnUntraced(function* ({
     if (registrations.size + queryRegistrations.size + jobRegistrations.size === 0)
       return { ready: false, reason: "unregistered" } as const
 
-    if (!(yield* storage)) return { ready: false, reason: "storage" } as const
+    if (!(Option.isSome(resume) && resume.value.verified()) && !(yield* storage))
+      return { ready: false, reason: "storage" } as const
 
     if (Option.isSome(peering) && !(yield* peering.value.healthy))
       return { ready: false, reason: "peering" } as const

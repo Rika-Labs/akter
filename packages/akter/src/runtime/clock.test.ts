@@ -12,6 +12,7 @@ it("withdraws readiness before teardown and waits for the newest close barrier a
         const epoch = yield* resumeEpoch.pipe(
           Effect.provideService(ClockReadings, () => ({ at: 0, wall })),
         )
+        epoch.requireReacquisition()
         const closes: Array<() => void> = []
         class ClosingSocket extends Socket {
           closing = false
@@ -57,6 +58,7 @@ it("detects an idle runtime's corrected wall clock on its clock-only background 
         const epoch = yield* resumeEpoch.pipe(
           Effect.provideService(ClockReadings, () => ({ at: 0, wall })),
         )
+        epoch.requireReacquisition()
         const socket = epoch.track({ stream: () => new Socket() }).stream!()
         socket.once("close", () => {
           destroyed = true
