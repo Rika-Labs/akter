@@ -1,7 +1,10 @@
 import { expect, it } from "vitest"
-import { canaryVersion, releaseTags, releaseVersion } from "./version.ts"
+import { canaryChannel, canaryVersion, releaseTags, releaseVersion } from "./version.ts"
 import { BunServices } from "@effect/platform-bun"
 import { Effect, FileSystem, ManagedRuntime } from "effect"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 it("accepts a matching release unit and rejects a different CLI alpha before publication", () => {
   expect(releaseVersion({ framework: "0.1.0-alpha.7", cli: "0.1.0-alpha.7" })).toBe("0.1.0-alpha.7")
@@ -107,4 +110,187 @@ it("runs the manifest gate before publishing and refuses a mismatched package on
       }).pipe(Effect.scoped),
     )
     .finally(() => runtime.dispose())
+})
+
+it("names rewrite canaries with their own channel and never selects latest or next for them", () => {
+  const build = "321.1.g123456abcdef"
+  const rewrite = canaryVersion({ version: "0.2.0", build, channel: "rewrite" })
+  expect(rewrite).toBe("0.2.0-rewrite.321.1.g123456abcdef")
+  expect(canaryVersion({ version: "0.2.0", build })).toBe("0.2.0-next.321.1.g123456abcdef")
+  expect(releaseTags(rewrite)).toEqual({ tag: "rewrite", latest: false })
+  expect(releaseTags(canaryVersion({ version: "0.2.0", build }))).toEqual({
+    tag: "next",
+    latest: false,
+  })
+  expect(() => canaryVersion({ version: "0.2.0", build, channel: "latest" })).toThrow(
+    "Canary channel",
+  )
+  expect(() => canaryVersion({ version: "0.2.0", build, channel: "alpha" })).toThrow(
+    "Canary channel",
+  )
+  expect(() =>
+    canaryVersion({ version: "0.2.0", build: "321.1.g123456", channel: "rewrite" }),
+  ).toThrow("Canary build")
+  expect(canaryChannel("main")).toBe("next")
+  expect(canaryChannel("rewrite/0.2")).toBe("rewrite")
+  for (const branch of ["", "master", "rewrite/0.2.1", "refs/heads/main", "feature/rewrite/0.2"])
+    expect(() => canaryChannel(branch)).toThrow("does not publish canaries")
+})
+
+const releaseWorkflow = () => {
+  const text = readFileSync(new URL("../../workflows/release.yml", import.meta.url), "utf8")
+  const steps = (
+    Bun.YAML.parse(text) as {
+      readonly jobs: {
+        readonly publish: {
+          readonly steps: ReadonlyArray<{ readonly name?: string; readonly run?: string }>
+        }
+      }
+    }
+  ).jobs.publish.steps
+  return {
+    text,
+    script: (name: string) => {
+      const run = steps.find((step) => step.name === name)?.run
+      if (run === undefined) throw new Error(`Release step ${name} is missing`)
+      return run
+    },
+  }
+}
+
+const git = (cwd: string, ...args: ReadonlyArray<string>) => {
+  const result = Bun.spawnSync(["git", ...args], {
+    cwd,
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: "test",
+      GIT_AUTHOR_EMAIL: "test@example.com",
+      GIT_COMMITTER_NAME: "test",
+      GIT_COMMITTER_EMAIL: "test@example.com",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_CONFIG_SYSTEM: "/dev/null",
+    },
+  })
+  if (result.exitCode !== 0) throw new Error(result.stderr.toString())
+  return result.stdout.toString().trim()
+}
+
+it("publishes a rewrite canary only from a commit on origin/rewrite/0.2 and a next canary only from origin/main", () => {
+  const workflow = releaseWorkflow()
+  const select = workflow
+    .script("Select a verified canary or tagged release")
+    .replace(".github/src/release/version.ts", new URL("./version.ts", import.meta.url).pathname)
+  const directory = mkdtempSync(join(tmpdir(), "akter-release-channel-"))
+  try {
+    mkdirSync(join(directory, "packages/akter"), { recursive: true })
+    mkdirSync(join(directory, "apps/cli"), { recursive: true })
+    for (const manifest of ["packages/akter", "apps/cli"])
+      writeFileSync(join(directory, manifest, "package.json"), '{"version":"0.2.0"}')
+    git(directory, "init", "--quiet", "--initial-branch=base")
+    git(directory, "add", ".")
+    git(directory, "commit", "--quiet", "-m", "base")
+    git(directory, "checkout", "--quiet", "-b", "rewrite")
+    git(directory, "commit", "--quiet", "--allow-empty", "-m", "rewrite")
+    const rewrite = git(directory, "rev-parse", "HEAD")
+    git(directory, "checkout", "--quiet", "base")
+    git(directory, "checkout", "--quiet", "-b", "trunk")
+    git(directory, "commit", "--quiet", "--allow-empty", "-m", "main")
+    const main = git(directory, "rev-parse", "HEAD")
+    git(directory, "update-ref", "refs/remotes/origin/rewrite/0.2", rewrite)
+    git(directory, "update-ref", "refs/remotes/origin/main", main)
+
+    const select_ = (commit: string, branch: string) => {
+      git(directory, "checkout", "--quiet", "--detach", commit)
+      const output = join(directory, "github-output")
+      writeFileSync(output, "")
+      const result = Bun.spawnSync(["bash", "-c", select], {
+        cwd: directory,
+        env: {
+          ...process.env,
+          CANARY: "true",
+          CANARY_BRANCH: branch,
+          GITHUB_SHA: commit,
+          GITHUB_OUTPUT: output,
+          RUNNER_TEMP: directory,
+          RELEASE_TAG: "",
+        },
+      })
+      return {
+        status: result.exitCode,
+        stdout: result.stdout.toString(),
+        output: readFileSync(output, "utf8"),
+      }
+    }
+
+    const published = select_(rewrite, "rewrite/0.2")
+    expect(published.status).toBe(0)
+    expect(published.output).toBe("tag=rewrite\npromote_latest=false\n")
+    expect(published.stdout).toContain("Publishing a rewrite canary")
+
+    const next = select_(main, "main")
+    expect(next.status).toBe(0)
+    expect(next.output).toBe("tag=next\npromote_latest=false\n")
+
+    for (const [commit, branch] of [
+      [main, "rewrite/0.2"],
+      [rewrite, "main"],
+      [rewrite, "feature/rewrite"],
+      [rewrite, ""],
+    ] as const) {
+      const refused = select_(commit, branch)
+      expect(refused.status).not.toBe(0)
+      expect(refused.output).toBe("")
+    }
+    expect(select_(main, "rewrite/0.2").stdout).toContain(`${main} is not on rewrite/0.2`)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+it("waits for the Verify run of the pushed commit and refuses a failed one", () => {
+  const wait = releaseWorkflow().script("Wait for a successful Verify run on the pushed commit")
+  const directory = mkdtempSync(join(tmpdir(), "akter-release-wait-"))
+  try {
+    git(directory, "init", "--quiet")
+    git(directory, "commit", "--quiet", "--allow-empty", "-m", "pushed")
+    writeFileSync(join(directory, "gh"), '#!/bin/sh\nprintf "%s" "$STUB_STATES"\n', { mode: 0o755 })
+    const run = (states: string) =>
+      Bun.spawnSync(["bash", "-c", wait], {
+        cwd: directory,
+        env: {
+          ...process.env,
+          PATH: `${directory}:${process.env.PATH}`,
+          STUB_STATES: states,
+          GITHUB_REPOSITORY: "Rika-Labs/akter",
+          CANARY_BRANCH: "rewrite/0.2",
+        },
+      })
+    expect(run("success\n").exitCode).toBe(0)
+    expect(run("failed\nsuccess\n").exitCode).toBe(0)
+    const failed = run("failed\n")
+    expect(failed.exitCode).toBe(1)
+    expect(failed.stderr.toString()).toContain("Verify did not succeed")
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+it("triggers a rewrite canary from pushes to rewrite/0.2 and keeps main and tags as they were", () => {
+  const { text } = releaseWorkflow()
+  const workflow = Bun.YAML.parse(text) as {
+    readonly on: {
+      readonly push: {
+        readonly tags: ReadonlyArray<string>
+        readonly branches: ReadonlyArray<string>
+      }
+      readonly workflow_run: { readonly branches: ReadonlyArray<string> }
+    }
+  }
+  expect(workflow.on.push.branches).toEqual(["rewrite/0.2"])
+  expect(workflow.on.push.tags).toEqual(["v*"])
+  expect(workflow.on.workflow_run.branches).toEqual(["main"])
+  expect(text).toContain('--canary-channel "$DIST_TAG"')
+  expect(text).toContain("if: steps.release.outputs.promote_latest == 'true'")
+  expect(text).toContain('npm publish "$package" --provenance --access public --tag "$DIST_TAG"')
+  expect(text).not.toContain("tag=next")
 })

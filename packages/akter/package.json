@@ -1,6 +1,6 @@
 {
   "name": "@rikalabs/akter",
-  "version": "0.1.0-alpha.6",
+  "version": "0.2.0",
   "description": "The framework for durable, stateful backends that power realtime apps, background work, and agents.",
   "keywords": [
     "actor-model",

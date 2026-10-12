@@ -21,7 +21,7 @@
     },
     "apps/cli": {
       "name": "@rikalabs/akter-cli",
-      "version": "0.1.0-alpha.6",
+      "version": "0.2.0",
       "bin": {
         "akter": "dist/main.js",
       },
@@ -57,7 +57,7 @@
     },
     "packages/akter": {
       "name": "@rikalabs/akter",
-      "version": "0.1.0-alpha.6",
+      "version": "0.2.0",
       "dependencies": {
         "@aws-sdk/client-s3": "3.1148.0",
         "@effect/platform-node-shared": "catalog:",
