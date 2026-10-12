@@ -17,6 +17,7 @@ Joined inspection views are checked by `tooling/conformance/src/conformance/insp
 
 Startup migration evidence lives in `runtime/database/migrations.test.ts`: six concurrent `Actors.layer` builds and six independent processes on fresh Postgres data/coordination databases, migration history and Cluster-table creation, and a 0032-to-0033 upgrade with rollback and restart. Existing transaction/schema and subprocess recovery suites cover interruption and rollback without a provider DDL journal. The public socket startup drill in `tooling/conformance/src/conformance/crash/drills/production.test.ts` uses local Postgres and real subprocesses; its nine scenarios passed in the [removal verification](neki-removal.md). Docker-based failover drills remain separate evidence.
 
+- [0.1 retirement map: each removed 0.1 test and conformance group and its 0.2 replacement or accepted removal](0.1-retirement.md)
 - [Failure matrix](02-failure-matrix.md)
 - [Reliability reproduction: full-suite non-reproduction and claim-deadline measurement](reliability-reproduction.md)
 - [Public environment API key contract and CLI evidence](environment-api-keys.md)
