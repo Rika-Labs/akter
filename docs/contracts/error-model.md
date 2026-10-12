@@ -1,46 +1,72 @@
 # Error model
 
-**Responsibility:** define errors across runtime, transports, and SDKs.  
-**Authority:** normative.  
-**Owner role:** API/runtime.  
-**Change policy:** error code changes require client compatibility review.
+Status: proposal (0.2), owned by ADR 0128; promoted when E1 (reasons and defects) and E4 (wire mapping) failure evidence lands, each section with its milestone.
 
-The framework MUST expose one tagged framework error:
+**Responsibility:** define framework errors, retry metadata, defects and their wire form.  
+**Authority:** normative target on `rewrite/0.2`.  
+**Owner role:** API and runtime.  
+**Change policy:** a reason or code change requires client compatibility review.
+
+## One framework error
+
+The framework MUST expose one tagged error:
 
 ```text
 ActorError {
-  reason: ActorUnavailable | MailboxFull | RunnerAtCapacity | Timeout |
-          CommandConflict | CommandExpired | InvalidCommandId | NotCreated |
-          Unauthorized | SessionEnded | InvalidInput | TransportError
+  reason: Unauthorized | InvalidInput | CommandExpired | InvalidCommandId |
+          ActorUnavailable | ShardMoved | Timeout | MailboxFull |
+          RunnerAtCapacity | QuotaExceeded | SessionEnded | TransportError
   isRetryable
   retryAfter
 }
 ```
 
-Effect programs may catch it with `catchTag("ActorError")` or branch with `catchReasons`. Declared application errors MUST remain their declared classes and MUST never be wrapped in `ActorError`. Method signatures MUST use `ActorError.Of<Reasons>` narrowed to the reasons they can actually produce; no framework reasons means `never`. `InvalidInput` and `TransportError` are boundary-only and MUST NOT appear in a typed in-process handle's error channel.
+- Declared application errors (an action's `fails`) MUST remain their declared classes and MUST NOT be wrapped in `ActorError`.
+- Client method signatures MUST use `ActorError.Of<Reasons>` narrowed to the reasons each member can produce. `SessionEnded` appears only on streaming members and `join`; `InvalidInput` and `TransportError` only on calls that cross a transport.
+- `CommandConflict` and `NotCreated` do not exist in 0.2.
 
-On pinned Effect `4.0.0`, `catchReasons` without an `orElse` retains the full `ActorError` in the error channel; do not claim exhaustive elimination without handling that remainder. Declared errors must be yieldable tagged errors; an error without `httpApiStatus` maps to HTTP 422.
+## Reasons
 
-`ActorUnavailable`, `MailboxFull`, `RunnerAtCapacity`, and `Timeout` are retryable according to `isRetryable` and SHOULD reuse the same command id. `CommandConflict`, `NotCreated`, `Unauthorized`, and `InvalidInput` are not retryable without changing caller input or credentials. A timeout means the turn may still commit. `Timeout.commandId` is present whenever an attempt carried a command id; a Promise client query that stops waiting reports `Timeout` without one.
+| Reason                                        | Meaning                                                                                                                                                        | Retry                                                                                                                           |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `Unauthorized { code }`                       | `missing_credentials`, `invalid_credentials`, `expired` (credentials); `access_denied`, `outcome_access_denied`, `reauthorization_unavailable` (authorization) | `reauthorization_unavailable` is retryable by reconnecting; the rest need new credentials or access                             |
+| `InvalidInput { code, issues? }`              | payload or parameters fail their schema; `issues` never carry offending values                                                                                 | no                                                                                                                              |
+| `CommandExpired { commandId }`                | the external id's `expiresAt` is at or before admission time                                                                                                   | no; never retried automatically with a new id                                                                                   |
+| `InvalidCommandId { commandId, code, now? }`  | `malformed`, `version`, `future` (with the owner's admission time `now`), `window`, `conflict`                                                                 | no; after `future` the same id MAY be resent once the client's clock passes `issuedAt`                                          |
+| `ActorUnavailable`                            | refused before execution under overload, or a retryable failure of an admitted action; the store unreachable                                                   | yes, same id, after `retryAfter`                                                                                                |
+| `ShardMoved`                                  | the shard is draining, handing off or was lost by this owner                                                                                                   | yes, same id, after `retryAfter`                                                                                                |
+| `Timeout { commandId? }`                      | the caller stopped waiting; the action may still become durable                                                                                                | yes, same id                                                                                                                    |
+| `MailboxFull`                                 | the actor's queue is full                                                                                                                                      | yes, same id, after `retryAfter`                                                                                                |
+| `RunnerAtCapacity`                            | the shard's committer inbox or the runner's residency limit is full                                                                                            | yes, same id, after `retryAfter`                                                                                                |
+| `QuotaExceeded { limit, retryAfter? }`        | a store or plan limit refused the request                                                                                                                      | only after `retryAfter`, when present                                                                                           |
+| `SessionEnded { cause, resync }`              | a stream or session ended: `ClientClosed`, `ServerClosed`, `SlowConsumer`, `OwnerMoved`, `ActorUnavailable`, `Defect` or `Terminated`                          | yes by resubscribing for `SlowConsumer`, `OwnerMoved` and `ActorUnavailable`; `resync` is true when values may have been missed |
+| `TransportError { code, status?, retrySafe }` | produced only by clients when no valid envelope arrived: `network`, `status`, `decode` or `defect`                                                             | when `retrySafe`                                                                                                                |
 
-`Unauthorized.code` MUST carry the stable credential code, accessed as `error.reason.code` when wrapped in `ActorError`. HTTP, WebSocket, Promise client, and Effect client mappings MUST preserve the reason, retry metadata, available command id/request id, and declared-error identity.
+- `isRetryable` MUST be true exactly for `ActorUnavailable`, `ShardMoved`, `Timeout`, `MailboxFull`, `RunnerAtCapacity`, retryable `SessionEnded` causes, `Unauthorized` code `reauthorization_unavailable`, `QuotaExceeded` with `retryAfter`, and `TransportError` with `retrySafe`.
+- `retryAfter` MUST be populated for `ActorUnavailable` (250 ms), `ShardMoved` (250 ms), `RunnerAtCapacity` (1,000 ms) and `MailboxFull` (100 ms), each jittered by ±50%. Clients MUST retry with the same command id, waiting from the error's own `retryAfter` and doubling up to the greater of 500 ms and that first wait.
+- An overload refusal MUST NOT be retried inside the runtime; it reaches the caller at once. A refusal before execution MUST have written nothing, so a retry under the same id runs the action at most once.
+- `Timeout`, `ActorUnavailable` after admission, and `TransportError` say nothing about whether the action became durable; only a same-id retry tells.
 
-[ADR 0007](../decisions/0007-foundation-command-protocol.md) implements the first embedded subset: `ActorUnavailable`, `CommandConflict`, `CommandExpired`, `InvalidCommandId`, and `Unauthorized`. [ADR 0008](../decisions/0008-foundation-completion.md) adds `Timeout`, `MailboxFull`, and `NotCreated`; these eight reasons form the current in-process framework error schema. `Timeout` is caller-side `policy.deliveryTimeout` expiry — an admitted turn may still commit — and `MailboxFull` reports a full entity mailbox under `policy.mailboxCapacity`. `NotCreated` fails a non-creating command on an uncreated actor gated by `createdBy`, without running the handler or writing a receipt. An earlier failed creating command may already have durable rows. `isRetryable` returns true for `ActorUnavailable`, `Timeout`, `MailboxFull`, and `RunnerAtCapacity`; `retryAfter` is populated for `ActorUnavailable`, `RunnerAtCapacity`, and `MailboxFull` (below).
+## Defects
 
-[ADR 0019](../decisions/0019-runner-capacity-and-pool-size.md) adds `RunnerAtCapacity`, making nine in-process reasons. It reports that the runner already holds `maxResidentActors` activations and could not start one for the command, so that delivery attempt was not admitted. The handle retries it with the same command id until an idle activation hibernates or `policy.deliveryTimeout` passes. When the timeout passes, the caller receives `RunnerAtCapacity` instead of `Timeout` if an attempt was rejected at capacity and the actor still has no resident activation. A turn runs only in a resident activation, so in that case the latest attempt wasn't admitted. Otherwise the caller receives `Timeout`. Neither says that an earlier attempt with the same id did not commit. In process, each retry of `ActorUnavailable` or `RunnerAtCapacity` waits from that error's own `retryAfter` (250 ms and 1,000 ms, ±50% jitter), doubling up to the greater of 500 ms and that first wait, so an embedded caller backs off like a served one. `MailboxFull` is reported only for an actor with a finite `policy.mailboxCapacity` whose activation is resident. An unbounded actor never reports it.
+Defects are not `ActorError` reasons. The caller observes a defect, its outcome is recorded, and no staged effect survives ([actions](02-actions.md)).
 
-[ADR 0077](../decisions/0077-admission-control.md) makes `ActorUnavailable` also the refusal of a command the runner cannot serve promptly: past `admission.concurrency` commands in flight and `admission.wait` in line for a slot, or past 1,024 commands held by an activation whose policy declares no `mailboxCapacity`. A refused command never reached a turn, so it wrote no receipt and its retry under the same command id runs it at most once. The overload marker survives runner RPCs but is omitted from the public envelope. Such a refusal is never retried inside the runtime, unlike other `ActorUnavailable` failures, so in-process callers and served clients see it at once and back off by its `retryAfter`. An HTTP actor command route is also refused before authentication while the runner is saturated or its command request handler limit is reached (`admission.requests`).
+| Defect                       | Raised when                                                                    |
+| ---------------------------- | ------------------------------------------------------------------------------ |
+| `SynchronousActionViolation` | an action or view handler returned a thenable, an `Effect`, or suspended       |
+| `StateTooLarge`              | an action's resulting state without lists exceeds 256 KiB                      |
+| `ReplayMismatch`             | a replayed action's outcome differs from its recorded outcome; the shard stops |
+| `PageCorrupt`                | a page's bytes do not match its key                                            |
+| decode failure               | stored state or a payload cannot be decoded by the running build               |
 
-`SessionEnded { cause, resync }` ends a connection or stream subscription ([ADR 0023](../decisions/0023-connections-parking-and-streams.md)). `cause` is `ClientClosed`, `ServerClosed`, `SlowConsumer`, `HolderShutdown`, `HolderLost`, `OwnerLost`, `ActivationEnded`, `ActorUnavailable`, `Defect`, or `Terminated`; `resync` is true when frames may have been missed and the client must resynchronize from state or events. `OwnerLost` ends a connection only when an in-place resync fails or is not acknowledged in time. It is retryable, by reconnecting or resubscribing, for `SlowConsumer`, `HolderShutdown`, `HolderLost`, `OwnerLost`, `ActivationEnded`, and `ActorUnavailable`. Revoked sessions end with `Unauthorized`, not `SessionEnded`: code `access_denied` on a denial, and the retryable `reauthorization_unavailable` when no check succeeded before the bound. `ActorError.Of` includes `SessionEnded` only on connection and stream members, never on commands, reducers, or queries. It is implemented with connections and streams (M2.10).
+## Internal errors
 
-`CommandExpired` and `InvalidCommandId` are terminal and carry the command ID; expiry must not cause automatic new-ID retries and says nothing about whether earlier work committed. `Unauthorized.code` additionally supports `access_denied` and `receipt_access_denied` for resource/receipt authorization, distinct from credential errors.
+`StaleEpoch`, `PageMiss`, `LogUnavailable` and `StorageUnavailable` MUST NOT reach clients: a lost shard surfaces as `ShardMoved`, `PageMiss` reruns the action, and an unreachable store surfaces as `ActorUnavailable`.
 
-Per-member `ActorError.Of` narrowing excludes `NotCreated` when the command creates the actor or no creation policy exists. It includes `MailboxFull` only with a finite `policy.mailboxCapacity`, and `Timeout` and `RunnerAtCapacity` on every command; queries start no activation and include neither. `InvalidInput` and `TransportError` remain boundary-only.
+## Wire form
 
-The reserved transport mappings are 410 for `CommandExpired`, 400 for `InvalidCommandId`, and 403 for these two authorization codes. HTTP, OpenAPI, and the Promise client came later (M3.2, M3.4) and use the same schemas; rolling-version compatibility is not implemented.
+Inside `/rpc`, a failure MUST travel in the RPC exit as the `ActorError` envelope (`reason` with its fields, `isRetryable`, `retryAfter` in milliseconds), as the declared error in its own schema encoding, or as an opaque defect. `ActorUnavailable` MUST NOT carry its internal cause on the wire. Refusals before the RPC handler use HTTP statuses ([protocol](protocol.md)) and also send `retry-after` in whole seconds, rounded up. Every mapping MUST preserve the reason, retry metadata, the command id when present, and declared-error identity.
 
-Deterministic defects are not `ActorError` reasons: the caller observes `Die` and no receipt commits, unless the handler catches the defect and the turn goes on to commit ([contract 02](02-command-turns.md)). The defect classes are state past `policy.maxStateBytes`, events emitted in one turn past the 1 MiB emit budget, blob writes past the 8 MiB entry cap, `policy.maxBlobBytes`, or `policy.maxBlobEntries`, state decode failure, and an internal command from a non-`System` caller. A query past `executionTimeout` fails with the retryable `Timeout` reason and an empty command id, since queries have none.
+## Verification
 
-[ADR 0027](../decisions/0027-served-protocol.md) specifies the served mapping. A failure body is an `ActorError` envelope with `reason`, `isRetryable`, and `retryAfter` in milliseconds, a declared error in its own schema encoding (status from `httpApiStatus`, else 422), or an opaque `Defect` (500). Statuses: `ActorUnavailable` and `RunnerAtCapacity` 503, `MailboxFull` 429, `Timeout` 504, `CommandConflict` 409, `CommandExpired` 410, `InvalidCommandId` 400, `NotCreated` 404, credential `Unauthorized` codes 401 and authorization codes 403, and `InvalidInput` 400, 404, 413, or 415. WebSocket and SSE sessions end with an `end` message carrying the envelope, and ADR 0027 lists the close codes. `Unauthorized.code` gains `missing_credentials`, `invalid_credentials`, and `expired` on served endpoints. `InvalidCommandId` gains `code` (`malformed`, `future`, `window`, or `version`). Every code stays terminal at admission (`isRetryable: false`, no future-clock grace); after `future` a client may resend the same, never-admitted id once `durable-now` passes its `issuedAt`, and it never mints a replacement. On the wire, `ActorUnavailable` never carries its `cause`, and `isRetryable` and `retryAfter` are computed fields. A feed that starts at an unknown or pruned cursor answers 404 `UnknownCursor` or 410 `RetentionGap`. `InvalidInput` carries `code` and optional schema `issues` without offending values; `TransportError`, produced only by clients when no valid envelope arrived, carries `code` (`network`, `status`, `decode`, or `defect`), an optional `status`, and whether a same-id retry is safe. `retryAfter` is populated for `ActorUnavailable` (250 ms), `RunnerAtCapacity` (1,000 ms), and `MailboxFull` (100 ms), each jittered, and is also sent as `retry-after` (whole seconds, rounded up). M3.2 implements the HTTP mapping; the handle's `ActorError.retryAfter` is the same computed value the envelope carries.
-
-`attach` on a content blob ([ADR 0034](../decisions/0034-tenant-scoped-content-addressed-blobs.md), accepted; built by M4.13) fails with the typed `InvalidContentRef` for a bare hash, another tenant's grant, or an expired grant. It is an application failure the command declares or handles, not an `ActorError` reason.
+Type tests for `ActorError.Of` narrowing per member; client conformance for each reason's retry behavior with the same command id; defect tests for each class with no surviving staged effect.

@@ -143,6 +143,22 @@
       "destination": "/cloud/database"
     },
     {
+      "source": "/contracts/02-command-turns",
+      "destination": "https://github.com/Rika-Labs/akter/blob/main/docs/contracts/02-actions.md"
+    },
+    {
+      "source": "/contracts/03-transactions",
+      "destination": "https://github.com/Rika-Labs/akter/blob/main/docs/contracts/03-durability.md"
+    },
+    {
+      "source": "/contracts/04-receipts",
+      "destination": "https://github.com/Rika-Labs/akter/blob/main/docs/contracts/03-durability.md"
+    },
+    {
+      "source": "/contracts/06-storage-ownership",
+      "destination": "https://github.com/Rika-Labs/akter/blob/main/docs/contracts/06-storage.md"
+    },
+    {
       "source": "/contracts/:slug*",
       "destination": "https://github.com/Rika-Labs/akter/blob/main/docs/contracts/:slug*.md"
     },

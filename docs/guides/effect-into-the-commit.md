@@ -9,7 +9,7 @@ description: "A command handler is an ordinary Effect that runs inside the trans
 **Responsibility:** show how a command handler is an ordinary Effect that runs inside the turn's transaction, and how Effect's types keep each capability in the phase where it is safe.  
 **Authority:** operational.  
 **Owner role:** API / SDK.  
-**Change policy:** change with the [context capabilities](../api/02-context.md) and [command turns](../contracts/02-command-turns.md) when a phase, capability, or rollback rule changes.
+**Change policy:** change with the [context capabilities](../api/02-context.md) and [command turns](../contracts/02-actions.md) when a phase, capability, or rollback rule changes.
 
 An Akter command handler is an Effect, and that Effect runs inside the database transaction that commits the turn. The same values that describe the handler's work (its typed errors, its required services, its composition) decide what commits, and there is no separate save step.
 
@@ -55,7 +55,7 @@ export const RoomCommands = Room.toLayer({
 
 When `Post` arrives, the runtime opens one transaction, checks the generation fence, records the receipt for the command id, decodes the room's state, and then runs this Effect with `Room.Turn` provided. `turn.state.set`, `turn.rows(messages).insert`, and `turn.emit` write through that transaction. When the Effect succeeds, the runtime writes the receipt's result and commits once. Nothing is visible to other readers until then.
 
-There is no save step to remember and no window where state is written but the event is not. A crash anywhere before `COMMIT` leaves nothing; a crash after it leaves everything, and the caller's retry finds the receipt. See [command turns](../contracts/02-command-turns.md) and [transactions](../contracts/03-transactions.md).
+There is no save step to remember and no window where state is written but the event is not. A crash anywhere before `COMMIT` leaves nothing; a crash after it leaves everything, and the caller's retry finds the receipt. See [command turns](../contracts/02-actions.md) and [transactions](../contracts/03-durability.md).
 
 ## Typed errors decide what commits
 

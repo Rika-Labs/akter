@@ -38,7 +38,7 @@ Tenants are rows, not databases. Every framework row and every owned-table row c
 
 A command runs as a **turn**: one database transaction that commits the handler's consequences and receipt together. Ordinary admission checks that this runner still owns the actor (the generation fence), finds the command's receipt, decodes state, then runs the handler. Eligible warm commands can compute first on cached committed state and send their fence, receipt check and writes in one flight; a failed check discards that computation and uses ordinary admission. The handler reads and stages writes through `yield* X.Turn`, a service that exists only for that turn.
 
-Everything the handler changes commits together or not at all: state, owned rows, events, blobs, the receipt, and the intents and jobs it staged. A declared failure rolls all of it back and commits only the failure in the receipt, so a retry replays the same failure. See [command turns](../contracts/02-command-turns.md) and [Effect all the way into the commit](effect-into-the-commit.md).
+Everything the handler changes commits together or not at all: state, owned rows, events, blobs, the receipt, and the intents and jobs it staged. A declared failure rolls all of it back and commits only the failure in the receipt, so a retry replays the same failure. See [command turns](../contracts/02-actions.md) and [Effect all the way into the commit](effect-into-the-commit.md).
 
 Turns are short. Ordinary turns hold the actor's database lock while their handler runs; warm speculation takes it only for the commit flight. `policy.executionTimeout` (30 seconds by default) bounds execution. **A handler can be evaluated more than once after rollback, a failed batch/group or stale warm speculation. It must not perform external effects: stage a job and let its executor perform them after commit.** Activation-local closure changes are not rolled back or exactly-once. Anything slow belongs in a job or a workflow.
 
@@ -46,7 +46,7 @@ Turns are short. Ordinary turns hold the actor's database lock while their handl
 
 Every command has a command id, minted once from the database clock and kept across retries. The receipt, written in the turn, is the only durable record that a command was accepted. When a caller retries with the same id, because a reply was lost or the runner restarted, the runtime finds the receipt and returns the recorded result without running the handler again.
 
-Commands are direct: the caller's handle sends the command to the actor's owner and waits for the reply, retrying with the same id until `policy.deliveryTimeout` (30 seconds by default). There is no durable queue of incoming commands. Work that must survive the caller crashing is staged by a turn as an intent, or run as a workflow. See [receipts](../contracts/04-receipts.md).
+Commands are direct: the caller's handle sends the command to the actor's owner and waits for the reply, retrying with the same id until `policy.deliveryTimeout` (30 seconds by default). There is no durable queue of incoming commands. Work that must survive the caller crashing is staged by a turn as an intent, or run as a workflow. See [receipts](../contracts/03-durability.md).
 
 ## State, tables, events, and blobs
 

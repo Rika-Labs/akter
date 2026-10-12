@@ -15,7 +15,7 @@ Startup pool exhaustion is exercised by `runtime/database/bounded.test.ts` (`ret
 
 The **Evidence** column names the conformance cases that prove each row; they run in the `Verify` workflow on every pull request and on `main`. A row with no proving case says "Unverified" or "Unsupported" with its reason.
 
-Unless a row exercises denial or expiry, external receipt replay assumes the original logical caller remains authorized and the command identity is unexpired. Trusted internal recovery retains its accepted-work authority; see [receipts](../contracts/04-receipts.md).
+Unless a row exercises denial or expiry, external receipt replay assumes the original logical caller remains authorized and the command identity is unexpired. Trusted internal recovery retains its accepted-work authority; see [receipts](../contracts/03-durability.md).
 
 The `warm fast path:` cases in `conformance/pipeline.ts` additionally require:
 
