@@ -957,6 +957,70 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "omits a failed clock refresh header without replacing a committed reply, its request id or browser headers",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const actors = yield* InternalActors
+          let available = true
+          const original = performance.now.bind(performance)
+          const descriptor = Object.getOwnPropertyDescriptor(performance, "now")
+          let shift = 0
+          yield* Effect.acquireRelease(
+            Effect.sync(() =>
+              Object.defineProperty(performance, "now", {
+                configurable: true,
+                value: () => original() + shift,
+              }),
+            ),
+            () =>
+              Effect.sync(() => {
+                if (descriptor === undefined) Reflect.deleteProperty(performance, "now")
+                else Object.defineProperty(performance, "now", descriptor)
+              }),
+          )
+          const origin = "https://clock-refresh.test"
+          const server = yield* serveHttp({ origins: [origin] }).pipe(
+            Effect.provideService(InternalActors, {
+              ...actors,
+              databaseNow: Effect.suspend(() =>
+                available
+                  ? actors.databaseNow
+                  : Effect.fail(
+                      ActorError.make({
+                        reason: ActorUnavailable.make({
+                          cause: new Error("Clock sampler unavailable"),
+                        }),
+                      }),
+                    ),
+              ),
+            }),
+          )
+          expect((yield* server.send("/protocol", { method: "GET" })).status).toBe(200)
+          const key = yield* actors.mintCommandId
+          const tenant = yield* tenantOf
+          const token = `${tenant}:alice`
+          shift += 155_000
+          available = false
+          const reply = yield* server.send("/actors/HttpRoom/clock-failure/Post", {
+            key,
+            token,
+            body: { text: "committed despite sample failure" },
+            headers: { origin },
+          })
+          expect(reply).toMatchObject({ status: 200, body: 1 })
+          expect(reply.headers.get("x-request-id")).toBe(key)
+          expect(reply.headers.get("access-control-allow-origin")).toBe(origin)
+          expect(reply.headers.get("durable-protocol")).toBe("1")
+          expect(reply.headers.get("durable-now")).toBe(null)
+          expect(yield* receipts(tenant, "HttpRoom", "clock-failure")).toBe(1)
+          const protocol = yield* server.send("/protocol", { method: "GET" })
+          expect(protocol.status).toBe(503)
+          expect(protocol.headers.get("durable-now")).toBe(null)
+        }),
+      ),
+  },
+  {
     name: "carries no ActorUnavailable cause over HTTP, and computes isRetryable and retryAfter on the wire",
     run: ({ expect, environment }) =>
       environment.run(

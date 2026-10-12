@@ -457,7 +457,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
 
         const timed = yield* clock.now.pipe(
           Effect.map((now) => HttpServerResponse.setHeader(response, "durable-now", String(now))),
-          Effect.catch((error) => actorErrorResponse(error)),
+          Effect.orElseSucceed(() => response),
         )
         const stamped = HttpServerResponse.setHeader(timed, "durable-protocol", String(PROTOCOL))
 

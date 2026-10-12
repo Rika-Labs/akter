@@ -70,7 +70,7 @@ it("discards a sample that spans suspension and resamples again instead of insta
     ),
   ))
 
-it("resamples at the one-minute age boundary even when both local clocks advance together", () =>
+it("does not add a database read to a request merely because the sample is one minute old", () =>
   Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
@@ -95,7 +95,7 @@ it("resamples at the one-minute age boundary even when both local clocks advance
         wall++
         database++
         expect(yield* clock.now).toBe(database)
-        expect(reads).toBe(2)
+        expect(reads).toBe(1)
       }),
     ),
   ))

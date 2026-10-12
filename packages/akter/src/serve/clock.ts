@@ -18,9 +18,10 @@ interface Sample {
 /**
  * The database clock without a database read per request: an offset from the
  * monotonic clock, resampled every 10 seconds, keeping the sample with the
- * shortest round trip. Wall-clock divergence or an old sample forces a new
- * database read before exposing time, because suspension can pause or reset
- * the monotonic clock without pausing the database.
+ * shortest round trip. Wall-clock divergence forces a new database read
+ * before exposing time, because suspension can pause or reset the monotonic
+ * clock without pausing the database. Sample age only affects the background
+ * refresh, so warm requests never wait for a merely old sample.
  */
 export const sampledDatabaseClock = Effect.fnUntraced(function* (
   databaseNow: Effect.Effect<number, ActorError>,
@@ -53,11 +54,10 @@ export const sampledDatabaseClock = Effect.fnUntraced(function* (
   let best: Sample = yield* sample.pipe(Effect.orDie)
   const sampling = Semaphore.makeUnsafe(1)
 
-  const stale = () => {
+  const discontinuous = () => {
     const elapsed = performance.now() - best.at
     return (
       elapsed < 0 ||
-      elapsed >= STALE_MS ||
       Math.abs(wallClock.currentTimeMillisUnsafe() - best.wall - elapsed) > DISCONTINUITY_MS
     )
   }
@@ -65,7 +65,8 @@ export const sampledDatabaseClock = Effect.fnUntraced(function* (
   const refresh = Effect.gen(function* () {
     const next = yield* sample
     if (
-      stale() ||
+      discontinuous() ||
+      next.at - best.at >= STALE_MS ||
       Math.abs(next.offset - best.offset) > DISCONTINUITY_MS + (next.rtt + best.rtt) / 2 ||
       next.rtt <= best.rtt
     )
@@ -81,8 +82,10 @@ export const sampledDatabaseClock = Effect.fnUntraced(function* (
   )
 
   const now = Effect.gen(function* () {
-    if (stale())
-      yield* Effect.suspend(() => (stale() ? refresh : Effect.void)).pipe(sampling.withPermits(1))
+    if (discontinuous())
+      yield* Effect.suspend(() => (discontinuous() ? refresh : Effect.void)).pipe(
+        sampling.withPermits(1),
+      )
     return Math.round(performance.now() + best.offset)
   })
 
