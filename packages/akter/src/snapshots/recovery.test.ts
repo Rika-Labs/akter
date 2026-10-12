@@ -5,9 +5,7 @@ import type { AnyActor } from "../contract/make.ts"
 import type { Catalog } from "../execution/durable.ts"
 import type { Implementation } from "../handlers/registry.ts"
 import { Simulation, SimulationService } from "../testing/index.ts"
-import { Builds } from "./build.ts"
 import { Recovery } from "./recovery.ts"
-import type { StoredSegment } from "./recovery.ts"
 
 const Tally = Actor.make("Tally", {
   state: Schema.Struct({
@@ -44,24 +42,19 @@ const handlers = (step: number) =>
     },
   })
 
-const catalogOf = <Name extends string>(actor: AnyActor, layer: Layer.Layer<Implementation<Name>>, shards: number) =>
+const catalogOf = <Name extends string>(
+  actor: AnyActor,
+  layer: Layer.Layer<Implementation<Name>>,
+  shards: number,
+) =>
   Effect.map(Layer.build(layer), (context): Catalog => ({
-    actors: new Map([[actor.name, { actor, registered: Context.get(context, actor.implementation) }]]),
+    actors: new Map([
+      [actor.name, { actor, registered: Context.get(context, actor.implementation) }],
+    ]),
     shards,
   }))
 
-interface ShardLog {
-  readonly shard: number
-  readonly checkpoints: ReadonlyArray<StoredSegment>
-  readonly segments: ReadonlyArray<StoredSegment>
-}
-
-const logs = Effect.gen(function* () {
-  const simulator = yield* SimulationService
-  return yield* Effect.forEach(Array.from({ length: simulator.catalog.shards }, (_, shard) => shard), (shard) =>
-    Effect.map(simulator.engine.log.read(shard), (content): ShardLog => ({ shard, ...content })),
-  )
-})
+const logs = Effect.flatMap(SimulationService, (simulator) => simulator.logs)
 
 const fingerprints = Effect.map(SimulationService, (simulator) =>
   Array.from({ length: simulator.catalog.shards }, (_, shard) => {
@@ -91,16 +84,27 @@ describe("Recovery", () => {
         const before = yield* fingerprints
         const stored = yield* logs
         expect(
-          stored.some((log) => (log.checkpoints.at(-1)?.offset ?? Infinity) < (log.segments.at(-1)?.offset ?? -1)),
+          stored.some(
+            (log) =>
+              (log.checkpoints.at(-1)?.offset ?? Infinity) <
+              Number(log.segments.at(-1)?.offset ?? -1n),
+          ),
         ).toBe(true)
         const simulator = yield* SimulationService
         const images = [simulator.engine.durableImage(0), simulator.engine.durableImage(1)]
         yield* Simulation.crash()
         yield* Effect.forEach(["a", "b"], (id) => Simulation.state(Tally, id))
-        expect([simulator.engine.durableImage(0), simulator.engine.durableImage(1)].map((image, shard) => image === images[shard])).toEqual([false, false])
+        expect(
+          [simulator.engine.durableImage(0), simulator.engine.durableImage(1)].map(
+            (image, shard) => image === images[shard],
+          ),
+        ).toEqual([false, false])
         expect(yield* fingerprints).toEqual(before)
         yield* Simulation.advance("1 day")
-        const [a, b] = yield* Effect.all([Simulation.state(Tally, "a"), Simulation.state(Tally, "b")])
+        const [a, b] = yield* Effect.all([
+          Simulation.state(Tally, "a"),
+          Simulation.state(Tally, "b"),
+        ])
         expect([a.total, a.notes, b.total, b.notes]).toEqual([6, ["later", "tick"], 10, ["tick"]])
       }).pipe(Effect.scoped),
       handlers(1),
@@ -117,11 +121,13 @@ describe("Recovery", () => {
         if (log === undefined) return yield* Effect.die(new Error("no log"))
         const live = simulator.engine.durableImage(0)
         if (live === undefined) return yield* Effect.die(new Error("shard closed"))
-        const build = Builds.current("simulation")
+        const build = simulator.build
         const same = yield* catalogOf(Tally, handlers(1), 1)
         const changed = yield* catalogOf(Tally, handlers(2), 1)
         const replayed = Recovery.recover(same, 0, undefined, log.segments, build, "matching")
-        expect(Result.isSuccess(replayed) && Recovery.fingerprint(replayed.success)).toBe(Recovery.fingerprint(live))
+        expect(Result.isSuccess(replayed) && Recovery.fingerprint(replayed.success)).toBe(
+          Recovery.fingerprint(live),
+        )
         const refused = Recovery.recover(changed, 0, undefined, log.segments, build, "matching")
         expect(Result.isFailure(refused) && refused.failure._tag).toBe("ReplayMismatch")
       }).pipe(Effect.scoped),
@@ -134,17 +140,23 @@ describe("Recovery", () => {
       Effect.gen(function* () {
         yield* workload
         yield* Simulation.settle
+        const simulator = yield* SimulationService
         const [log] = yield* logs
         if (log === undefined) return yield* Effect.die(new Error("no log"))
         const catalog = yield* catalogOf(Tally, handlers(1), 1)
-        const other = Builds.current("another application")
+        const other = { ...simulator.build, bundle: "another application" }
         const matching = Recovery.recover(catalog, 0, undefined, log.segments, other, "matching")
         expect(Result.isFailure(matching) && matching.failure._tag).toBe("BuildMismatch")
-        expect(Result.isSuccess(Recovery.recover(catalog, 0, undefined, log.segments, other, "current"))).toBe(true)
+        expect(
+          Result.isSuccess(Recovery.recover(catalog, 0, undefined, log.segments, other, "current")),
+        ).toBe(true)
+        const first = log.segments.findIndex((segment) => segment.entries.length > 0)
         const corrupt = log.segments.map((segment, index) =>
-          index === 0 ? { offset: segment.offset, bytes: segment.bytes.slice(1) } : segment,
+          index === first
+            ? { ...segment, entries: segment.entries.map((bytes) => bytes.slice(1)) }
+            : segment,
         )
-        const broken = Recovery.recover(catalog, 0, undefined, corrupt, Builds.current("simulation"), "matching")
+        const broken = Recovery.recover(catalog, 0, undefined, corrupt, simulator.build, "matching")
         expect(Result.isFailure(broken) && broken.failure._tag).toBe("CorruptLog")
       }).pipe(Effect.scoped),
       handlers(1),

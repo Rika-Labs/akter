@@ -3,7 +3,7 @@ import { Caller } from "../contract/caller.ts"
 import { Actions } from "../execution/action.ts"
 import { Durable } from "../execution/durable.ts"
 import type { Catalog, ClientRecord, ShardImage } from "../execution/durable.ts"
-import { Build, Outcome, Send, Timer, formatVersion } from "../execution/entries.ts"
+import { Outcome, Send, Timer, formatVersion } from "../execution/entries.ts"
 import { Layouts } from "../execution/layout.ts"
 import { Lists } from "../handlers/lists.ts"
 
@@ -22,7 +22,6 @@ const Snapshot = Schema.Struct({
  */
 export const Checkpoint = Schema.Struct({
   format: Schema.Literal(formatVersion),
-  build: Build,
   shard: Schema.Int,
   offset: Schema.Int,
   lastAt: Schema.Finite,
@@ -80,9 +79,8 @@ const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
 /** Captures a shard image as a checkpoint. */
-const capture = (image: ShardImage, build: Build): Checkpoint => ({
+const capture = (image: ShardImage): Checkpoint => ({
   format: formatVersion,
-  build,
   shard: image.shard,
   offset: image.offset,
   lastAt: image.lastAt,
@@ -95,7 +93,9 @@ const capture = (image: ShardImage, build: Build): Checkpoint => ({
       state: { ...record.image.encoded },
       lists: Array.from(layout.lists, ([field, list]) => ({
         field,
-        items: Lists.all(record.image.lists.get(field) ?? Lists.empty, list.ordering).map(list.item.encode),
+        items: Lists.all(record.image.lists.get(field) ?? Lists.empty, list.ordering).map(
+          list.item.encode,
+        ),
       })),
     }
   }),
@@ -106,13 +106,15 @@ const capture = (image: ShardImage, build: Build): Checkpoint => ({
     outcomes: Array.from(outcomes, ([commandId, outcome]) => ({ commandId, outcome })),
   })),
   timers: Array.from(image.timers.values()),
-  outbox: Array.from(image.outbox.values()).flat().map((pending) => ({
-    stream: pending.stream,
-    sequence: pending.sequence,
-    send: pending.send,
-    ref: pending.ref,
-    onBehalfOf: pending.onBehalfOf,
-  })),
+  outbox: Array.from(image.outbox.values())
+    .flat()
+    .map((pending) => ({
+      stream: pending.stream,
+      sequence: pending.sequence,
+      send: pending.send,
+      ref: pending.ref,
+      onBehalfOf: pending.onBehalfOf,
+    })),
   sequences: Array.from(image.sequences, ([stream, next]) => ({ stream, next })),
   jobs: Array.from(image.jobs.values(), (job) => ({
     jobId: job.jobId,
@@ -176,6 +178,8 @@ const restore = (catalog: Catalog, checkpoint: Checkpoint): ShardImage => {
 export const Checkpoints = {
   capture,
   restore,
-  encode: (checkpoint: Checkpoint): Uint8Array => encoder.encode(Result.getOrThrow(encodeText(checkpoint))),
-  decode: (bytes: Uint8Array): Result.Result<Checkpoint, Schema.SchemaError> => decodeText(decoder.decode(bytes)),
+  encode: (checkpoint: Checkpoint): Uint8Array =>
+    encoder.encode(Result.getOrThrow(encodeText(checkpoint))),
+  decode: (bytes: Uint8Array): Result.Result<Checkpoint, Schema.SchemaError> =>
+    decodeText(decoder.decode(bytes)),
 }

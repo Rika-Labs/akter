@@ -15,7 +15,9 @@ const Account = Actor.make("Account", {
   state: Schema.Struct({
     balance: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
     frozen: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
-    held: Schema.Record(Schema.String, Schema.Finite).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+    held: Schema.Record(Schema.String, Schema.Finite).pipe(
+      Schema.withDecodingDefault(Effect.succeed({})),
+    ),
     settled: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
     refunded: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
@@ -26,10 +28,13 @@ const Account = Actor.make("Account", {
       success: Schema.String,
       fails: InsufficientFunds,
     }),
-    credit: Actor.action(Schema.Struct({ transferId: Schema.String, from: Schema.String, amount: Schema.Finite }), {
-      fails: Frozen,
-      internal: true,
-    }),
+    credit: Actor.action(
+      Schema.Struct({ transferId: Schema.String, from: Schema.String, amount: Schema.Finite }),
+      {
+        fails: Frozen,
+        internal: true,
+      },
+    ),
     settle: Actor.action(Schema.String, { internal: true }),
     expire: Actor.action(Schema.String, { internal: true }),
   },
@@ -43,7 +48,8 @@ const AccountLive = Account.toLayer({
     account.frozen = true
   },
   transfer: (account, { to, amount }, { self, id, send, schedule }) => {
-    if (account.balance < amount) return InsufficientFunds.make({ balance: account.balance, requested: amount })
+    if (account.balance < amount)
+      return InsufficientFunds.make({ balance: account.balance, requested: amount })
     const transferId = id()
     account.balance -= amount
     account.held[transferId] = amount
@@ -84,7 +90,9 @@ const Outbox = Actor.make("Outbox", {
     pending: Actor.list(Envelope, { key: "id", by: "at" }),
   }),
   actions: {
-    enqueue: Actor.action(Schema.Struct({ to: Schema.String, body: Schema.String }), { success: Schema.String }),
+    enqueue: Actor.action(Schema.Struct({ to: Schema.String, body: Schema.String }), {
+      success: Schema.String,
+    }),
     delivered: Actor.action(Schema.String, { internal: true }),
     deadLetter: Actor.action(JobFailure, { internal: true }),
   },
@@ -99,14 +107,18 @@ const Outbox = Actor.make("Outbox", {
   },
 })
 
-class WebhookError extends Schema.TaggedError<WebhookError>()("WebhookError", { status: Schema.Finite }) {}
+class WebhookError extends Schema.TaggedError<WebhookError>()("WebhookError", {
+  status: Schema.Finite,
+}) {}
 
 interface WebhookApi {
   readonly reserve: (envelope: Envelope) => Effect.Effect<string>
   readonly post: (envelope: Envelope, reservation: string) => Effect.Effect<number, WebhookError>
 }
 
-class Webhook extends Context.Service<Webhook, WebhookApi>()("@rikalabs/akter/testing/simulation.test/Webhook") {}
+class Webhook extends Context.Service<Webhook, WebhookApi>()(
+  "@rikalabs/akter/testing/simulation.test/Webhook",
+) {}
 
 const OutboxLive = Outbox.toLayer({
   enqueue: (outbox, { to, body }, { id, now, start }) => {
@@ -161,7 +173,8 @@ const webhookStub = () => {
           const failures = seen.get(envelope.id) ?? 0
           seen.set(envelope.id, failures + 1)
           if (envelope.to.startsWith("down:")) return yield* WebhookError.make({ status: 503 })
-          if (envelope.to.startsWith("flaky:") && failures < 2) return yield* WebhookError.make({ status: 502 })
+          if (envelope.to.startsWith("flaky:") && failures < 2)
+            return yield* WebhookError.make({ status: 502 })
           return 200
         }),
     }),
@@ -188,7 +201,9 @@ const Agent = Actor.make("Agent", {
   }),
   actions: {
     ask: Actor.action(Schema.String, { fails: Busy, success: Schema.String }),
-    answer: Actor.action(Schema.Struct({ askId: Schema.String, text: Schema.String }), { internal: true }),
+    answer: Actor.action(Schema.Struct({ askId: Schema.String, text: Schema.String }), {
+      internal: true,
+    }),
     failed: Actor.action(JobFailure, { internal: true }),
   },
   events: { token: Actor.event(Schema.String) },
@@ -202,13 +217,17 @@ const Agent = Actor.make("Agent", {
   },
 })
 
-class ModelError extends Schema.TaggedError<ModelError>()("ModelError", { message: Schema.String }) {}
+class ModelError extends Schema.TaggedError<ModelError>()("ModelError", {
+  message: Schema.String,
+}) {}
 
 interface ModelApi {
   readonly stream: (prompt: string) => Stream.Stream<string, ModelError>
 }
 
-class Model extends Context.Service<Model, ModelApi>()("@rikalabs/akter/testing/simulation.test/Model") {}
+class Model extends Context.Service<Model, ModelApi>()(
+  "@rikalabs/akter/testing/simulation.test/Model",
+) {}
 
 const AgentLive = Agent.toLayer({
   ask: (agent, prompt, { id, now, start }) => {
@@ -252,10 +271,16 @@ const ModelStub = Layer.sync(Model, () => {
       Stream.suspend(() => {
         if (prompt.includes("flaky") && !seen.has(prompt)) {
           seen.add(prompt)
-          return Stream.concat(Stream.make("par", "tial "), Stream.fail(ModelError.make({ message: "connection reset" })))
+          return Stream.concat(
+            Stream.make("par", "tial "),
+            Stream.fail(ModelError.make({ message: "connection reset" })),
+          )
         }
-        if (prompt.includes("broken")) return Stream.fail(ModelError.make({ message: "model unavailable" }))
-        const words = `You asked: ${prompt}`.split(" ").map((word, index) => (index === 0 ? word : ` ${word}`))
+        if (prompt.includes("broken"))
+          return Stream.fail(ModelError.make({ message: "model unavailable" }))
+        const words = `You asked: ${prompt}`
+          .split(" ")
+          .map((word, index) => (index === 0 ? word : ` ${word}`))
         return Stream.fromIterable(words).pipe(Stream.tap(() => Effect.sleep("2 millis")))
       }),
   })
@@ -270,7 +295,10 @@ class Message extends Schema.Class<Message>("Message")({
   at: Schema.Finite,
 }) {}
 
-class Summary extends Schema.Class<Summary>("Summary")({ title: Schema.String, online: Schema.Finite }) {}
+class Summary extends Schema.Class<Summary>("Summary")({
+  title: Schema.String,
+  online: Schema.Finite,
+}) {}
 
 class Forbidden extends Schema.TaggedError<Forbidden>()("Forbidden", { reason: Schema.String }) {}
 
@@ -281,7 +309,9 @@ const Room = Actor.make("Room", {
   state: Schema.Struct({
     title: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
     admins: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
-    online: Schema.Record(Schema.String, Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+    online: Schema.Record(Schema.String, Schema.String).pipe(
+      Schema.withDecodingDefault(Effect.succeed({})),
+    ),
     posts: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
     topic: Schema.optional(Schema.String),
     messages: Actor.list(Message, { key: "id", by: "at" }),
@@ -315,7 +345,9 @@ interface MailerApi {
   readonly send: (email: Email) => Effect.Effect<void>
 }
 
-class Mailer extends Context.Service<Mailer, MailerApi>()("@rikalabs/akter/testing/simulation.test/Mailer") {}
+class Mailer extends Context.Service<Mailer, MailerApi>()(
+  "@rikalabs/akter/testing/simulation.test/Mailer",
+) {}
 
 const RoomLive = Room.toLayer({
   claim: (room, _, { caller }) => {
@@ -326,7 +358,8 @@ const RoomLive = Room.toLayer({
     room.messages.put(Message.make({ id: messageId, author: caller.subject, body, at: now() }))
     room.posts += 1
     const mention = /^@(\S+)/.exec(body)?.[1]
-    if (mention !== undefined) start.notify(Email.make({ to: mention, subject: room.title }), { key: messageId })
+    if (mention !== undefined)
+      start.notify(Email.make({ to: mention, subject: room.title }), { key: messageId })
   },
   rename: (room, title, { caller }) => {
     if (!room.admins.includes(caller.subject)) return Forbidden.make({ reason: "admins only" })
@@ -344,7 +377,14 @@ const RoomLive = Room.toLayer({
     room.messages.deleteBefore(now() - 30 * 86_400_000)
   },
   notifyFailed: (room, failure) => {
-    room.messages.put(Message.make({ id: failure.job, author: "system", body: `notify failed: ${failure.cause}`, at: 0 }))
+    room.messages.put(
+      Message.make({
+        id: failure.job,
+        author: "system",
+        body: `notify failed: ${failure.cause}`,
+        at: 0,
+      }),
+    )
   },
   summary: (room) => Summary.make({ title: room.title, online: Object.keys(room.online).length }),
   connect: (room, { name }, { connection }) => {
@@ -383,7 +423,12 @@ describe("Simulation examples", () => {
         ])
         expect(transferId).toMatch(/^[0-9a-f-]{36}$/)
         expect(tooMuch).toEqual(InsufficientFunds.make({ balance: 70, requested: 500 }))
-        expect([after.balance, after.settled, after.refunded, Object.keys(after.held)]).toEqual([70, 1, 1, []])
+        expect([after.balance, after.settled, after.refunded, Object.keys(after.held)]).toEqual([
+          70,
+          1,
+          1,
+          [],
+        ])
         expect([bobAfter.balance, carolAfter.balance]).toEqual([30, 0])
       }).pipe(Effect.scoped),
       AccountLive,
@@ -395,7 +440,8 @@ describe("Simulation examples", () => {
       { actors: [Outbox], seed: 2 },
       Effect.gen(function* () {
         const box = yield* Outbox.client("tenant-1")
-        for (const to of ["a@x", "b@x", "c@x", "flaky:d@x", "flaky:e@x", "down:f@x"]) yield* box.enqueue({ to, body: "hi" })
+        for (const to of ["a@x", "b@x", "c@x", "flaky:d@x", "flaky:e@x", "down:f@x"])
+          yield* box.enqueue({ to, body: "hi" })
         yield* Simulation.settle
         const state = yield* Simulation.state(Outbox, "tenant-1")
         expect([state.sent, state.dead.length, state.pending.length]).toEqual([5, 1, 0])
@@ -451,7 +497,9 @@ describe("Simulation examples", () => {
     const visit = Effect.gen(function* () {
       const lobby = yield* Room.client(lobbyId)
       const watcher = yield* lobby.state.pipe(
-        Stream.takeUntil((state) => state.title === "Lobby" && state.posts >= 2 && state.topic === undefined),
+        Stream.takeUntil(
+          (state) => state.title === "Lobby" && state.posts >= 2 && state.topic === undefined,
+        ),
         Stream.runCollect,
         Effect.forkChild,
       )
@@ -480,7 +528,9 @@ describe("Simulation examples", () => {
       Effect.gen(function* () {
         const watchers = yield* Effect.gen(function* () {
           const lobby = yield* Room.client(lobbyId)
-          const typing = yield* Effect.forkChild(lobby.typing.pipe(Stream.take(1), Stream.runCollect))
+          const typing = yield* Effect.forkChild(
+            lobby.typing.pipe(Stream.take(1), Stream.runCollect),
+          )
           const summaries = yield* Effect.forkChild(
             lobby.summary().pipe(
               Stream.takeUntil((summary) => summary.title === "Lobby"),
@@ -495,7 +545,12 @@ describe("Simulation examples", () => {
         expect(seen.frames.some((frame) => Object.values(frame.online).includes("Ana"))).toBe(true)
         expect(seen.frames.some((frame) => frame.topic === "introductions")).toBe(true)
         expect(seen.frames.at(-1)?.topic).toBeUndefined()
-        expect([seen.online, seen.newest, seen.lobbies, seen.withTopic]).toEqual([1, ["second message"], [lobbyId], []])
+        expect([seen.online, seen.newest, seen.lobbies, seen.withTopic]).toEqual([
+          1,
+          ["second message"],
+          [lobbyId],
+          [],
+        ])
         yield* Simulation.settle
         expect(Object.keys((yield* Simulation.state(Room, lobbyId)).online)).toEqual([])
 
@@ -506,23 +561,27 @@ describe("Simulation examples", () => {
         }).pipe(Effect.scoped, Simulation.as(bob))
         expect(refused).toEqual(Forbidden.make({ reason: "admins only" }))
         expect([...(yield* Fiber.join(watchers.typing))]).toEqual(["bob"])
-        expect([...(yield* Fiber.join(watchers.summaries))].at(-1)).toEqual(Summary.make({ title: "Lobby", online: 1 }))
-
-        const denied = yield* Effect.flatMap(Room.client(lobbyId), (lobby) => Effect.flip(lobby.post("hi"))).pipe(
-          Effect.scoped,
-          Simulation.as(anonymous),
+        expect([...(yield* Fiber.join(watchers.summaries))].at(-1)).toEqual(
+          Summary.make({ title: "Lobby", online: 1 }),
         )
-        expect(denied).toEqual(ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) }))
 
-        yield* Effect.flatMap(Room.client(lobbyId), (lobby) => lobby.post("@carol see the new title")).pipe(
-          Effect.scoped,
-          Simulation.as(ana),
+        const denied = yield* Effect.flatMap(Room.client(lobbyId), (lobby) =>
+          Effect.flip(lobby.post("hi")),
+        ).pipe(Effect.scoped, Simulation.as(anonymous))
+        expect(denied).toEqual(
+          ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) }),
         )
+
+        yield* Effect.flatMap(Room.client(lobbyId), (lobby) =>
+          lobby.post("@carol see the new title"),
+        ).pipe(Effect.scoped, Simulation.as(ana))
         yield* Simulation.settle
         const beforePrune = yield* Simulation.state(Room, lobbyId)
         expect(mailed).toEqual(["carol"])
         expect(beforePrune.messages.map((message) => message.body)).toContain("sent mail to carol")
-        expect(beforePrune.messages.find((message) => message.body === "sent mail to carol")?.author).toMatch(/^job:/)
+        expect(
+          beforePrune.messages.find((message) => message.body === "sent mail to carol")?.author,
+        ).toMatch(/^job:/)
         yield* Simulation.advance("31 days")
         expect((yield* Simulation.state(Room, lobbyId)).messages).toEqual([])
       }).pipe(Effect.scoped),
@@ -599,7 +658,9 @@ const Ledger = Actor.make("Ledger", {
     audits: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
   actions: {
-    transfer: Actor.action(Schema.Struct({ to: Schema.String, amount: Schema.Finite }), { fails: InsufficientFunds }),
+    transfer: Actor.action(Schema.Struct({ to: Schema.String, amount: Schema.Finite }), {
+      fails: InsufficientFunds,
+    }),
     credit: Actor.action(Schema.Finite, { internal: true }),
     audit: Actor.action({ internal: true }),
   },
@@ -607,7 +668,8 @@ const Ledger = Actor.make("Ledger", {
 
 const LedgerLive = Ledger.toLayer({
   transfer: (ledger, { to, amount }, { send, schedule }) => {
-    if (ledger.balance < amount) return InsufficientFunds.make({ balance: ledger.balance, requested: amount })
+    if (ledger.balance < amount)
+      return InsufficientFunds.make({ balance: ledger.balance, requested: amount })
     ledger.balance -= amount
     ledger.sent += 1
     send(Ledger, to).credit(amount)
@@ -634,7 +696,11 @@ interface LedgerRun {
   readonly unknown: number
   readonly crashes: number
   readonly lostResponses: number
+  readonly outages: number
+  readonly log: ReadonlyArray<string>
 }
+
+const text = new TextDecoder()
 
 /**
  * Twelve concurrent transfers among five accounts under crashes, lost responses, a slow log and an
@@ -645,7 +711,11 @@ interface LedgerRun {
  */
 const ledgerRun = (run: number): Promise<LedgerRun> =>
   Simulation.run(
-    { actors: [Ledger], seed: SIMULATION_SEED_BASE + run, faults: ["crash", "lostResponse", "slowLog"] },
+    {
+      actors: [Ledger],
+      seed: SIMULATION_SEED_BASE + run,
+      faults: ["crash", "lostResponse", "unavailable", "slowLog"],
+    },
     Effect.gen(function* () {
       yield* Effect.forEach(holders, (id) => Simulation.seed(Ledger, id, { balance: 100 }))
       const crashed = yield* Effect.forkChild(Effect.andThen(Effect.yieldNow, Simulation.crash()))
@@ -653,18 +723,35 @@ const ledgerRun = (run: number): Promise<LedgerRun> =>
         Array.from({ length: 12 }, (_, index) => index),
         (index) =>
           Effect.flatMap(Ledger.client(holders[index % 5] ?? "a"), (ledger) =>
-            Effect.exit(ledger.transfer({ to: holders[(index * 3 + 1) % 5] ?? "b", amount: 15 + index * 6 })),
+            Effect.exit(
+              ledger.transfer({ to: holders[(index * 3 + 1) % 5] ?? "b", amount: 15 + index * 6 }),
+            ),
           ),
         { concurrency: "unbounded" },
       )
       yield* Fiber.join(crashed)
       yield* Simulation.settle
       const states = yield* Effect.forEach(holders, (id) => Simulation.state(Ledger, id))
-      const failures = outcomes.flatMap((outcome) => (Exit.isFailure(outcome) ? [Cause.pretty(outcome.cause)] : []))
-      const { crashes, lostResponses } = (yield* SimulationService).memory.stats()
+      const failures = outcomes.flatMap((outcome) =>
+        Exit.isFailure(outcome) ? [Cause.pretty(outcome.cause)] : [],
+      )
+      const simulator = yield* SimulationService
+      const { crashes, lostResponses, outages } = simulator.bucket.counts()
+      const logs = yield* simulator.logs
       return {
+        log: logs.flatMap((log) => [
+          ...log.segments.map(
+            (segment) =>
+              `${log.shard} log ${segment.offset} open ${segment.open}: ${segment.entries.map((entry) => text.decode(entry)).join(" | ")}`,
+          ),
+          ...log.checkpoints.map(
+            (checkpoint) =>
+              `${log.shard} checkpoint ${checkpoint.offset}: ${text.decode(checkpoint.bytes)}`,
+          ),
+        ]),
         crashes,
         lostResponses,
+        outages,
         money: states.reduce((sum, state) => sum + state.balance, 0),
         sent: states.reduce((sum, state) => sum + state.sent, 0),
         received: states.reduce((sum, state) => sum + state.received, 0),
@@ -683,31 +770,60 @@ interface FaultsSeen {
   readonly refused: number
   readonly crashes: number
   readonly lostResponses: number
+  readonly outages: number
 }
 
 describe("seed matrix", () => {
-  it(`conserves money and delivers every send and timer exactly once across ${seedRuns} faulted seeds`, () =>
-    Array.from({ length: seedRuns }, (_, run) => run).reduce<Promise<FaultsSeen>>(
-      (previous, run) =>
-        previous.then((seen) =>
-          ledgerRun(run).then((totals) => {
-            const seed = `Simulation seed ${SIMULATION_SEED_BASE + run} (run ${run})`
-            expect(totals.money, seed).toBe(500)
-            expect(totals.received, seed).toBe(totals.sent)
-            expect(totals.audits, seed).toBe(totals.sent)
-            expect(totals.sent, seed).toBeGreaterThanOrEqual(totals.succeeded)
-            expect(totals.sent, seed).toBeLessThanOrEqual(totals.succeeded + totals.unknown)
-            return {
-              refused: seen.refused + totals.refused,
-              crashes: seen.crashes + totals.crashes,
-              lostResponses: seen.lostResponses + totals.lostResponses,
-            }
-          }),
-        ),
-      Promise.resolve({ refused: 0, crashes: 0, lostResponses: 0 }),
-    ).then((seen) => {
-      expect(seen.refused).toBeGreaterThan(0)
-      expect(seen.crashes).toBeGreaterThan(0)
-      expect(seen.lostResponses).toBeGreaterThan(0)
-    }), 300_000)
+  it(
+    `conserves money and delivers every send and timer exactly once across ${seedRuns} faulted seeds`,
+    () =>
+      Array.from({ length: seedRuns }, (_, run) => run)
+        .reduce<Promise<FaultsSeen>>(
+          (previous, run) =>
+            previous.then((seen) =>
+              ledgerRun(run).then((totals) => {
+                const seed = `Simulation seed ${SIMULATION_SEED_BASE + run} (run ${run})`
+                expect(totals.money, seed).toBe(500)
+                expect(totals.received, seed).toBe(totals.sent)
+                expect(totals.audits, seed).toBe(totals.sent)
+                expect(totals.sent, seed).toBeGreaterThanOrEqual(totals.succeeded)
+                expect(totals.sent, seed).toBeLessThanOrEqual(totals.succeeded + totals.unknown)
+                return {
+                  refused: seen.refused + totals.refused,
+                  crashes: seen.crashes + totals.crashes,
+                  lostResponses: seen.lostResponses + totals.lostResponses,
+                  outages: seen.outages + totals.outages,
+                }
+              }),
+            ),
+          Promise.resolve({ refused: 0, crashes: 0, lostResponses: 0, outages: 0 }),
+        )
+        .then((seen) => {
+          expect(seen.refused).toBeGreaterThan(0)
+          expect(seen.crashes).toBeGreaterThan(0)
+          expect(seen.lostResponses).toBeGreaterThan(0)
+          expect(seen.outages).toBeGreaterThan(0)
+        }),
+    300_000,
+  )
+
+  it(
+    "replays a seed exactly: two runs of the same seed write the same log and checkpoints",
+    () =>
+      Array.from({ length: 50 }, (_, run) => run).reduce<Promise<void>>(
+        (previous, run) =>
+          previous.then(() =>
+            ledgerRun(run).then((first) =>
+              ledgerRun(run).then((second) => {
+                expect(
+                  second,
+                  `Simulation seed ${SIMULATION_SEED_BASE + run} (run ${run})`,
+                ).toEqual(first)
+              }),
+            ),
+          ),
+        Promise.resolve(),
+      ),
+    120_000,
+  )
 })

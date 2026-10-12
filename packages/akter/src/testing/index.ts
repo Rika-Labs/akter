@@ -1,3 +1,8 @@
-export { InvariantViolation, SIMULATION_SEED_BASE, Simulation, SimulationService } from "./simulation.ts"
+export {
+  InvariantViolation,
+  SIMULATION_SEED_BASE,
+  Simulation,
+  SimulationService,
+} from "./simulation.ts"
 export type { SimulationOptions } from "./simulation.ts"
-export type { Fault, FaultRates } from "./memory-log.ts"
+export type { Fault, FaultCounts, FaultRates } from "./simulated-bucket.ts"

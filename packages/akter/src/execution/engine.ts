@@ -1,26 +1,46 @@
-import { Clock, Deferred, Duration, Effect, Exit, Latch, Option, PubSub, Result, Schema, Scope } from "effect"
+import {
+  Clock,
+  Deferred,
+  Duration,
+  Effect,
+  Exit,
+  Latch,
+  Option,
+  PubSub,
+  Result,
+  Schema,
+  Scope,
+  Stream,
+} from "effect"
 import { Caller, System } from "../contract/caller.ts"
-import { ActorError, ActorUnavailable, CommandExpired, InvalidCommandId, Unauthorized } from "../contract/errors.ts"
+import {
+  ActorError,
+  ActorUnavailable,
+  CommandExpired,
+  InvalidCommandId,
+  Unauthorized,
+} from "../contract/errors.ts"
 import type { AnyActor } from "../contract/make.ts"
 import type { Action } from "../contract/members.ts"
 import { Recovery, effectsText } from "../snapshots/recovery.ts"
+import { CorruptLog } from "../snapshots/recovery.ts"
 import type { RecoveryError, ReplayPolicy } from "../snapshots/recovery.ts"
 import { Checkpoints } from "../snapshots/checkpoint.ts"
 import { Actions } from "./action.ts"
 import type { Ran } from "./action.ts"
 import { Durable } from "./durable.ts"
 import type { ActorRecord, Catalog, PendingSend, ShardImage, TimerRecord } from "./durable.ts"
-import { Entry, Origin, Outcome, SegmentCodec, formatVersion } from "./entries.ts"
-import type { ActionEntry, Build, Emit } from "./entries.ts"
+import { Entry, EntryCodec, Origin, Outcome } from "./entries.ts"
+import type { ActionEntry, Emit } from "./entries.ts"
 import { Layouts } from "./layout.ts"
 import type { Image } from "./layout.ts"
-import { Log, LogUnavailable, StaleEpoch } from "./log.ts"
-import type { Lease } from "./log.ts"
+import { StaleEpoch } from "../store/errors.ts"
+import type { Lease } from "../store/log.ts"
+import { Store } from "../store/service.ts"
 
-/** How an engine runs: its shards, build, replay policy, batch bound and simulation hooks. */
+/** How an engine runs: its shards, replay policy, batch bound and simulation hooks. */
 export interface EngineOptions {
   readonly shards: number
-  readonly build: Build
   readonly policy: ReplayPolicy
   readonly maxBatch: number
   readonly checkpointEvery: number
@@ -64,8 +84,7 @@ interface Shard {
   opened: Deferred.Deferred<void, ActorError>
   settled: Deferred.Deferred<void>
   scope: Scope.Closeable
-  lease: Lease
-  nextOffset: number
+  lease: Lease | undefined
   durable: ShardImage
   refusal: RecoveryError | undefined
   readonly speculative: Map<string, Image>
@@ -79,6 +98,12 @@ interface Shard {
   readonly armed: Set<string>
   readonly delivering: Set<string>
   readonly wake: Latch.Latch
+}
+
+/** A shard rebuilt from the store: the lease that fenced earlier owners, and the image or why not. */
+interface Recovered {
+  readonly lease: Lease | undefined
+  readonly recovered: Result.Result<ShardImage, RecoveryError>
 }
 
 /** Per-address publication channels; they live as long as the engine, across shard crashes. */
@@ -99,7 +124,7 @@ const unavailable = (): ActorError => ActorError.make({ reason: ActorUnavailable
  */
 const make = (catalog: Catalog, options: EngineOptions) =>
   Effect.gen(function* () {
-    const log = yield* Log
+    const store = yield* Store
     const root = yield* Effect.scope
     const shards = new Map<number, Shard>()
     const channels = new Map<string, Channel>()
@@ -137,8 +162,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       opened: Deferred.makeUnsafe<void, ActorError>(),
       settled: Deferred.makeUnsafe<void>(),
       scope: Scope.makeUnsafe(),
-      lease: { shard: id, epoch: -1 },
-      nextOffset: 0,
+      lease: undefined,
       durable: Durable.empty(id),
       refusal: undefined,
       speculative: new Map(),
@@ -206,6 +230,38 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       })
 
     /**
+     * Opens the shard in the store, which fences every earlier owner, then rebuilds it from the
+     * newest checkpoint and the segments after it. The running build is the one on the lease's own
+     * open segment, since that is what this owner's appends will carry. A corrupt log refuses the
+     * shard like a failed replay; anything else is unavailable and retried.
+     */
+    const recoverShard = (id: number): Effect.Effect<Recovered, ActorError> =>
+      Effect.gen(function* () {
+        const lease = yield* store.open(id)
+        const manifest = Option.getOrUndefined(lease.checkpoint)
+        const page = manifest?.statePages[0]
+        const checkpoint = page === undefined ? undefined : yield* store.getPage(page)
+        const tail = yield* Stream.runCollect(store.read(id, manifest?.offset ?? 0n))
+        const own = tail.find((segment) => segment.offset === lease.open)
+        if (own === undefined)
+          return yield* Effect.die(
+            new Error(`Shard ${id}'s open segment ${lease.open} is missing from its log`),
+          )
+        const recovered = Recovery.recover(catalog, id, checkpoint, tail, own.build, options.policy)
+        return { lease, recovered }
+      }).pipe(
+        Effect.catchTag("CorruptSegment", (error) =>
+          Effect.succeed({
+            lease: undefined,
+            recovered: Result.fail(
+              CorruptLog.make({ shard: id, offset: -1, detail: error.message }),
+            ),
+          }),
+        ),
+        Effect.mapError(() => unavailable()),
+      )
+
+    /**
      * Opens the shard in a fiber of the engine's own scope, so a caller that gives up never leaves
      * it half open: the attempt always ends open, refused, or closed with every waiter failed. An
      * attempt starts only after the one before it ended, because an abandoned open that lands late
@@ -223,35 +279,29 @@ const make = (catalog: Catalog, options: EngineOptions) =>
         const previous = shard.settled
         const settled = Deferred.makeUnsafe<void>()
         shard.settled = settled
-        const attempt = Effect.andThen(Deferred.await(previous), log.open(shard.id)).pipe(
-          Effect.mapError(unavailable),
-          Effect.flatMap((result) =>
+        const attempt = Effect.andThen(Deferred.await(previous), recoverShard(shard.id)).pipe(
+          Effect.flatMap(({ lease, recovered }) =>
             Effect.suspend(() => {
               if (shard.generation !== generation) return Effect.fail(unavailable())
-              const recovered = Recovery.recover(
-                catalog,
-                shard.id,
-                result.checkpoint,
-                result.tail,
-                options.build,
-                options.policy,
-              )
               if (Result.isFailure(recovered)) {
                 shard.status = "refused"
                 shard.refusal = recovered.failure
-                options.observer?.violation("recovery", `${recovered.failure._tag}: ${recovered.failure.message}`)
+                options.observer?.violation(
+                  "recovery",
+                  `${recovered.failure._tag}: ${recovered.failure.message}`,
+                )
                 Deferred.doneUnsafe(opened, Exit.fail(unavailable()))
                 return Effect.fail(unavailable())
               }
               shard.durable = recovered.success
-              shard.lease = result.lease
-              shard.nextOffset = result.lease.epoch + 1
+              shard.lease = lease
               shard.lastAt = recovered.success.lastAt
               shard.sinceCheckpoint = 0
               shard.scope = Scope.makeUnsafe()
               shard.status = "open"
               Deferred.doneUnsafe(opened, Exit.void)
-              for (const address of recovered.success.actors.keys()) if (channels.has(address)) notify(address)
+              for (const address of recovered.success.actors.keys())
+                if (channels.has(address)) notify(address)
               return Effect.forkIn(committer(shard, generation), shard.scope).pipe(
                 Effect.andThen(after(shard)),
               )
@@ -259,7 +309,12 @@ const make = (catalog: Catalog, options: EngineOptions) =>
           ),
           Effect.onExit((exit) =>
             Effect.sync(() => {
-              if (Exit.isSuccess(exit) || shard.generation !== generation || shard.status !== "opening") return
+              if (
+                Exit.isSuccess(exit) ||
+                shard.generation !== generation ||
+                shard.status !== "opening"
+              )
+                return
               shard.status = "closed"
               Deferred.doneUnsafe(opened, Exit.fail(unavailable()))
             }),
@@ -268,11 +323,6 @@ const make = (catalog: Catalog, options: EngineOptions) =>
         )
         return Effect.andThen(Effect.forkIn(attempt, root), Deferred.await(opened))
       })
-
-    const appendOnce = (shard: Shard, offset: number, bytes: Uint8Array) =>
-      log.append(shard.lease, offset, bytes).pipe(
-        Effect.retry({ while: (error) => Schema.is(LogUnavailable)(error), times: 5 }),
-      )
 
     /**
      * The shard's one committer: whenever the log is free it takes every group staged so far, up to
@@ -287,7 +337,10 @@ const make = (catalog: Catalog, options: EngineOptions) =>
           while (shard.generation === generation && shard.batch.length > 0) {
             const groups: Array<Array<Pending>> = []
             let size = 0
-            while (shard.batch.length > 0 && (groups.length === 0 || size + (shard.batch[0]?.length ?? 0) <= options.maxBatch)) {
+            while (
+              shard.batch.length > 0 &&
+              (groups.length === 0 || size + (shard.batch[0]?.length ?? 0) <= options.maxBatch)
+            ) {
               const group = shard.batch.shift()
               if (group === undefined) break
               groups.push(group)
@@ -295,39 +348,54 @@ const make = (catalog: Catalog, options: EngineOptions) =>
             }
             const entries = groups.flat()
             shard.inFlight = entries
-            const offset = shard.nextOffset
-            const bytes = SegmentCodec.encode({
-              format: formatVersion,
-              shard: shard.id,
-              epoch: shard.lease.epoch,
-              build: options.build,
-              entries: entries.map((pending) => pending.entry),
-            })
-            const appended = yield* Effect.exit(appendOnce(shard, offset, bytes))
+            const lease = shard.lease
+            if (lease === undefined) return
+            const appended = yield* Effect.exit(
+              store.append(
+                lease,
+                entries.map((pending) => EntryCodec.encode(pending.entry)),
+              ),
+            )
             if (shard.generation !== generation) return
             if (Exit.isFailure(appended)) {
-              const fenced = Exit.findErrorOption(appended).pipe(Option.exists(Schema.is(StaleEpoch)))
+              const fenced = Exit.findErrorOption(appended).pipe(
+                Option.exists(Schema.is(StaleEpoch)),
+              )
               yield* Effect.forkIn(crash(shard, fenced), root)
               return
             }
-            shard.nextOffset = offset + 1
+            const offset = Number(appended.value)
             shard.inFlight = []
             for (const pending of entries) publish(shard, pending, offset)
             yield* after(shard)
             shard.sinceCheckpoint++
             if (options.checkpointEvery > 0 && shard.sinceCheckpoint >= options.checkpointEvery) {
               shard.sinceCheckpoint = 0
-              yield* log
-                .checkpoint(
-                  shard.lease,
-                  shard.durable.offset,
-                  Checkpoints.encode(Checkpoints.capture(shard.durable, options.build)),
-                )
-                .pipe(Effect.ignore)
+              yield* checkpoint(shard, lease)
             }
           }
         }
       })
+
+    /**
+     * Writes the shard's durable image as one page and records it as a checkpoint at its offset,
+     * with the earliest timer as the store's wake time. A failed checkpoint changes nothing: the log
+     * still holds every entry, and the next one tries again.
+     */
+    const checkpoint = (shard: Shard, lease: Lease): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const image = shard.durable
+        let nextDue: number | undefined
+        for (const { timer } of image.timers.values())
+          if (nextDue === undefined || timer.at < nextDue) nextDue = timer.at
+        const hash = yield* store.putPage(Checkpoints.encode(Checkpoints.capture(image)))
+        yield* store.checkpoint(lease, {
+          offset: BigInt(image.offset),
+          statePages: [hash],
+          indexPages: [],
+          nextDue,
+        })
+      }).pipe(Effect.ignore)
 
     /** Applies one durable entry: the shard image moves, the waiter gets its outcome, streams hear of it. */
     const publish = (shard: Shard, pending: Pending, offset: number): void => {
@@ -335,22 +403,28 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       shard.durable.offset = offset
       const entry = pending.entry
       const commandId = Entry.guards.Action(entry) ? entry.commandId : undefined
-      if (commandId !== undefined && shard.pending.get(commandId) === pending) shard.pending.delete(commandId)
+      if (commandId !== undefined && shard.pending.get(commandId) === pending)
+        shard.pending.delete(commandId)
       if (pending.address !== undefined && shard.speculative.get(pending.address) === pending.after)
         shard.speculative.delete(pending.address)
       options.observer?.published(shard.id, offset, entry)
       if (Entry.guards.Action(entry) && pending.address !== undefined) {
         const changed =
-          Object.keys(entry.effects.set).length > 0 || entry.effects.unset.length > 0 || entry.effects.lists.length > 0
+          Object.keys(entry.effects.set).length > 0 ||
+          entry.effects.unset.length > 0 ||
+          entry.effects.lists.length > 0
         if (changed) notify(pending.address)
         const events = channels.get(pending.address)?.events
-        if (events !== undefined) for (const event of entry.effects.events) PubSub.publishUnsafe(events, event)
+        if (events !== undefined)
+          for (const event of entry.effects.events) PubSub.publishUnsafe(events, event)
       }
       if (Entry.guards.Seed(entry) && pending.address !== undefined) notify(pending.address)
       Deferred.doneUnsafe(
         pending.done,
         Exit.succeed(
-          Entry.guards.Action(entry) ? entry.effects.outcome : Outcome.cases.Success.make({ value: null }),
+          Entry.guards.Action(entry)
+            ? entry.effects.outcome
+            : Outcome.cases.Success.make({ value: null }),
         ),
       )
     }
@@ -416,7 +490,10 @@ const make = (catalog: Catalog, options: EngineOptions) =>
     const defectRun = (command: Command, image: Image, detail: string): Ran => ({
       image,
       effects: {
-        outcome: Outcome.cases.Defect.make({ kind: "DecodeFailure", detail: `${command.actor.name}.${command.member}: ${detail}` }),
+        outcome: Outcome.cases.Defect.make({
+          kind: "DecodeFailure",
+          detail: `${command.actor.name}.${command.member}: ${detail}`,
+        }),
         set: {},
         unset: [],
         lists: [],
@@ -449,7 +526,12 @@ const make = (catalog: Catalog, options: EngineOptions) =>
         connection: command.connection,
         effects,
       })
-      const pending: Pending = { entry, after, address: record.address, done: Deferred.makeUnsafe() }
+      const pending: Pending = {
+        entry,
+        after,
+        address: record.address,
+        done: Deferred.makeUnsafe(),
+      }
       shard.speculative.set(record.address, after)
       shard.pending.set(command.commandId, pending)
       group.push(pending)
@@ -494,14 +576,21 @@ const make = (catalog: Catalog, options: EngineOptions) =>
     /** Checks a retried client id against what it was first admitted with. */
     const matchStored = (
       command: Command,
-      stored: { readonly member: string; readonly digest: string; readonly caller: Caller; readonly address: string },
+      stored: {
+        readonly member: string
+        readonly digest: string
+        readonly caller: Caller
+        readonly address: string
+      },
     ): ActorError | undefined => {
       if (
         stored.member !== command.member ||
         stored.digest !== Durable.payloadDigest(command.payload) ||
         stored.address !== Durable.addressOf(command.actor.name, command.keyJson)
       )
-        return ActorError.make({ reason: InvalidCommandId.make({ commandId: command.commandId, code: "conflict" }) })
+        return ActorError.make({
+          reason: InvalidCommandId.make({ commandId: command.commandId, code: "conflict" }),
+        })
       if (!sameCaller(stored.caller, command.caller))
         return ActorError.make({ reason: Unauthorized.make({ code: "outcome_access_denied" }) })
       return undefined
@@ -519,7 +608,9 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       const origin = command.origin
       if (Origin.guards.External(origin)) {
         if (origin.expiresAt <= at)
-          return refuse(ActorError.make({ reason: CommandExpired.make({ commandId: command.commandId }) }))
+          return refuse(
+            ActorError.make({ reason: CommandExpired.make({ commandId: command.commandId }) }),
+          )
         if (pending !== undefined && Entry.guards.Action(pending.entry)) {
           const mismatch = matchStored(command, {
             member: pending.entry.member,
@@ -529,15 +620,20 @@ const make = (catalog: Catalog, options: EngineOptions) =>
           })
           return mismatch === undefined ? { kind: "wait", pending } : refuse(mismatch)
         }
-        const stored = shard.durable.clients.get(Durable.bucketOf(origin.expiresAt))?.get(command.commandId)
+        const stored = shard.durable.clients
+          .get(Durable.bucketOf(origin.expiresAt))
+          ?.get(command.commandId)
         if (stored !== undefined) {
           const mismatch = matchStored(command, stored)
-          return mismatch === undefined ? { kind: "done", outcome: stored.outcome } : refuse(mismatch)
+          return mismatch === undefined
+            ? { kind: "done", outcome: stored.outcome }
+            : refuse(mismatch)
         }
       } else if (pending !== undefined) return { kind: "wait", pending }
       if (Origin.guards.Delivery(origin)) {
         const watermark = shard.durable.received.get(origin.stream) ?? 0
-        if (origin.sequence <= watermark) return { kind: "done", outcome: Outcome.cases.Success.make({ value: null }) }
+        if (origin.sequence <= watermark)
+          return { kind: "done", outcome: Outcome.cases.Success.make({ value: null }) }
         if (origin.sequence !== watermark + 1) return refuse(unavailable())
       }
       if (Origin.guards.JobCall(origin)) {
@@ -583,7 +679,12 @@ const make = (catalog: Catalog, options: EngineOptions) =>
         yield* open(shard)
         const pending = yield* Effect.sync(() => {
           if (shard.status !== "open") return undefined
-          const staged: Pending = { entry, after: undefined, address: undefined, done: Deferred.makeUnsafe() }
+          const staged: Pending = {
+            entry,
+            after: undefined,
+            address: undefined,
+            done: Deferred.makeUnsafe(),
+          }
           shard.batch.push([staged])
           Latch.openUnsafe(shard.wake)
           return staged
@@ -593,7 +694,12 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       })
 
     /** Writes an operator's initial state for an instance, before its first action. */
-    const seed = (actor: AnyActor, keyJson: Schema.Json, set: Readonly<Record<string, Schema.Json>>, lists: ActionEntry["effects"]["lists"]) =>
+    const seed = (
+      actor: AnyActor,
+      keyJson: Schema.Json,
+      set: Readonly<Record<string, Schema.Json>>,
+      lists: ActionEntry["effects"]["lists"],
+    ) =>
       Effect.gen(function* () {
         const address = Durable.addressOf(actor.name, keyJson)
         const shard = yield* ready(address)
@@ -602,7 +708,12 @@ const make = (catalog: Catalog, options: EngineOptions) =>
           const record = Durable.resident(shard.durable, catalog, actor.name, keyJson)
           const after = Actions.apply(actor, current(shard, record), set, [], lists)
           const staged: Pending = {
-            entry: Entry.cases.Seed.make({ actor: actor.name, key: keyJson, set: { ...set }, lists: [...lists] }),
+            entry: Entry.cases.Seed.make({
+              actor: actor.name,
+              key: keyJson,
+              set: { ...set },
+              lists: [...lists],
+            }),
             after,
             address,
             done: Deferred.makeUnsafe(),
@@ -617,7 +728,10 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       })
 
     /** The durable record of an instance, opening its shard if needed; reads never see speculation. */
-    const durableRecord = (actor: AnyActor, keyJson: Schema.Json): Effect.Effect<ActorRecord, ActorError> =>
+    const durableRecord = (
+      actor: AnyActor,
+      keyJson: Schema.Json,
+    ): Effect.Effect<ActorRecord, ActorError> =>
       Effect.map(ready(Durable.addressOf(actor.name, keyJson)), (shard) =>
         Durable.resident(shard.durable, catalog, actor.name, keyJson),
       )
@@ -625,10 +739,13 @@ const make = (catalog: Catalog, options: EngineOptions) =>
     /** Every created instance of an actor type, across all shards. */
     const instances = (actor: AnyActor): Effect.Effect<ReadonlyArray<ActorRecord>, ActorError> =>
       Effect.map(
-        Effect.forEach(Array.from({ length: catalog.shards }, (_, id) => id), (id) => {
-          const shard = shardRuntime(id)
-          return Effect.as(open(shard), shard)
-        }),
+        Effect.forEach(
+          Array.from({ length: catalog.shards }, (_, id) => id),
+          (id) => {
+            const shard = shardRuntime(id)
+            return Effect.as(open(shard), shard)
+          },
+        ),
         (opened) =>
           opened.flatMap((shard) =>
             Array.from(shard.durable.actors.values()).filter(
@@ -645,7 +762,8 @@ const make = (catalog: Catalog, options: EngineOptions) =>
      */
     const busy = (now: number): string | undefined => {
       for (const shard of shards.values()) {
-        if (shard.status === "opening" || shard.status === "restarting") return `shard ${shard.id} is ${shard.status}`
+        if (shard.status === "opening" || shard.status === "restarting")
+          return `shard ${shard.id} is ${shard.status}`
         if (
           shard.status === "closed" &&
           (Array.from(shard.durable.outbox.values()).some((queue) => queue.length > 0) ||
@@ -655,11 +773,14 @@ const make = (catalog: Catalog, options: EngineOptions) =>
         if (shard.status !== "open") continue
         if (shard.batch.length > 0 || shard.inFlight.length > 0)
           return `shard ${shard.id} has ${shard.batch.length} staged groups and ${shard.inFlight.length} entries in flight`
-        if (shard.pending.size > 0) return `shard ${shard.id} has ${shard.pending.size} actions waiting for durability`
+        if (shard.pending.size > 0)
+          return `shard ${shard.id} has ${shard.pending.size} actions waiting for durability`
         for (const [stream, queue] of shard.durable.outbox)
-          if (queue.length > 0) return `shard ${shard.id} has ${queue.length} undelivered sends on ${stream}`
+          if (queue.length > 0)
+            return `shard ${shard.id} has ${queue.length} undelivered sends on ${stream}`
         for (const timer of shard.durable.timers.values())
-          if (timer.timer.at <= now) return `shard ${shard.id} has timer ${timer.timer.member} due at ${timer.timer.at}`
+          if (timer.timer.at <= now)
+            return `shard ${shard.id} has timer ${timer.timer.member} due at ${timer.timer.at}`
       }
       return undefined
     }
@@ -736,7 +857,10 @@ const make = (catalog: Catalog, options: EngineOptions) =>
             continue
           }
           shard.acked.add(`${stream}#${next.sequence}`)
-          yield* journal(shard.id, Entry.cases.Delivered.make({ stream, sequence: next.sequence })).pipe(Effect.ignore)
+          yield* journal(
+            shard.id,
+            Entry.cases.Delivered.make({ stream, sequence: next.sequence }),
+          ).pipe(Effect.ignore)
         }
         if (shard.generation === generation) shard.delivering.delete(stream)
       })
@@ -778,7 +902,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       shardOf,
       crash: (id: number) => crash(shardRuntime(id), false),
       shards: () => Array.from(shards.values()),
-      log,
+      store,
       afterDurable: (hook: (shard: number) => Effect.Effect<void>) => {
         afterDurable.push(hook)
       },

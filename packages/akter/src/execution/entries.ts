@@ -2,7 +2,7 @@ import { Result, Schema } from "effect"
 import { Caller } from "../contract/caller.ts"
 import { DefectKind } from "../contract/errors.ts"
 
-/** The format version of every segment and checkpoint this engine writes. */
+/** The format version of every checkpoint page this engine writes. */
 export const formatVersion = 1
 
 /** An action's recorded result: its encoded reply, declared failure or defect. */
@@ -167,43 +167,18 @@ export const Entry = Schema.Union([
 /** Every log entry. */
 export type Entry = typeof Entry.Type
 
-/** What wrote a segment or checkpoint; replay runs only on a matching build. */
-export const Build = Schema.Struct({
-  application: Schema.String,
-  framework: Schema.String,
-  runtime: Schema.String,
-  engine: Schema.String,
-  platform: Schema.String,
-  arch: Schema.String,
-  icu: Schema.String,
-  unicode: Schema.String,
-  tz: Schema.String,
-})
-
-/** What wrote a segment or checkpoint. */
-export type Build = typeof Build.Type
-
-/** One appended batch: the entries of one group commit, with the epoch and build that wrote them. */
-export const Segment = Schema.Struct({
-  format: Schema.Literal(formatVersion),
-  shard: Schema.Int,
-  epoch: Schema.Int,
-  build: Build,
-  entries: Schema.Array(Entry),
-})
-
-/** One appended batch. */
-export type Segment = typeof Segment.Type
-
-const segmentJson = Schema.fromJsonString(Segment)
-const encodeSegmentText = Schema.encodeResult(segmentJson)
-const decodeSegmentText = Schema.decodeResult(segmentJson)
+const entryJson = Schema.fromJsonString(Entry)
+const encodeEntryText = Schema.encodeResult(entryJson)
+const decodeEntryText = Schema.decodeResult(entryJson)
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
-/** Segment bytes: UTF-8 JSON with the format version first. */
-export const SegmentCodec = {
-  encode: (segment: Segment): Uint8Array => encoder.encode(Result.getOrThrow(encodeSegmentText(segment))),
-  decode: (bytes: Uint8Array): Result.Result<Segment, Schema.SchemaError> =>
-    decodeSegmentText(decoder.decode(bytes)),
+/**
+ * One entry's bytes inside a store segment: UTF-8 JSON. The segment around it carries the writer,
+ * the lease's open offset and the build, so an entry records only what happened.
+ */
+export const EntryCodec = {
+  encode: (entry: Entry): Uint8Array => encoder.encode(Result.getOrThrow(encodeEntryText(entry))),
+  decode: (bytes: Uint8Array): Result.Result<Entry, Schema.SchemaError> =>
+    decodeEntryText(decoder.decode(bytes)),
 }

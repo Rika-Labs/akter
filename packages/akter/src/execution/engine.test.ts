@@ -21,7 +21,7 @@ import { Simulation, SimulationService } from "../testing/index.ts"
 import type { SimulationOptions } from "../testing/index.ts"
 import { CommandIds } from "./command-ids.ts"
 import { Durable } from "./durable.ts"
-import { Entry, Origin, Outcome, SegmentCodec } from "./entries.ts"
+import { Entry, EntryCodec, Origin, Outcome } from "./entries.ts"
 import type { ActionEntry } from "./entries.ts"
 import { Transports } from "./transport.ts"
 
@@ -35,7 +35,11 @@ const Wallet = Actor.make("Wallet", {
   actions: {
     deposit: Actor.action(Schema.Finite, { success: Schema.Finite }),
     pay: Actor.action(
-      Schema.Struct({ to: Schema.String, amount: Schema.Finite, end: Schema.Literals(["ok", "fail", "throw"]) }),
+      Schema.Struct({
+        to: Schema.String,
+        amount: Schema.Finite,
+        end: Schema.Literals(["ok", "fail", "throw"]),
+      }),
       { fails: Refused },
     ),
     credit: Actor.action(Schema.Finite, { internal: true }),
@@ -68,7 +72,15 @@ type WalletOptions = Omit<SimulationOptions<ReadonlyArray<typeof Wallet>>, "acto
 const slowLog: WalletOptions = {
   seed: 0,
   faults: ["slowLog"],
-  rates: { crashBefore: 0, crashAfter: 0, lostResponse: 0, slow: 1, maxDelayTurns: 40 },
+  rates: {
+    crashBefore: 0,
+    crashAfter: 0,
+    lostResponse: 0,
+    unavailable: 0,
+    maxOutage: 0,
+    slow: 1,
+    maxDelayTurns: 40,
+  },
 }
 
 const simulate = <A, E>(
@@ -81,9 +93,11 @@ const actionsOf = (key: string) =>
   Effect.gen(function* () {
     const simulator = yield* SimulationService
     const shard = simulator.engine.shardOf(Durable.addressOf("Wallet", key))
-    const log = yield* simulator.engine.log.read(shard)
-    return log.segments
-      .flatMap((segment) => Result.getOrThrow(SegmentCodec.decode(segment.bytes)).entries)
+    const logs = yield* simulator.logs
+    return (logs[shard]?.segments ?? [])
+      .flatMap((segment) =>
+        segment.entries.map((bytes) => Result.getOrThrow(EntryCodec.decode(bytes))),
+      )
       .filter((entry): entry is ActionEntry => Entry.guards.Action(entry) && entry.key === key)
   })
 
@@ -114,7 +128,9 @@ describe("F1: a declared failure or a defect discards the action's staged effect
         yield* Simulation.seed(Wallet, "a", { balance: 100 })
         const a = yield* Wallet.client("a")
         const events: Array<number> = []
-        yield* Effect.forkChild(Stream.runForEach(a.changed, (value) => Effect.sync(() => events.push(value))))
+        yield* Effect.forkChild(
+          Stream.runForEach(a.changed, (value) => Effect.sync(() => events.push(value))),
+        )
         yield* Effect.yieldNow
         yield* a.deposit(1)
         yield* Simulation.settle
@@ -126,15 +142,27 @@ describe("F1: a declared failure or a defect discards the action's staged effect
         const defect = Exit.isFailure(thrown) ? Cause.squash(thrown.cause) : undefined
         expect(Schema.is(ActionDefect)(defect) && defect.kind).toBe("Thrown")
         expect(events).toEqual([101])
-        const [after, b] = yield* Effect.all([Simulation.state(Wallet, "a"), Simulation.state(Wallet, "b")])
+        const [after, b] = yield* Effect.all([
+          Simulation.state(Wallet, "a"),
+          Simulation.state(Wallet, "b"),
+        ])
         expect([after.balance, after.credits, b.balance, b.credits]).toEqual([101, 0, 0, 0])
         const outcomes = (yield* actionsOf("a")).map((entry) => entry.effects.outcome._tag)
         expect(outcomes).toEqual(["Success", "Failure", "Defect"])
 
         yield* a.pay({ to: "b", amount: 10, end: "ok" })
         yield* Simulation.advance("2 minutes")
-        const [paid, credited] = yield* Effect.all([Simulation.state(Wallet, "a"), Simulation.state(Wallet, "b")])
-        expect([paid.balance, paid.credits, credited.balance, credited.credits, events]).toEqual([101, 1, 10, 1, [101, 91]])
+        const [paid, credited] = yield* Effect.all([
+          Simulation.state(Wallet, "a"),
+          Simulation.state(Wallet, "b"),
+        ])
+        expect([paid.balance, paid.credits, credited.balance, credited.credits, events]).toEqual([
+          101,
+          1,
+          10,
+          1,
+          [101, 91],
+        ])
       }),
     ))
 })
@@ -149,8 +177,12 @@ describe("F3 and F5: a crash between execution and append", () => {
         const a = yield* Wallet.client("a")
         const frames: Array<number> = []
         const events: Array<number> = []
-        yield* Effect.forkChild(Stream.runForEach(a.state, (state) => Effect.sync(() => frames.push(state.balance))))
-        yield* Effect.forkChild(Stream.runForEach(a.changed, (value) => Effect.sync(() => events.push(value))))
+        yield* Effect.forkChild(
+          Stream.runForEach(a.state, (state) => Effect.sync(() => frames.push(state.balance))),
+        )
+        yield* Effect.forkChild(
+          Stream.runForEach(a.changed, (value) => Effect.sync(() => events.push(value))),
+        )
         yield* Effect.yieldNow
         const call = yield* Effect.forkChild(a.deposit(5))
         yield* untilInFlight
@@ -195,8 +227,13 @@ describe("F3 and F5: a crash between execution and append", () => {
 
         expect(yield* pay).toEqual({ kind: "Success", value: null })
         yield* Simulation.settle
-        const [after, credited] = yield* Effect.all([Simulation.state(Wallet, "a"), Simulation.state(Wallet, "b")])
-        expect([after.balance, after.credits, credited.balance, credited.credits]).toEqual([100, 1, 10, 1])
+        const [after, credited] = yield* Effect.all([
+          Simulation.state(Wallet, "a"),
+          Simulation.state(Wallet, "b"),
+        ])
+        expect([after.balance, after.credits, credited.balance, credited.credits]).toEqual([
+          100, 1, 10, 1,
+        ])
         expect((yield* actionsOf("b")).filter((entry) => entry.member === "credit").length).toBe(1)
       }),
     ))
@@ -213,7 +250,12 @@ describe("F4: duplicate command ids", () => {
         const commandId = yield* CommandIds.mint(now)
         const ana = user("ana")
         const deposit = (payload: number, caller = ana) =>
-          Transports.admit(simulator.engine, caller, commandId, { actor: Wallet, id: "a", member: "deposit", payload })
+          Transports.admit(simulator.engine, caller, commandId, {
+            actor: Wallet,
+            id: "a",
+            member: "deposit",
+            payload,
+          })
         const concurrent = yield* Effect.all([deposit(5), deposit(5)], { concurrency: "unbounded" })
         const retried = yield* deposit(5)
         expect([...concurrent, retried]).toEqual([
@@ -228,9 +270,13 @@ describe("F4: duplicate command ids", () => {
           ActorError.make({ reason: Unauthorized.make({ code: "outcome_access_denied" }) }),
         )
         yield* TestClock.adjust(Duration.millis(600_000))
-        expect(yield* Effect.flip(deposit(5))).toEqual(ActorError.make({ reason: CommandExpired.make({ commandId }) }))
+        expect(yield* Effect.flip(deposit(5))).toEqual(
+          ActorError.make({ reason: CommandExpired.make({ commandId }) }),
+        )
         expect((yield* Simulation.state(Wallet, "a")).balance).toBe(105)
-        expect((yield* actionsOf("a")).filter((entry) => entry.commandId === commandId).length).toBe(1)
+        expect(
+          (yield* actionsOf("a")).filter((entry) => entry.commandId === commandId).length,
+        ).toBe(1)
       }),
     ))
 
@@ -260,7 +306,9 @@ describe("F4: duplicate command ids", () => {
             connection: undefined,
           })
         expect(yield* redeliver(1)).toEqual(Outcome.cases.Success.make({ value: null }))
-        expect(yield* Effect.flip(redeliver(3))).toEqual(ActorError.make({ reason: ActorUnavailable.make({}) }))
+        expect(yield* Effect.flip(redeliver(3))).toEqual(
+          ActorError.make({ reason: ActorUnavailable.make({}) }),
+        )
         const receiver = yield* Simulation.state(Wallet, other)
         expect([receiver.balance, receiver.credits]).toEqual([10, 1])
       }),
