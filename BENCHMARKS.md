@@ -15,7 +15,20 @@ See [the fixture and commands](tooling/bench/README.md). The manually dispatched
 **Benchmark reference** workflow uses `ubuntu-24.04`, uploads its raw evidence,
 and has no schedule or timing merge gate. Mac comparisons are quick signals,
 not CI-reference or hosted-provider evidence. The alpha.6-to-`89e8af89` reference
-comparison is not yet recorded here.
+comparison is pending the workflow landing on the default branch.
+
+The full three-round local comparison used release commit `0ba7208974` against
+`89e8af892e`, preserving Effect 4.0.2/4.0.3 respectively. Hot-key database CPU
+fell from 0.2458 [0.2032–0.2514] to 0.0404 [0.0345–0.0584] ms/success
+(83.55%, disjoint ranges). Hot throughput and app CPU overlap. Spread-write
+throughput ranges were 1,304–2,196 versus 683–1,773 successes/s; database CPU
+ranges were 0.1823–0.2744 versus 0.2271–0.4891 ms/success. These overlapping,
+widely variable results establish neither parity nor a release throughput win.
+All durable outcomes agreed with zero non-refusal failures, timeouts or dropped
+arrivals. Every open-loop cohort had refusals in at least one repeat, so their
+speed verdicts are suppressed. Full repeats, SQL, profiles and fixture metadata
+remain in the [local evaluation report](https://capy.ai/s/dsh_czwQlEuC_mRNKvQ-s7mtitRG)
+and its retained evidence (private project report); these signals do not replace CI.
 
 ## Served command CPU and receipt-history probes (2026-10-11)
 
