@@ -20,7 +20,7 @@ At launch preparation, `@rikalabs/akter` has `alpha: 0.1.0-alpha.1` and `latest:
 - **GitHub-hosted runner.** Trusted publishing and provenance reject self-hosted runners. The release job runs on `ubuntu-latest`.
 - **npm CLI 12.2.0 and Node 26.7.0.** The workflow pins Node and installs npm 12.2.0, which supports both trusted publishing and OIDC-authenticated dist-tag changes. npm 11.5.1's publish support alone is insufficient for automated `latest` promotion.
 - **Trusted-publisher permissions.** For both packages, enable **Allow npm publish** and **Allow npm dist-tag** on the GitHub trusted publisher. Dist-tag permission is independent of publish permission and is disabled by default. See npm's [trusted-publishing documentation](https://docs.npmjs.com/trusted-publishers#managing-dist-tags-with-trusted-publishing). No npm token is needed.
-- **`npm` environment.** Both tagged releases and main canaries use this environment. Allow the `main` branch and `v*` tags in its deployment policy. Configure required reviewers as the release maintainers, enable “Prevent self-review”, and disallow administrators from bypassing protection. A maintainer approves only after checking the exact verified SHA and, for a tagged release, its version/changelog changes. Reviewers apply to canaries too; publishing on every green main run will wait for their approval. Maintainers must choose and apply these settings; changing this document does not configure them.
+- **`npm` environment.** Both tagged releases and main canaries use this environment. Allow the `main` and `rewrite/0.2` branches and `v*` tags in its deployment policy if it restricts deployment branches. Configure required reviewers as the release maintainers, enable “Prevent self-review”, and disallow administrators from bypassing protection. A maintainer approves only after checking the exact verified SHA and, for a tagged release, its version/changelog changes. Reviewers apply to canaries too; publishing on every green main run will wait for their approval. Maintainers must choose and apply these settings; changing this document does not configure them.
 - **Tag ruleset.** Add an active repository ruleset targeting tags that match `v*`. Restrict creation to the release maintainers through the ruleset's bypass list, and restrict updates and deletions so a published tag cannot be moved or removed. The maintainer applies this ruleset in GitHub; a package rebuild uses a new version and tag rather than bypassing the update protection.
 - **GitHub Release.** The workflow creates or updates the GitHub Release from the matching `CHANGELOG.md` section after publishing; prerelease versions are marked as prereleases.
 
@@ -78,6 +78,16 @@ bun .github/src/pack.ts --out .local/next --cli-out .local/next-cli --canary 321
 ```
 
 Install with `@rikalabs/akter@next` and `@rikalabs/akter-cli@next` to try the channel, but pin the complete same version of both packages in cloud deployments. Canaries are published only to `next`; they never move `alpha` or `latest`. Tagged releases and canaries share workflow concurrency so publishing jobs do not overlap. As with tagged releases, each package must already exist and its trusted publisher must permit publishing.
+
+## Rewrite canaries
+
+While `rewrite/0.2` carries the 0.2 framework, a push to that branch publishes `@rikalabs/akter` and `@rikalabs/akter-cli` as `0.2.0-rewrite.<run-id>.<attempt>.g<sha12>` under the `rewrite` dist-tag. `release.yml` runs on the branch push itself, because a `workflow_run` event always executes the workflow file on the default branch (`main`), which still publishes 0.1. The job waits up to 30 minutes for a successful `push` run of `ci.yml` on the pushed SHA and fails if that run fails, then applies the same checks as a main canary against `origin/rewrite/0.2`: the commit must be on that branch and must equal `GITHUB_SHA`, the framework and CLI versions must match, and the same pack checks and both runtime smokes run. The tag is read from `version.ts --canary-branch rewrite/0.2`, so the channel can never be `latest` or `next`, and the promotion step stays off. The source manifests carry `0.2.0`; the canary replaces everything after the core version.
+
+```sh
+bun .github/src/pack.ts --out .local/rewrite --cli-out .local/rewrite-cli --canary 321.1.g123456abcdef --canary-channel rewrite
+```
+
+Cloud deployments pin the complete same version of both packages rather than the moving `rewrite` tag.
 
 ## Limits
 

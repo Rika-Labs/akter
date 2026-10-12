@@ -81,7 +81,7 @@ Lists use the corrected mapping of the 0.2 documentation audit. A scoped superse
 - Amends [ADR 0007](0007-foundation-command-protocol.md): the external command-id shape, caller attribution and expiry carry; generation and receipt implementation end.
 - Amends [ADR 0008](0008-foundation-completion.md): the `System` caller and the failure taxonomy carry; PGlite and transaction timeouts end.
 - Amends [ADR 0013](0013-m0-reconciliation.md) and [ADR 0014](0014-adoption-observation-and-client-reach.md): their shipped-status lists and product order describe 0.1.
-- Amends [ADR 0029](0029-licence-package-name-and-release-policy.md): package entries become `.`, `./server` and `./testing`; Apache-2.0, the scope and trusted publishing carry; `0.2.0-next.N` prereleases publish from the branch under the `next` dist-tag.
+- Amends [ADR 0029](0029-licence-package-name-and-release-policy.md): package entries become `.`, `./server` and `./testing`; Apache-2.0, the scope and trusted publishing carry; `0.2.0-rewrite.<run>.<attempt>.g<sha12>` prereleases publish from the branch under the `rewrite` dist-tag, which never moves `next` or `latest`.
 - Amends [ADR 0052](0052-read-your-writes-commit-versions.md): WAL-position tokens end; read-your-writes holds because the shard owner serves reads ([contract 07](../contracts/07-realtime.md)).
 - Amends [ADR 0111](0111-framework-verification-workspace.md): conformance stays outside the published package; its suites become the seeded simulator, the bucket-protocol integration suites and the benchmark driver.
 

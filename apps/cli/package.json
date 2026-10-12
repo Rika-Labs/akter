@@ -1,6 +1,6 @@
 {
   "name": "@rikalabs/akter-cli",
-  "version": "0.1.0-alpha.6",
+  "version": "0.2.0",
   "description": "The Akter command-line tool for Akter Cloud",
   "keywords": [
     "actors",

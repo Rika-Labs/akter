@@ -14,6 +14,7 @@ const args = process.argv.slice(2)
 const outIndex = args.indexOf("--out")
 const cliOutIndex = args.indexOf("--cli-out")
 const canaryIndex = args.indexOf("--canary")
+const channelIndex = args.indexOf("--canary-channel")
 
 const PackedPackage = Schema.Struct({ files: Schema.Array(Schema.Struct({ path: Schema.String })) })
 
@@ -114,6 +115,7 @@ const program = Effect.gen(function* () {
   const out = args[outIndex + 1]
   const cliOut = args[cliOutIndex + 1]
   const canary = args[canaryIndex + 1]
+  const channel = args[channelIndex + 1]
 
   if (outIndex !== -1 && (out === undefined || out === "" || out.startsWith("--")))
     return yield* Effect.die(new Error("--out needs a directory"))
@@ -121,6 +123,8 @@ const program = Effect.gen(function* () {
     return yield* Effect.die(new Error("--cli-out needs a directory"))
   if (canaryIndex !== -1 && (canary === undefined || canary === "" || canary.startsWith("--")))
     return yield* Effect.die(new Error("--canary needs a build identity"))
+  if (channelIndex !== -1 && (channel === undefined || channel === "" || channel.startsWith("--")))
+    return yield* Effect.die(new Error("--canary-channel needs a channel"))
 
   const frameworkStage =
     out === undefined || outIndex === -1 ? path.join(work, "framework") : path.resolve(out)
@@ -169,7 +173,13 @@ const program = Effect.gen(function* () {
     cli: cliManifest.version,
   })
   const version =
-    canaryIndex === -1 ? released : canaryVersion({ version: released, build: canary ?? "" })
+    canaryIndex === -1
+      ? released
+      : canaryVersion({
+          version: released,
+          build: canary ?? "",
+          ...(channelIndex === -1 ? {} : { channel: channel ?? "" }),
+        })
   const versions = { [frameworkManifest.name]: version }
   const catalog = workspace.workspaces?.catalog ?? {}
 
