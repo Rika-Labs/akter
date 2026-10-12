@@ -358,6 +358,7 @@ describe("retained directory", () => {
   it("reads case files through the schema, ignores extra raw fields and writes both outputs", async () => {
     const dir = await directory()
     await populate(dir)
+    await write(dir, "base-r1-hot-write.mounts.json", JSON.stringify([{ Type: "volume" }]))
     await write(
       dir,
       "order.json",

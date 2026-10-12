@@ -212,6 +212,8 @@ const start = await snapshot(scenario.operation === "resident")
 const measuredStart = performance.now()
 if (sleeping) {
   const repeats = Number(process.env.WAKE_REPEATS ?? "5")
+  if (!Number.isInteger(repeats) || repeats < 1)
+    throw new Error("WAKE_REPEATS must be a positive integer")
   for (let index = 0; index < repeats; index++) {
     if (index > 0) await waitForSleep()
     await request(0, false, true)

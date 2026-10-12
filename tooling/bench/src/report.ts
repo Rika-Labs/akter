@@ -419,6 +419,7 @@ export const report = async (
   const runs: Array<RetainedRun> = []
   const diagnostics: Array<DiagnosticRun> = []
   for (const file of names) {
+    if (file.endsWith(".mounts.json")) continue
     const retained = retainedFile.exec(file)
     const diagnostic = diagnosticFile.exec(file)
     if (retained === null && diagnostic === null) {

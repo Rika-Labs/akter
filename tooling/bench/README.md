@@ -69,10 +69,11 @@ Instrumented diagnostic runs count turn-pool frontend writes and Execute
 statements; these budgets exclude keeper, registration and query pools and do
 not enter timing comparisons. Timing runs report unknown wire counts, not zero.
 
-`BENCH_PROFILE_CASES=hot-write,spread-write` adds Bun CPU and sampled heap profiles to the
+`BENCH_PROFILE_CASES=hot-write,spread-write` adds Bun CPU profiles and heap dumps to the
 separate diagnostic runs. Profiles carry the same frozen sources and fixture
-but never replace an uninstrumented timing repeat. Heap profiles are allocation
-sampling evidence, not an independently measured total allocation rate.
+but never replace an uninstrumented timing repeat. Bun 1.4.2 emits snapshot-format
+heap dumps here with no allocation samples; these establish retained objects,
+not an allocation rate or allocation-site attribution.
 
 ## Controls and retention
 
