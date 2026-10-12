@@ -47,6 +47,7 @@
     "apps/self-host": {
       "name": "@akter/self-host",
       "dependencies": {
+        "@aws-sdk/client-s3": "3.1148.0",
         "@effect/platform-bun": "catalog:",
         "@effect/platform-node": "catalog:",
         "@rikalabs/akter": "workspace:*",

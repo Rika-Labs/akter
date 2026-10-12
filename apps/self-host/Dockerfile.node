@@ -12,8 +12,9 @@ COPY --from=build /app/packages/akter/package.json ./packages/akter/package.json
 COPY --from=build /app/packages/akter/dist ./packages/akter/dist
 COPY --from=build /app/packages/akter/node_modules ./packages/akter/node_modules
 COPY --from=build /app/apps/self-host ./apps/self-host
+RUN mkdir -p /data/store && chown -R node:node /data
 USER node
 STOPSIGNAL SIGTERM
-EXPOSE 8080 9000
+EXPOSE 8080
 HEALTHCHECK --interval=2s --timeout=3s --start-period=30s --retries=30 CMD ["node", "apps/self-host/src/probe.ts", "ready"]
-CMD ["node", "apps/self-host/src/node.ts"]
+CMD ["node", "apps/self-host/src/server.ts"]
