@@ -19,7 +19,7 @@ import {
   PAGES_PREFIX,
   segmentKey,
 } from "../../../../packages/akter/src/store/keys.ts"
-import { Store, storeOf, type StoreOptions } from "../../../../packages/akter/src/store/layer.ts"
+import { Store, storeOf, type StoreOptions } from "../../../../packages/akter/src/store/service.ts"
 import { runnerDefaults, runnerStorage } from "../../../../packages/akter/src/store/runners.ts"
 
 /** A backend under test: `namespace` gives a fresh empty store location and a way to open clients on it. */

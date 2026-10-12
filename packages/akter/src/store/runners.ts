@@ -2,7 +2,7 @@ import { Clock, Duration, Effect, Layer, Option, Random, Schema } from "effect"
 import { PersistenceError } from "effect/cluster/ClusterError"
 import * as RunnerStorage from "effect/cluster/RunnerStorage"
 import * as ShardingConfig from "effect/cluster/ShardingConfig"
-import { Store } from "./layer.ts"
+import { Store } from "./service.ts"
 
 /**
  * Cluster timing on a bucket: a shard lock expires after 30 seconds without

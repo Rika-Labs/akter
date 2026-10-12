@@ -1,3 +1,5 @@
+import * as Store from "./store/layer.ts"
+
 export type { CheckOptions, CheckReport, Probe } from "./store/check.ts"
 export type { Manifest, Segment, StoreMeta } from "./store/codec.ts"
 export { CorruptSegment, MissingPage, StaleEpoch, StoreUnavailable } from "./store/errors.ts"
@@ -10,5 +12,7 @@ export {
 } from "./store/faults.ts"
 export type { Leases } from "./store/leases.ts"
 export type { Lease, StoredSegment } from "./store/log.ts"
-export { Store, type StoreOptions } from "./store/layer.ts"
+export type { StoreOptions } from "./store/service.ts"
 export type { S3Options } from "./store/s3.ts"
+
+export { Store }
