@@ -831,82 +831,81 @@ export const ownerCacheMultiXactConformance: ConformanceCase = {
     ),
 }
 
-/** Pipeline cases cover ordered flights and batching. Receipt triggers observe planner restoration for SQL-free warm and grouped handlers without turning the observation itself into a fallback. */
+/** Pipeline cases cover ordered flights and batching. Receipt triggers observe planner restoration for SQL-free handlers without forcing fallback. Grouped identities predate warmup so one fixture exercises both warm guards and ordinary groups. */
 export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
-  ...(["on", "off"] as const).flatMap((seqscan) =>
-    (["ordinary", "warm-guard", "grouped"] as const).map(
-      (path) =>
-        ({
-          name: `pipeline: ${path} receipt planning restores the session's ${seqscan} setting before business SQL`,
-          requiresIndependentConnections: true,
-          timeoutMs: 60_000,
-          run: ({ expect, environment }) =>
-            withProbe(
-              environment,
-              { seqscan, warm: path === "warm-guard", prepare: false },
-              (probe) =>
-                Effect.gen(function* () {
-                  const sql = yield* SqlClient.SqlClient
-                  yield* sql.unsafe(`CREATE TABLE planner_observations (
+  ...(["on", "off"] as const).map(
+    (seqscan) =>
+      ({
+        name: `pipeline: receipt planning restores the session's ${seqscan} setting on ordinary, warm-guard and grouped paths`,
+        requiresIndependentConnections: true,
+        timeoutMs: 60_000,
+        run: ({ expect, environment }) =>
+          withProbe(environment, { seqscan, warm: true, prepare: false }, (probe) =>
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient
+              yield* sql.unsafe(`CREATE TABLE planner_observations (
                   command_id text PRIMARY KEY, actor_id text NOT NULL, setting text NOT NULL)`)
-                  yield* sql.unsafe(`CREATE FUNCTION observe_receipt_planning() RETURNS trigger LANGUAGE plpgsql AS $$
+              yield* sql.unsafe(`CREATE FUNCTION observe_receipt_planning() RETURNS trigger LANGUAGE plpgsql AS $$
                   BEGIN
                     INSERT INTO planner_observations VALUES
                       (NEW.command_id, NEW.actor_id, current_setting('enable_seqscan'));
                     RETURN NEW;
                   END $$`)
-                  yield* sql.unsafe(`CREATE TRIGGER observe_receipt_planning BEFORE INSERT ON actor_receipts
+              yield* sql.unsafe(`CREATE TRIGGER observe_receipt_planning BEFORE INSERT ON actor_receipts
                   FOR EACH ROW EXECUTE FUNCTION observe_receipt_planning()`)
-                  if (path === "ordinary") {
-                    const meter = yield* Meter.get("planner-ordinary")
-                    expect(yield* meter.PlannerFlag()).toBe(seqscan)
-                  } else if (path === "warm-guard") {
-                    const plain = yield* Plain.get("planner-warm")
-                    expect(yield* plain.Add(0)).toBe(0)
-                    const warm = yield* flightsOf(probe, plain.Add(3))
-                    expect(warm).toMatchObject({ value: 3, flights: 1 })
-                    expect(
-                      parsedStatements(warm.sent).filter(
-                        ({ sql }) => sql.includes("actor_receipts") && sql.includes("NOT EXISTS"),
-                      ).length,
-                    ).toBe(1)
-                  } else {
-                    const actors = yield* gathered(["planner-group-a", "planner-group-b"])
-                    const { fibers, release } = yield* actors.start((plain) => plain.Add(3))
-                    yield* release
-                    expect(yield* Effect.forEach(fibers, Fiber.join)).toEqual([4, 4])
-                    const groups = yield* sql<{ members: number }>`
+              const meter = yield* Meter.get("planner-ordinary")
+              expect(yield* meter.PlannerFlag()).toBe(seqscan)
+              const plain = yield* Plain.get("planner-warm")
+              expect(yield* plain.Add(0)).toBe(0)
+              const warm = yield* flightsOf(probe, plain.Add(3))
+              expect(warm).toMatchObject({ value: 3, flights: 1 })
+              expect(
+                parsedStatements(warm.sent).filter(
+                  ({ sql }) => sql.includes("actor_receipts") && sql.includes("NOT EXISTS"),
+                ).length,
+              ).toBe(1)
+              const test = yield* ActorTest
+              const actors = yield* Actors
+              const keys = ["planner-group-a", "planner-group-b"]
+              const ids = yield* Effect.forEach(keys, () => actors.mintCommandId)
+              for (const key of keys) expect(yield* (yield* Plain.get(key)).Add(1)).toBe(1)
+              const pauses = yield* Effect.forEach(ids, (commandId) =>
+                test.pauseNext("beforeHandler", { commandId }),
+              )
+              const fibers = yield* Effect.forEach(keys, (key, index) =>
+                Effect.flatMap(Plain.get(key), (grouped) =>
+                  Effect.forkChild(grouped.Add(3).pipe(Actor.commandId(ids[index]!), Effect.orDie)),
+                ),
+              )
+              yield* Effect.forEach(pauses, ({ reached }) => reached, { concurrency: "unbounded" })
+              yield* Effect.forEach(pauses, ({ release }) => release, { discard: true })
+              expect(yield* Effect.forEach(fibers, Fiber.join)).toEqual([4, 4])
+              const groups = yield* sql<{ members: number }>`
                     SELECT count(*)::integer AS members FROM planner_observations
+                    WHERE actor_id IN ${sql.in(keys)}
                     GROUP BY xmin::text HAVING count(DISTINCT actor_id) = 2`
-                    expect(groups).toEqual([{ members: 2 }])
-                  }
-                  const observed = yield* sql<{ setting: string }>`
+              expect(groups).toEqual([{ members: 2 }])
+              const observed = yield* sql<{ setting: string }>`
                   SELECT setting FROM planner_observations`
-                  expect(observed.map(({ setting }) => setting)).toEqual(
-                    Array.from(
-                      { length: { ordinary: 1, "warm-guard": 2, grouped: 4 }[path] },
-                      () => seqscan,
-                    ),
-                  )
-                  const statements = parsedStatements(probe.sent)
-                  const probes = statements.flatMap(({ sql }, index) =>
-                    sql.includes("WITH locked AS MATERIALIZED") && sql.includes("actor_receipts")
-                      ? [index]
-                      : [],
-                  )
-                  expect(probes.length > 0).toBe(true)
-                  for (const index of probes) {
-                    expect(statements[index - 1]!.sql).toContain(
-                      "set_config('durable.receipt_seqscan'",
-                    )
-                    expect(statements[index + 1]!.sql).toContain(
-                      "current_setting('durable.receipt_seqscan')",
-                    )
-                  }
-                }),
-            ),
-        }) satisfies ConformanceCase,
-    ),
+              expect(observed.map(({ setting }) => setting)).toEqual(
+                Array.from({ length: 7 }, () => seqscan),
+              )
+              const statements = parsedStatements(probe.sent)
+              const probes = statements.flatMap(({ sql }, index) =>
+                sql.includes("WITH locked AS MATERIALIZED") && sql.includes("actor_receipts")
+                  ? [index]
+                  : [],
+              )
+              expect(probes.length > 0).toBe(true)
+              for (const index of probes) {
+                expect(statements[index - 1]!.sql).toContain("set_config('durable.receipt_seqscan'")
+                expect(statements[index + 1]!.sql).toContain(
+                  "current_setting('durable.receipt_seqscan')",
+                )
+              }
+            }),
+          ),
+      }) satisfies ConformanceCase,
   ),
   ...[false, true].map(
     (warm) =>
