@@ -21,10 +21,10 @@ Dallen's decisions fix the result: one Effect client (D9), one RPC group over We
 export const Room = Actor.make("Room", {
   key: RoomId, // optional; default Schema.String
   state: Schema.Struct({
-    title: Schema.String.pipe(Schema.withDecodingDefault(() => "")),
-    admins: Schema.Array(UserId).pipe(Schema.withDecodingDefault(() => [])),
+    title: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+    admins: Schema.Array(UserId).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
     online: Schema.Record(Schema.String, Schema.String).pipe(
-      Schema.withDecodingDefault(() => ({})),
+      Schema.withDecodingDefault(Effect.succeed({})),
     ),
     messages: Actor.list(Message, { key: "id", by: "at" }),
   }),
@@ -76,13 +76,13 @@ export const RoomLive = Room.toLayer({
 
 ### 2. Rules
 
-1. **State** is a `Schema.Struct`. Every field has a decoding default or is an `Actor.list`; the initial state is the decode of `{}`; `Actor.make` is a type error if the encoded side is not fully optional. Adding a field is free; reshaping a field is a `Schema` transformation on that field. There is no `initial` and no `migrate` member. State without lists is capped at 256 KiB.
+1. **State** is a `Schema.Struct`. Every field has a decoding default (`Schema.withDecodingDefault(Effect.succeed(value))` on Effect 4.0.3), is `Schema.optional(X)` (its value may be `undefined`) or is an `Actor.list`; the initial state is the decode of `{}`; `Actor.make` is a type error if the encoded side is not fully optional. Adding a field is free; reshaping a field is a `Schema` transformation on that field. There is no `initial` and no `migrate` member. State without lists is capped at 256 KiB.
 2. **Lists** (`Actor.list(Item, { key?, by })`) are fields of state whose items live in content-addressed pages; they are unbounded. In actions: `put`, `get`, `delete`, `range({ from?, to?, limit?, reverse? })`, `deleteBefore(by)`. Clients read them as `handle.<list>.range(...)` and watch them ([ADR 0127](0127-snapshots-pages-lists-history-gc.md)).
 3. **No `index` member.** `X.find({ where, orderBy, limit })` works over top-level scalar state fields (string, number, boolean, literal, branded scalars, `DateTime`); strings are truncated to 64 bytes in the index; the index is held by the shard owner, persisted as pages at checkpoint, and queried by scatter-gather over the store's shards ([ADR 0131](0131-find-over-owner-held-index.md)).
 4. **Actions are synchronous plain functions, not Effects**: `(draft, payload, ctx) => void | Fails | Success`. The draft is copy-on-write; returning an instance of the declared `fails` error discards the draft and every staged effect; returning a value is the reply (`success` schema). `ctx` holds `caller` (narrowed by `access`), `id()`, `now()`, `random()` (recorded for replay), `self` (the actor's id), `send(Target, id).<action>(payload)`, `schedule(durationOrDate).<action>(payload)`, `start.<job>(payload, { key? })`, `emit.<event>(value)` and `connection` (in presence handlers). The lint `akter/synchronous-actions` bans `Date`, `Math.random`, `crypto`, `performance`, `process`, `globalThis`, `Promise` and `await` in action and view handlers ([ADR 0125](0125-synchronous-deterministic-actions.md)).
 5. **`cron`** is an action option, not a member ([ADR 0129](0129-jobs-timers-and-shard-workflow-engine.md)).
 6. **Views are optional.** Any caller that passes `access` can read and watch `state` and its lists; a view exists for a derived shape or to hide fields. View handlers are synchronous `(state, params, ctx) => value`.
-7. **Jobs** are the only place for I/O: `(payload, { self, step, emit, id, attempt }) => Effect`. `step(name, effect)` records the result so a finished step never repeats; every call from a job carries a command id derived from the job id and the call ordinal. Job requirements flow into the layer type. `onFailure` names an action that receives `Actor.JobFailure`.
+7. **Jobs** are the only place for I/O: `(payload, { self, step, emit, id, attempt }) => Effect`. `step(name, effect)` records the result so a finished step never repeats; every call from a job carries a command id derived from the job id, the enclosing step name (or `body` outside any step), the attempt and the call's ordinal within that scope, so concurrent calls in one scope must sit in distinct steps. Jobs expose no `withCompensation` or `addFinalizer`. Job requirements flow into the layer type. `onFailure` names an action that receives `Actor.JobFailure`.
 8. **Payloads, list items, events, views, job payloads and step results are Schema.** `Actor.action(payload?, options?)`, `Actor.view(success, { params? })`, `Actor.event(schema)`, `Actor.job(options)` and `Actor.list(item, options)` are the only constructors. One argument order everywhere: schema first, options second.
 9. **Client.** `X.client(id)` (scoped) exposes each action as an Effect, `state` as a `Stream` (a full frame, then patches), each list's `range` and watch, each view, each event as a `Stream`, and `join(presence)`. `X.find(...)` is static. Effect only (D9), one RPC group over WebSocket and HTTP at `/rpc` (D14) ([ADR 0130](0130-views-sessions-events-and-rpc.md)).
 10. **Server.** `X.toLayer({...})` is the one layer per actor (actions, views, jobs, `connect` and `disconnect` in one object). `Akter.serve({ auth })` plus `Store.s3({ bucket })`, `Store.fileSystem(dir)` or `Store.memory()`; one `Store` service is the log, the pages, the index and the runner leases ([ADR 0136](0136-stores-the-bucket-is-the-store.md)).

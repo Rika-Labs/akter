@@ -14,7 +14,7 @@ Replay rebuilds state from a checkpoint plus the tail after it, and every `Actio
 
 ### 1. Build id
 
-Every segment records the `build` that wrote it: a digest of the application bundle, the framework version and the JavaScript engine name and version. `meta/store` records nothing about builds; each release brings its own.
+Every segment records the `build` that wrote it: a digest of the application bundle, the framework version, the runtime and its version, the JavaScript engine, platform, architecture, and the ICU, Unicode and time-zone database versions. Replay runs only on a matching `build`; the stored outcome check is the backstop. `meta/store` records nothing about builds; each release brings its own.
 
 ### 2. Who replays a tail
 

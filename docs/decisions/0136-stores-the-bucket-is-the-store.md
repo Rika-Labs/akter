@@ -57,7 +57,7 @@ A store that fails any of 1–4 is unsupported. The supported-provider list in t
 - The first runner of a new store creates `meta/store` with `If-None-Match: *` (store id, shard count, format version, retention, created-at). A runner whose configuration disagrees with an existing `meta/store` refuses to start. There are no schema migrations: the format version changes only through a new ADR.
 - **Development:** `akter dev` uses `Store.fileSystem` with no flags and no services.
 - **Self-hosted:** one container image plus a bucket: `AKTER_BUCKET`, an endpoint and credentials. The compose reference runs MinIO. Multi-runner self-hosting coordinates through the bucket.
-- **Akter Cloud:** one bucket per environment incarnation in a Cloudflare account dedicated to customer stores (D1, D12), created lazily at the first deployment, delivered to runners as temporary bucket-scoped credentials refreshed through the edge, retired 30 days after the environment is deleted (D13). The hosted runtime composes these public layers privately; there is no public `AkterCloud.layer`. Cloud ADRs own the lifecycle.
+- **Akter Cloud:** one bucket per environment incarnation in a Cloudflare account dedicated to customer stores (D1, D12), created lazily at the first deployment, delivered to runners as temporary bucket-scoped credentials refreshed through the edge, retired 30 days after the environment is deleted (D13). Preview and pull-request stage stores live in a third Cloudflare account, so a preview stage token can never reach a production store (D26). The hosted runtime composes these public layers privately; there is no public `AkterCloud.layer`. Cloud ADRs own the lifecycle.
 
 ### 4. Isolation
 

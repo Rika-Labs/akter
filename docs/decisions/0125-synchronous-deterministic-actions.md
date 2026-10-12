@@ -50,7 +50,7 @@ Admission time is the shard owner's wall clock at admission, clamped so it never
 
 ### 4. Enforcement
 
-- **Lint.** `akter/synchronous-actions` bans `Date`, `Math.random`, `crypto`, `performance`, `process`, `globalThis`, `Promise`, `await` and `async` in action and view handlers, including handlers in files that call `.toLayer(` on an actor contract. It runs with the repository's other oxlint rules.
+- **Lint.** `akter/synchronous-actions` bans `Date`, `Math.random`, `crypto`, `performance`, `process`, `globalThis`, `Promise`, `await` and `async` in action and view handlers. It also bans what can differ between engines or builds: non-exact `Math` functions (`sin`, `cos`, `exp`, `log`, `pow` and the like; `floor`, `ceil`, `round`, `trunc`, `abs`, `min`, `max` and `sign` stay), the `**` operator, `Intl`, `toLocale*`, `localeCompare`, `toString(radix)`, reading `error.message` or `error.stack`, and `structuredClone`. The rule covers handlers in files that call `.toLayer(` on an actor contract. It runs with the repository's other oxlint rules.
 - **Runtime.** The handler runs synchronously; any suspension or thenable result is the `SynchronousActionViolation` defect naming the actor and action.
 - **Replay.** Every `Action` entry stores its encoded outcome; a replayed action whose outcome differs is the `ReplayMismatch` defect, which stops the shard and reports the command id.
 - **Simulation.** `Simulation` runs each action twice against cloned state and compares the encoded outcome and staged effects; the seed matrix runs on Node and on Bun and compares segment bytes.
@@ -87,7 +87,7 @@ No record is superseded in full here; [ADR 0128](0128-constrained-actor-api.md) 
 - Actions cannot do I/O, sleep or call another actor and wait. I/O moves to jobs; replies from other actors arrive as actions.
 - An action's cost is CPU only, so an actor's throughput is bounded by handler time and the group commit, not by round trips.
 - Applications that keep mutable module-level state or read `process.env` in handlers fail lint and may fail replay; the defect names the action.
-- Node and Bun can disagree in the last bit of `Math.sin`-family functions. Cross-engine replay is refused by default ([ADR 0133](0133-build-matched-replay.md)).
+- Node and Bun can disagree in the last bit of `Math.sin`-family functions, `Intl` output and error text, so the lint bans them in handlers; cross-build replay is still refused by default ([ADR 0133](0133-build-matched-replay.md)).
 
 ## Evidence
 

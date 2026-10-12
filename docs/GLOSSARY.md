@@ -51,7 +51,7 @@
 ## Contract and execution
 
 - **Contract:** the value `Actor.make` returns, shared with clients: key, state, actions and the optional views, events, jobs, presence and access.
-- **State:** a `Schema.Struct` whose fields all have decoding defaults or are lists; at most 256 KiB without lists.
+- **State:** a `Schema.Struct` whose fields each have a decoding default, are `Schema.optional` or are lists; at most 256 KiB without lists.
 - **List:** a state field declared with `Actor.list(Item, { key?, by })` whose items live in page trees; unbounded.
 - **Action:** a synchronous, deterministic handler `(draft, payload, ctx) => void | Fails | Success` declared with `Actor.action`.
 - **Draft:** the copy-on-write view of state an action changes; discarded with every staged effect on failure.
@@ -87,7 +87,7 @@
 
 - **Command ID:** an action's retry identity. External ids are client-minted `v1.<issuedAtMs>.<expiresAtMs>.<uuidv4>`; derived ids are UUIDv8 computed from a parent id and an ordinal.
 - **Derived command ID:** the id of a send, timer firing, job call or `ctx.id()` value; reproducible on replay and never accepted from a client.
-- **Deduplication:** a repeated id runs at most once: client ids in shard-level buckets until expiry, sends by per-stream watermarks, job calls until the job call window.
+- **Deduplication:** a repeated id runs at most once: client ids (10-minute lifetime) in time-bucketed pages keyed by expiry, sends and job calls by per-stream sequence watermarks that keep unacknowledged outcomes.
 - **Caller:** `User { subject } | Anonymous | System { source, ref?, onBehalfOf? }`; no roles.
 - **Access:** the contract's optional `(caller, request) => boolean`; default allows `User` and `System`.
 - **ActorError:** the single framework error; its `reason` is one of the reasons in the [error model](contracts/error-model.md).

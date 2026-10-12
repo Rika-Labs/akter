@@ -34,7 +34,7 @@ An action handler is `(draft, payload, ctx) => void | Fails | Success`, declared
 | `emit.<event>(value)`                        | stages an event ([realtime](07-realtime.md))                                                                     |
 | `connection`                                 | the connection id; present only in `connect` and `disconnect`                                                    |
 
-An action MUST NOT have any other capability: no I/O, no clock, no randomness, no service environment, no `X.client`. The lint `akter/synchronous-actions` MUST reject `Date`, `Math.random`, `crypto`, `performance`, `process`, `globalThis`, `Promise`, `async` and `await` in action and view handlers.
+An action MUST NOT have any other capability: no I/O, no clock, no randomness, no service environment, no `X.client`. The lint `akter/synchronous-actions` MUST reject `Date`, `Math.random`, `crypto`, `performance`, `process`, `globalThis`, `Promise`, `async` and `await` in action and view handlers, and MUST also reject non-exact `Math` functions (`floor`, `ceil`, `round`, `trunc`, `abs`, `min`, `max` and `sign` are allowed), the `**` operator, `Intl`, `toLocale*`, `localeCompare`, `toString(radix)`, reads of `error.message` or `error.stack`, and `structuredClone`.
 
 ## Admission time
 

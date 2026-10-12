@@ -11,7 +11,7 @@ Status: proposal (0.2), owned by ADR 0126; promoted when E3 failure evidence lan
 
 - A call through `X.client(id)` from a client, a job or other server code MUST be a request/reply: the action runs on the owner and the reply is its recorded outcome after durability ([durability](03-durability.md)).
 - The client MUST retry retryable failures with the same command id. There is no fire-and-forget call from outside an action.
-- A job's calls MUST carry ids derived from the job id and the call ordinal ([background work](08-background-work.md)).
+- A job's calls MUST carry ids derived from the job id, the enclosing step name or `body`, the attempt and the ordinal within that scope ([background work](08-background-work.md)).
 
 ## Sends from an action
 

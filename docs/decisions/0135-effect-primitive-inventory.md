@@ -40,7 +40,7 @@ Effect is the runtime foundation ([ADR 0121](0121-effect-4-0-3.md)). The engine 
 | `HttpApi` derivation, `OpenApi`, Scalar                                  | One RPC protocol (D14); the public Cloud API contract keeps its own `HttpApi`                    |
 | `persistence/RateLimiter`, Redis                                         | Quotas are edge admission plus store limits; no Redis in the stack                               |
 | `Atom`, `AtomRpc`, `ManagedRuntime` facades                              | React and Promise clients are not in 0.2.0 (D8, D9)                                              |
-| `DurableDeferred`, `Workflow.withCompensation`                           | Not exposed to jobs in 0.2.0                                                                     |
+| `DurableDeferred`, `Workflow.withCompensation`, `Workflow.addFinalizer`  | Not exposed to jobs in 0.2.0                                                                     |
 
 ### 3. The E1 adapter spike decides the Cluster boundary
 
@@ -52,7 +52,7 @@ If the spike shows that using Cluster for routing, membership and transport need
 
 ### 5. Version and platform rules
 
-`effect` and every `@effect/*` package stay pinned at exactly 4.0.3 through 0.2.0 ([ADR 0121](0121-effect-4-0-3.md)). An upgrade moves the whole family together and passes the simulator seed matrix and the bucket-protocol suites first. Node 24+ and Bun 1.4+ are both supported (D6); a Bun-specific layer without a Node counterpart is a defect in the inventory.
+`effect` and every `@effect/*` package stay pinned at exactly 4.0.3 through 0.2.0 ([ADR 0121](0121-effect-4-0-3.md)). An upgrade moves the whole family together and passes the simulator seed matrix, the bucket-protocol suites and Effect's 22 `WorkflowEngine.layerMemory` behavior tests against `ShardWorkflowEngine` first. Node 24+ and Bun 1.4+ are both supported (D6); a Bun-specific layer without a Node counterpart is a defect in the inventory.
 
 ## Supersedes and amends
 
