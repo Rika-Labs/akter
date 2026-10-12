@@ -449,16 +449,17 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
         content: Option.isSome(contentStore),
       })
 
-      const withProtocol = (
+      const withProtocol = Effect.fnUntraced(function* (
         request: HttpServerRequest.HttpServerRequest,
         response: HttpServerResponse.HttpServerResponse,
-      ) => {
+      ) {
         const origin = Headers.get(request.headers, "origin")
 
-        const stamped = HttpServerResponse.setHeaders(response, {
-          "durable-protocol": String(PROTOCOL),
-          "durable-now": String(clock.now()),
-        })
+        const timed = yield* clock.now.pipe(
+          Effect.map((now) => HttpServerResponse.setHeader(response, "durable-now", String(now))),
+          Effect.catch((error) => actorErrorResponse(error)),
+        )
+        const stamped = HttpServerResponse.setHeader(timed, "durable-protocol", String(PROTOCOL))
 
         return Option.isSome(origin) && origins.has(origin.value)
           ? HttpServerResponse.setHeaders(stamped, {
@@ -467,7 +468,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
               vary: "Origin",
             })
           : stamped
-      }
+      })
 
       const guard = Effect.fnUntraced(function* (request: HttpServerRequest.HttpServerRequest) {
         const origin = Headers.get(request.headers, "origin")
@@ -508,13 +509,11 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
             Effect.provideService(CurrentCaller, Anonymous.make({})),
             Effect.catch((error) => actorErrorResponse(error)),
             Effect.catchCause(defectResponse),
+            Effect.flatMap((response) => withProtocol(request, response)),
             Effect.map((response) =>
-              withProtocol(
-                request,
-                headers === undefined
-                  ? response
-                  : HttpServerResponse.setHeaders(response, headers(request)),
-              ),
+              headers === undefined
+                ? response
+                : HttpServerResponse.setHeaders(response, headers(request)),
             ),
           )
 
@@ -1277,11 +1276,11 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
       }
 
       yield* route("GET", "/protocol", () =>
-        Effect.succeed(
+        Effect.map(clock.now, (now) =>
           HttpServerResponse.jsonUnsafe({
             protocol: PROTOCOL,
             retryWindowMs: actors.retryWindowMs,
-            now: clock.now(),
+            now,
           }),
         ),
       )
