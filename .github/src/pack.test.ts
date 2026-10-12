@@ -86,3 +86,35 @@ export const store = Store.s3({ bucket: "store" })
       }),
     ),
 )
+
+it.each(["bun", "node"] as const)(
+  "bundles the client entry without server, engine, store or AWS/Smithy modules for %s",
+  (target) =>
+    runtime.runPromise(
+      Effect.gen(function* () {
+        const sources = yield* bundledSources(
+          `import { AkterClient } from "@rikalabs/akter/client"
+export const layer = AkterClient.layer
+`,
+          target,
+        )
+        expect(sources.some((source) => source.endsWith("client/transport.ts"))).toBe(true)
+        expect(sources.some((source) => source.endsWith("rpc/group.ts"))).toBe(true)
+        expect(sources.filter((source) => AWS.test(source))).toEqual([])
+        expect(sources.filter((source) => source.includes("@effect/platform-"))).toEqual([])
+        expect(
+          sources.filter((source) =>
+            /packages\/akter\/src\/(?:serve|store|snapshots|testing|runtime)\/|packages\/akter\/src\/server\.ts/.test(
+              source,
+            ),
+          ),
+        ).toEqual([])
+        expect(
+          sources
+            .filter((source) => source.includes("packages/akter/src/execution/"))
+            .map((source) => source.split("/").at(-1) ?? source)
+            .toSorted((left, right) => left.localeCompare(right)),
+        ).toEqual(["command-ids.ts", "digest.ts"])
+      }),
+    ),
+)
