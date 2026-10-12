@@ -54,13 +54,21 @@
   },
   "overrides": [
     {
-      "files": ["apps/self-host/src/peers.ts", "apps/self-host/src/probe.ts"],
+      "files": [
+        "apps/self-host/src/bucket.ts",
+        "apps/self-host/src/probe.ts",
+        "apps/self-host/src/server.ts"
+      ],
       "rules": {
         "effecttsgo/strict-effect-provide": "off"
       }
     },
     {
-      "files": ["apps/cli/src/platform.ts", "apps/self-host/src/peers.ts"],
+      "files": [
+        "apps/cli/src/platform.ts",
+        "apps/self-host/src/bucket.ts",
+        "apps/self-host/src/server.ts"
+      ],
       "rules": {
         "effecttsgo/node-builtin-import": "off"
       }

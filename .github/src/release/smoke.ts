@@ -74,9 +74,11 @@ console.log("cloud-api contract passed")
 
 const consumerMain = `import assert from "node:assert/strict"
 import { Actor, ActorError, InvalidInput, User } from "@rikalabs/akter"
-import { ASSERTION_HEADER, requestDigest, Store } from "@rikalabs/akter/server"
+import { AkterClient } from "@rikalabs/akter/client"
+import { Akter, App, ASSERTION_HEADER, Auth, requestDigest, Store } from "@rikalabs/akter/server"
 import { Simulation } from "@rikalabs/akter/testing"
-import { Effect, Schema } from "effect"
+import { Context, Effect, Layer, Schema } from "effect"
+import { HttpServer } from "effect/http"
 
 const caller = Schema.decodeUnknownSync(User)({ _tag: "User", subject: "smoke" })
 assert.equal(caller.subject, "smoke")
@@ -100,6 +102,12 @@ const Counter = Actor.make("Counter", {
   state: Schema.Struct({ n: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
   actions: { bump: Actor.action({ success: Schema.Finite }) },
 })
+const CounterLive = Counter.toLayer({
+  bump: (counter) => {
+    counter.n += 1
+    return counter.n
+  },
+})
 const counted = await Simulation.run(
   { actors: [Counter], seed: 1 },
   Effect.gen(function* () {
@@ -108,15 +116,32 @@ const counted = await Simulation.run(
     yield* Simulation.settle
     return (yield* Simulation.state(Counter, "c")).n
   }).pipe(Effect.scoped),
-  Counter.toLayer({
-    bump: (counter) => {
-      counter.n += 1
-      return counter.n
-    },
-  }),
+  CounterLive,
 )
 assert.equal(counted, 1)
-console.log("root, server and testing entries passed")
+
+const served = await Effect.runPromise(
+  Effect.gen(function* () {
+    const context = yield* Layer.build(
+      Akter.serve({
+        app: App.make({ actors: [Counter], layer: CounterLive }),
+        auth: Auth.make(() => Effect.succeed({ caller: User.make({ subject: "smoke" }), tenant: "default" })),
+        port: 0,
+        hostname: "127.0.0.1",
+      }).pipe(Layer.provide(Store.memory())),
+    )
+    const address = Context.get(context, HttpServer.HttpServer).address
+    assert.ok("port" in address)
+    const bump = (scheme: "http" | "ws") =>
+      Effect.flatMap(Counter.client("served"), (counter) => counter.bump()).pipe(
+        Effect.scoped,
+        Effect.provide(AkterClient.layer({ url: \`\${scheme}://127.0.0.1:\${address.port}/rpc\`, actors: [Counter] })),
+      )
+    return [yield* bump("http"), yield* bump("ws")]
+  }).pipe(Effect.scoped),
+)
+assert.deepEqual(served, [1, 2])
+console.log("root, server, client and testing entries passed")
 `
 
 const cliSmoke = Effect.fn("cliSmoke")(function* ({
@@ -269,7 +294,7 @@ const program = Effect.gen(function* () {
 
   const output = (yield* run([engine, "main.ts"], consumer)).trim()
 
-  if (output !== "root, server and testing entries passed")
+  if (output !== "root, server, client and testing entries passed")
     return yield* Effect.die(new Error(`Entry check failed: ${output}`))
 
   yield* cliSmoke({ engine, consumer, bin: path.join(consumer, "node_modules/.bin/akter") }).pipe(
@@ -277,7 +302,7 @@ const program = Effect.gen(function* () {
   )
 
   yield* Console.log(
-    `${staged.name}@${staged.version}: ${tarball} installs into a clean project, typechecks, and its root, server and testing entries run on ${engine}; ${cliStaged.name}@${cliStaged.version}: cloud-api types, import, endpoint and schema checks, help and offline login help pass`,
+    `${staged.name}@${staged.version}: ${tarball} installs into a clean project, typechecks, and its root, server, client and testing entries run on ${engine}, serving /rpc to the client over HTTP and WebSocket; ${cliStaged.name}@${cliStaged.version}: cloud-api types, import, endpoint and schema checks, help and offline login help pass`,
   )
 }).pipe(Effect.scoped)
 

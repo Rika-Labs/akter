@@ -94,6 +94,8 @@ D14 fixes one RPC group served over WebSocket and HTTP at `/rpc`, JSON on the wi
 | E4        | Client conformance on both runtimes: full frame then patches, read-your-writes, slow consumer, owner move, reauthorization at the bound and on revocation, origin refusal, per-call callers over HTTP, session caller over WebSocket; I2 for every streamed value |
 | E4        | Presence: crash of the gateway and of the owner both yield exactly one `disconnect` per durable `connect`                                                                                                                                                         |
 
+E4's results, and the cases still open (owner move, slow consumer, owner crash with presence), are in [E4 RPC and serving](../verification/e4-rpc-serve.md).
+
 ## Revisit when
 
 - The Python client returns and needs a derived HTTP API.

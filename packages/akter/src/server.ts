@@ -25,6 +25,13 @@ export type { S3Options } from "./store/s3.ts"
 
 export { Store }
 
+export { Akter } from "./serve/akter.ts"
+export type { ServeOptions } from "./serve/akter.ts"
+export { Auth } from "./serve/providers.ts"
+export type { AuthProvider, AuthRequest, Authenticated, Binding } from "./serve/auth.ts"
+export { App, AppLayerFailed } from "./runtime/app.ts"
+export type { AppServices } from "./runtime/app.ts"
+
 export {
   ASSERTION_HEADER,
   ASSERTION_TYPE,

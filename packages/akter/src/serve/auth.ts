@@ -1,25 +1,24 @@
 import { Data, type DateTime, Effect, Option, Predicate, Schema } from "effect"
 import { Headers } from "effect/http"
-import type { ActorUnavailable } from "../errors/actor.ts"
-import { Unauthorized } from "../errors/actor.ts"
-import { Anonymous, User } from "../identity/caller.ts"
+import { Anonymous, User } from "../contract/caller.ts"
+import { ActorError, Unauthorized } from "../contract/errors.ts"
 import { ASSERTION_HEADER } from "./assertion/binding.ts"
 
-/** What a provider may read: headers, cookies when it asks for them, and a frame credential. Never the body. */
+/** What a provider may read: headers, cookies when it asks for them, and a renewal credential. Never the body. */
 export interface AuthRequest {
   readonly headers: Headers.Headers
   /** Empty unless the provider accepts a cookie credential. */
   readonly cookies: Readonly<Record<string, string>>
   /**
-   * A credential carried outside the headers, such as a WebSocket `hello`
-   * frame's `authorization`; it has the header's form, `Bearer <token>`.
+   * A credential carried outside the headers: the `authorization` a session's
+   * `$reauthenticate` call sends; it has the header's form, `Bearer <token>`.
    */
   readonly credential?: string
 }
 
 /** What a provider resolves a request to: who is calling, in which tenant, and until when. */
 export interface Authenticated {
-  readonly caller: typeof User.Type | typeof Anonymous.Type
+  readonly caller: User | Anonymous
   readonly tenant: string
   /** The credential's own expiry, which caps live sessions. */
   readonly expiresAt?: DateTime.Utc
@@ -38,7 +37,7 @@ export interface Binding {
   readonly session?: string
 }
 
-/** A credential a provider reads, documented as one OpenAPI security scheme. */
+/** A credential a provider reads. */
 export type Credential = Data.TaggedEnum<{
   /** `authorization: Bearer <token>`. */
   Bearer: {}
@@ -53,7 +52,7 @@ export type Credential = Data.TaggedEnum<{
 /** Constructors and matchers for `Credential`. */
 export const Credential = Data.taggedEnum<Credential>()
 
-/** One way to authenticate every request an `Actor.serve` layer answers. */
+/** One way to authenticate every request `Akter.serve` answers. */
 export interface AuthProvider<R = never> {
   /**
    * The credentials the provider accepts, any one of which authenticates a
@@ -61,24 +60,21 @@ export interface AuthProvider<R = never> {
    * `authenticate` see the request's cookies.
    */
   readonly credentials: ReadonlyArray<Credential>
-  readonly authenticate: (
-    request: AuthRequest,
-  ) => Effect.Effect<Authenticated, Unauthorized | ActorUnavailable, R>
+  readonly authenticate: (request: AuthRequest) => Effect.Effect<Authenticated, ActorError, R>
   /**
    * Rereads the provider's verification keys at once, for a request that
    * proves it comes from the key issuer. A provider that has one is served
    * a refresh route beside the protocol routes.
    */
-  readonly refreshKeys?: (
-    request: AuthRequest,
-  ) => Effect.Effect<void, Unauthorized | ActorUnavailable, R>
+  readonly refreshKeys?: (request: AuthRequest) => Effect.Effect<void, ActorError, R>
 }
 
-/** An `Unauthorized` failure with the given reason code. */
-export const unauthorized = (code: Unauthorized["code"]) => Unauthorized.make({ code })
+/** An `ActorError` whose reason is `Unauthorized` with the given code. */
+export const unauthorized = (code: (typeof Unauthorized.Type)["code"]) =>
+  ActorError.make({ reason: Unauthorized.make({ code }) })
 
 /**
- * The token of an `authorization: Bearer` header, or of the request's frame
+ * The token of an `authorization: Bearer` header, or of the request's renewal
  * credential, which carries the same `Bearer <token>` value.
  */
 export const bearerToken = (request: AuthRequest) => {
@@ -103,7 +99,7 @@ export const none: AuthProvider = {
 }
 
 /** Verifies a request's credential; fails `Unauthorized` when it is missing, invalid, or expired. */
-type Authenticate<R> = (request: AuthRequest) => Effect.Effect<Authenticated, Unauthorized, R>
+type Authenticate<R> = (request: AuthRequest) => Effect.Effect<Authenticated, ActorError, R>
 
 /**
  * Options of a custom provider. It reads `authorization: Bearer` unless it
@@ -131,7 +127,7 @@ const cookieName = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/
  *
  * @example
  * ```ts
- * Actor.auth.make((request) =>
+ * Auth.make((request) =>
  *   Effect.succeed({ caller: User.make({ subject: "ada" }), tenant: "acme" }),
  * )
  * ```
@@ -144,9 +140,7 @@ export const make = <R = never>(provider: Authenticate<R> | MakeOptions<R>): Aut
     return { credentials: [Credential.Bearer()], authenticate: provider.authenticate }
 
   if (!cookieName.test(provider.cookies.name))
-    throw new Error(
-      `Actor.auth.make: ${JSON.stringify(provider.cookies.name)} is not a cookie name`,
-    )
+    throw new Error(`Auth.make: ${JSON.stringify(provider.cookies.name)} is not a cookie name`)
 
   const cookie = Credential.Cookie({ name: provider.cookies.name })
 
@@ -192,7 +186,7 @@ export const CREDENTIAL_BYTES = 8 * 1024
 
 /**
  * Whether a credential `provider` would read from the request is over `limit`
- * UTF-8 bytes: the `authorization` header or a frame credential, the cookie
+ * UTF-8 bytes: the `authorization` header or a renewal credential, the cookie
  * header for a cookie provider, and `durable-assertion` for an assertion
  * provider. Checked before the provider runs, so it never parses an oversized one.
  */

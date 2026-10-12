@@ -1,6 +1,6 @@
 # Wire protocol
 
-Status: proposal (0.2), owned by ADR 0130; promoted when E4 failure evidence lands.
+Status: proposal (0.2), owned by ADR 0130. E4 evidence for calls, same-id retries, streams, sessions, refusals and readiness is in [E4 RPC and serving](../verification/e4-rpc-serve.md); promoted when the items that page lists as open have evidence.
 
 **Responsibility:** define the one client wire, its request identity, hosted assertions and readiness.  
 **Authority:** normative API contract target on `rewrite/0.2`.  
@@ -9,7 +9,8 @@ Status: proposal (0.2), owned by ADR 0130; promoted when E4 failure evidence lan
 
 ## One RPC group at `/rpc`
 
-- A server MUST serve one RPC group, derived from the actor contracts, over WebSocket and over HTTP at the same path, `{basePath}/rpc`, with JSON serialization on both. There MUST be no other actor route: no per-member HTTP routes, no SSE, no OpenAPI document, no `/protocol` or `/command-ids` route.
+- A server MUST serve one RPC group, derived from the actor contracts, over WebSocket and over HTTP at the same path, `{basePath}/rpc`, with JSON serialization on both: one JSON message per WebSocket frame, and newline-delimited JSON (`application/ndjson`) over HTTP. There MUST be no other actor route: no per-member HTTP routes, no SSE, no OpenAPI document, no `/protocol` or `/command-ids` route.
+- Call tags MUST be `<Actor>/<action>` for actions and `<Actor>/$<kind>[:<member>]` for everything else: `$state`, `$range:<list>`, `$watch:<list>`, `$view:<view>`, `$event:<event>`, `$join` and `$find`, plus the group-wide `$reauthenticate`. An edge classifies a call from its tag alone: no `$` is an action, `$join` writes presence, `$reauthenticate` renews a session, and every other `$` tag only reads. Actor and member names MUST NOT be empty, contain `/` or start with `$`; internal actions are not in the group.
 - The Effect client is the only client ([ADR 0128](../decisions/0128-constrained-actor-api.md)). A transport adapter MUST preserve the semantics of the [durability](03-durability.md) and [realtime](07-realtime.md) contracts and MUST NOT define its own lifecycle states.
 - The served mapping MUST be the same on Bun 1.4+ and Node 24+.
 
@@ -17,7 +18,7 @@ Status: proposal (0.2), owned by ADR 0130; promoted when E4 failure evidence lan
 
 - Every call MUST name the actor type, the actor id and the member. Tenant and caller MUST come only from `auth` ([security](10-security.md)), never from the call, a path, a client-controlled header or a frame.
 - An action call MUST carry an external command id `v1.<issuedAtMs>.<expiresAtMs>.<uuidv4>` minted by the client from its own clock. The server MUST NOT mint an id for a caller. Retries MUST resend the same id and payload; identity-bound metadata MUST survive retries unchanged and adapters MUST NOT refresh it or mint a replacement. A `future` refusal carries the owner's admission time so the client can correct its clock before minting new ids.
-- An action response MUST carry the outcome and a `replayed` flag: `false` for a newly durable action, `true` for a stored outcome returned to an authorized retry, declared failures included. The flag MUST come from admission, never from a separate lookup. Refusals before execution carry no flag.
+- An action call's payload is `{ id, commandId, payload }`. Its success is `{ value, replayed }`, and a declared failure is the exit's error `ActionFailed { error, replayed }` with `error` in the declared error's own schema encoding. `replayed` is `false` for a newly durable action and `true` for a stored outcome returned to an authorized retry, declared failures included. The flag MUST come from admission, never from a separate lookup. Refusals before execution carry no flag.
 - State, list, view and event members MUST be streaming calls. A state, list or view stream MUST send a full value first and JSON patches after ([realtime](07-realtime.md)).
 - `join(params)` MUST be a scoped streaming call whose start runs `connect` and whose end runs `disconnect`.
 - `find` MUST be a call on the actor type with `where`, `orderBy` and `limit`.
@@ -26,15 +27,15 @@ Status: proposal (0.2), owned by ADR 0130; promoted when E4 failure evidence lan
 
 ## HTTP
 
-- `POST {basePath}/rpc` carries one JSON request; streaming responses use the RPC HTTP protocol's framing.
-- Refusals before the RPC handler runs MUST answer an HTTP status with the error envelope: `403` for a refused `Origin`, `401` for missing, invalid or expired credentials, `503` with `retry-after` for `admission.requests` saturation, `429` for `QuotaExceeded`.
-- Each HTTP request MUST be authenticated on its own.
+- `POST {basePath}/rpc` carries one request as an NDJSON line, ending in a newline; the response is NDJSON, and a streaming call keeps it open until its exit. A trailing `/` on the path is accepted.
+- Refusals before the RPC handler runs MUST answer an HTTP status with the error envelope: `403` for a refused `Origin` or tenant, `401` with `www-authenticate: Bearer` for missing, invalid or expired credentials, `503` with `retry-after` when the auth provider is unavailable or for `admission.requests` saturation, `429` for `QuotaExceeded`. A client MUST surface the envelope's `ActorError` as the call's failure, not as a transport failure.
+- Each HTTP request MUST be authenticated on its own, and its calls run in a session that lasts as long as the request, with the same reauthorization as a socket's.
 
 ## WebSocket
 
 - The upgrade is `GET {basePath}/rpc`. Caller and tenant MUST be bound at the upgrade and every call on the socket runs as that caller ([security](10-security.md)).
 - The group MUST reserve one call, `$reauthenticate`, which carries a fresh credential (hosted: a fresh assertion) for the session; clients and edges use it to keep a session within `reauthorizeEvery`. Application members MUST NOT start with `$`.
-- A session ends with `SessionEnded { cause, resync }` or with `Unauthorized`; see the [error model](error-model.md).
+- A session ends with `SessionEnded { cause, resync }` or with `Unauthorized`; see the [error model](error-model.md). When it ends, every stream on it MUST fail with that error and every later call on the socket MUST be refused with it. After `reauthorization_unavailable` the client MUST replace the socket by reconnecting, which opens a new session; the calls it retries meanwhile run there.
 
 ## Hosted assertions
 
@@ -62,4 +63,4 @@ Status: proposal (0.2), owned by ADR 0130; promoted when E4 failure evidence lan
 
 ## Verification
 
-Client conformance over HTTP and WebSocket on Node and Bun: same-id retries and `replayed`, streaming frames, `$reauthenticate`, refusals before the handler, origin and scheme checks; assertion verification cases including each failure code and the key refresh push.
+Client conformance over HTTP and WebSocket on Node and Bun: same-id retries and `replayed`, streaming frames, `$reauthenticate`, refusals before the handler, origin and scheme checks; assertion verification cases including each failure code and the key refresh push. Evidence: [E4 RPC and serving](../verification/e4-rpc-serve.md).

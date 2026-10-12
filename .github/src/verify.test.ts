@@ -28,6 +28,25 @@ it("starts both independent checks before either completes", () =>
     ),
   ))
 
+it("runs each check with its own variables on top of the inherited environment", () =>
+  runtime.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "akter-verify-env-" })
+        const path = yield* literal(`${directory}/`)
+        const script = (name: string) =>
+          `await Bun.write(${path} + "${name}", [process.env.SMOKE_RUNTIME, process.env.PATH === undefined ? "without PATH" : "with PATH"].join(" "))`
+        yield* runChecks([
+          { command: ["bun", "-e", script("first")], env: { SMOKE_RUNTIME: "node" } },
+          { command: ["bun", "-e", script("second")], env: { SMOKE_RUNTIME: "bun" } },
+        ]).pipe(Effect.timeout("5 seconds"))
+        expect(yield* fs.readFileString(`${directory}/first`)).toBe("node with PATH")
+        expect(yield* fs.readFileString(`${directory}/second`)).toBe("bun with PATH")
+      }),
+    ),
+  ))
+
 it("fails verification and terminates the sibling process instead of leaving it running", () =>
   runtime.runPromise(
     Effect.scoped(

@@ -37,6 +37,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./server": "./src/server.ts",
+    "./client": "./src/client/index.ts",
     "./testing": "./src/testing/index.ts"
   },
   "publishConfig": {
@@ -49,6 +50,10 @@
       "./server": {
         "types": "./dist/server.d.ts",
         "default": "./dist/server.js"
+      },
+      "./client": {
+        "types": "./dist/client/index.d.ts",
+        "default": "./dist/client/index.js"
       },
       "./testing": {
         "types": "./dist/testing/index.d.ts",

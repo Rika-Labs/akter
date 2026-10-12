@@ -2,7 +2,7 @@ import { Clock, Effect, Exit, Option, Schema } from "effect"
 import { Base64Url } from "effect/encoding"
 import { Headers } from "effect/http"
 import { describe, expect, it } from "vitest"
-import { Unauthorized } from "../errors/actor.ts"
+import { ActorError, Unauthorized } from "../contract/errors.ts"
 import { Jwk, jwt } from "./jwt.ts"
 
 interface JwtHeader {
@@ -74,7 +74,8 @@ const setup = Effect.gen(function* () {
 
     return Option.match(Exit.findErrorOption(exit), {
       onNone: () => "ok",
-      onSome: (error) => (Schema.is(Unauthorized)(error) ? error.code : error._tag),
+      onSome: (error) =>
+        Schema.is(Unauthorized)(error.reason) ? error.reason.code : error.reason._tag,
     })
   })
 
@@ -100,7 +101,11 @@ describe("Actor.auth.jwt", () => {
           })
           .pipe(Effect.exit)
 
-        expect(exit).toEqual(Exit.fail(Unauthorized.make({ code: "invalid_credentials" })))
+        expect(exit).toEqual(
+          Exit.fail(
+            ActorError.make({ reason: Unauthorized.make({ code: "invalid_credentials" }) }),
+          ),
+        )
       }),
     ))
 
