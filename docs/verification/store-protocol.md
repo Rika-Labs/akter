@@ -11,13 +11,13 @@
 
 [`conformance/store.ts`](../../tooling/conformance/src/conformance/store.ts) runs the same sixteen scenarios against every backend. The owners in a scenario are separate store instances, each with its own client and fault plan, over one shared location. The test clock drives `validFor` (10 s) and `trimAfter` (10 min), so the timing rules are tested at their boundaries, not by sleeping.
 
-| Backend         | Test file                                             | Bun                                                    | Node              |
-| --------------- | ----------------------------------------------------- | ------------------------------------------------------ | ----------------- |
-| Process memory  | `packages/akter/src/store/memory.test.ts`             | `packages/akter` `test`                                | `test:node:units` |
-| Local directory | `packages/akter/src/store/file-system.test.ts`        | `packages/akter` `test`                                | `test:node:units` |
-| S3-compatible   | `packages/akter/src/store/s3.test.ts` (`TEST_S3_URL`) | Postgres integration project (`--project=integration`) | `test:node:units` |
+| Backend         | Test file                                             | Bun                                 | Node                                |
+| --------------- | ----------------------------------------------------- | ----------------------------------- | ----------------------------------- |
+| Process memory  | `packages/akter/src/store/memory.test.ts`             | `packages/akter` `test`             | `test:node:units`                   |
+| Local directory | `packages/akter/src/store/file-system.test.ts`        | `packages/akter` `test`             | `test:node:units`                   |
+| S3-compatible   | `packages/akter/src/store/s3.test.ts` (`TEST_S3_URL`) | `packages/akter` `test:integration` | `packages/akter` `test:integration` |
 
-CI starts MinIO RELEASE.2026-09-22 (`cgr.dev/chainguard/minio`, pinned by digest, the same image as the cold-storage drill) in the shards that run those commands and sets `TEST_S3_URL`. Locally, `docker compose up -d minio` starts the same server, and the URL is in `compose.yaml`. Each S3 scenario writes under a fresh random key prefix in one bucket.
+`packages/akter` `test` leaves `s3.test.ts` out; `test:integration` runs it through `packages/akter/vitest.integration.config.ts` on Bun and then on Node. CI's `framework-integration` shard starts MinIO RELEASE.2026-09-22 (`cgr.dev/chainguard/minio`, pinned by digest) with `docker run` and sets `TEST_S3_URL`. Locally, `docker compose -f packages/akter/compose.yaml up --wait` starts the same server, and the URL is in that file. Each S3 scenario writes under a fresh random key prefix in one bucket.
 
 Faults come from `Faults.plan()`, which wraps a bucket between the store and its adapter. `Delay` and `Hold` postpone a matching call. `Unavailable` fails it before it reaches the bucket. `LoseResponse` performs it and then fails, the way a write lands but its response is lost. Faults model what a client can observe; they do not change how the provider behaves.
 
