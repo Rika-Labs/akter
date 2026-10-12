@@ -15,7 +15,7 @@ See [the fixture and commands](tooling/bench/README.md). The manually dispatched
 **Benchmark reference** workflow uses `ubuntu-24.04`, uploads its raw evidence,
 and has no schedule or timing merge gate. Mac comparisons are quick signals,
 not CI-reference or hosted-provider evidence. The alpha.6-to-`89e8af89` reference
-comparison is pending the workflow landing on the default branch.
+comparison is pending a completed manual workflow run.
 
 The full three-round local comparison used release commit `0ba7208974` against
 `89e8af892e`, preserving Effect 4.0.2/4.0.3 respectively. Hot-key database CPU

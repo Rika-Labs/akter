@@ -26,7 +26,7 @@ jobs:
     env:
       BASE_REF: ${{ inputs.base }}
       HEAD_REF: ${{ inputs.head }}
-      BENCH_OUTPUT: ${{ runner.temp }}/akter-bench-evidence
+      BENCH_OUTPUT: /tmp/akter-bench-evidence
       BENCH_ROUNDS: "3"
       BENCH_SECONDS: "20"
       BENCH_WARMUP_SECONDS: "3"
@@ -47,12 +47,12 @@ jobs:
         with:
           name: benchmark-reference-${{ github.run_id }}
           path: |
-            ${{ runner.temp }}/akter-bench-evidence/*.json
-            ${{ runner.temp }}/akter-bench-evidence/*.md
-            ${{ runner.temp }}/akter-bench-evidence/*.log
-            ${{ runner.temp }}/akter-bench-evidence/*.txt
-            ${{ runner.temp }}/akter-bench-evidence/*.sha256
-            ${{ runner.temp }}/akter-bench-evidence/*.cpuprofile
-            ${{ runner.temp }}/akter-bench-evidence/*.heapprofile
+            ${{ env.BENCH_OUTPUT }}/*.json
+            ${{ env.BENCH_OUTPUT }}/*.md
+            ${{ env.BENCH_OUTPUT }}/*.log
+            ${{ env.BENCH_OUTPUT }}/*.txt
+            ${{ env.BENCH_OUTPUT }}/*.sha256
+            ${{ env.BENCH_OUTPUT }}/*.cpuprofile
+            ${{ env.BENCH_OUTPUT }}/*.heapprofile
           if-no-files-found: error
           retention-days: 90
