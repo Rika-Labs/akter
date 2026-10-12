@@ -5,7 +5,7 @@
 **Owner role:** runtime/storage reliability.  
 **Change policy:** a new store transition or bucket requirement needs a conformance scenario that names the wrong implementation it rejects.
 
-`Store` is exported from `@rikalabs/akter/server`; its source is `packages/akter/src/store/`. One bucket holds each shard's log segments (`s/<shard>/log/<offset>`), checkpoint manifests (`s/<shard>/cp/<inverted offset>`), content-addressed pages (`pages/<sha256>`), the identity record `meta/store` and lease objects under `cluster/` and `gc/`. A segment is created once at `head + 1`, and that create-once write is the fence. No clock sits in the commit path. The adapters are `Store.s3` (S3-compatible, through `@aws-sdk/client-s3`), `Store.fileSystem` (one local directory) and `Store.memory`. The 0.1 runtime does not use the store yet, so nothing here is a claim about 0.1 behavior.
+`Store` is exported from `@rikalabs/akter/server` as a namespace: the layers `Store.s3`, `Store.fileSystem` and `Store.memory`, the probe `Store.check` and the service `Store.Store`. Its source is `packages/akter/src/store/`, and its normative target is the [storage contract](../contracts/06-storage.md) and [ADR 0136](../decisions/0136-stores-the-bucket-is-the-store.md). One bucket holds each shard's log segments (`s/<shard>/log/<offset>`), checkpoint manifests (`s/<shard>/cp/<inverted offset>`), content-addressed pages (`pages/<sha256>`), the identity record `meta/store` and lease objects under `cluster/` and `gc/`. A segment is created once at `head + 1`, and that create-once write is the fence. No clock sits in the commit path. The adapters are `Store.s3` (S3-compatible, through `@aws-sdk/client-s3`), `Store.fileSystem` (one local directory) and `Store.memory`. The 0.1 runtime does not use the store yet, so nothing here is a claim about 0.1 behavior.
 
 ## Suite and backends
 
@@ -37,13 +37,30 @@ Faults come from `Faults.plan()`, which wraps a bucket between the store and its
 | Runner storage splits shards, moves a dead runner's shards and drops a paused runner's | Locks taken while their owner's heartbeat still moves                              |
 | The backend passes `Store.check`, which removes everything it wrote                    | A backend whose conditional writes, compare-and-swap or listings are not atomic    |
 
-`Store.check` is the probe that defines a supported bucket. It races concurrent create-once writers and concurrent compare-and-swap writers, checks that listings show completed creates and deletes, measures back-to-back writes to one key, and runs one batch delete. Applications can run it against their own bucket before they rely on it.
+`Store.check` is the probe that defines a supported bucket. It races concurrent create-once writers and concurrent compare-and-swap writers, checks that listings show completed creates and deletes, measures back-to-back writes to one key, and runs one batch delete. Applications can run it against their own bucket before they rely on it. [`check.test.ts`](../../packages/akter/src/store/check.test.ts) runs it against a bucket whose conditional create and compare-and-swap check and then write in two steps: exactly those two probes fail, and the same bucket with atomic writes passes. Running the race writers one at a time fails that test.
 
 ## Adapter-specific evidence
 
 The S3 adapter turns off the SDK's own retries, so every repeated write goes through the store's retry schedule, which reads a create-once write back to recognize its own. `s3.test.ts` also runs a local stand-in server that answers a conditional create with `412` and then drops the next request on that kept-alive connection without responding. MinIO RELEASE.2025-09-07 does this; RELEASE.2026-09-22 keeps the connection open. The test shows that the adapter sends a dropped read again exactly once, on a fresh connection, and never sends a write again. Removing the read resend, or resending writes too, fails the test.
 
 The file-system adapter writes each object to a temporary file, fsyncs it, then links it into place for create-once or renames it for a plain put. A lease is a directory of numbered versions, and its etag is the version number. These guarantees hold on one host's local file system only.
+
+## Packaging
+
+[`pack.test.ts`](../../.github/src/pack.test.ts) builds a consumer of `@rikalabs/akter/server` with Bun, without code splitting, for the Bun and Node targets. A server that composes only `Store.fileSystem` and `Store.memory` bundles no AWS or Smithy module, and one that composes `Store.s3` does, which shows the check can see the SDK. When `Store.s3` was a static member of the `Store` service class, the same filesystem-only build pulled in 111 AWS/Smithy modules for Bun and 41 for Node.
+
+## Differences from the storage contract
+
+The [storage contract](../contracts/06-storage.md) is a proposal that this branch does not yet meet in full. These differences are open, not settled:
+
+- `meta/store` records the format, the store id and the shard count, not retention or a creation time. A store opened with a different `shards` option adopts the stored count instead of refusing to start.
+- Segments carry `writer`, `open` and `entries`; there is no `build` field yet.
+- Runner storage uses `cluster/runners/`, `cluster/beats/`, `cluster/locks/` and `cluster/machines/` and writes no `cluster/assignments` object, because assignments are computed from the runner list. `gc/` keys are accepted by the lease interface but no collector exists, and nothing writes `audit/`.
+- A throttled (`429`) page write is accepted when the key exists; its length is not compared, and a `412` on a page write is not resolved.
+- A page whose bytes do not hash to its key fails with the typed `CorruptSegment` error, not the `PageCorrupt` defect. The errors are named `StoreUnavailable` and `MissingPage`, where the error model names `StorageUnavailable`, `LogUnavailable` and `PageMiss`.
+- Trim deletes covered segments once a checkpoint is `trimAfter` old; it does not wait for the store's retention period.
+- Recovery reads only the newest checkpoint; it does not fall back to an older one when pages are missing.
+- `Store.check` is the probe; there is no `akter storage check` command yet.
 
 ## Not established
 
