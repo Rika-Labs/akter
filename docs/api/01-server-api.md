@@ -12,6 +12,30 @@ Due-work scheduling ranges are internal: relay claims and connection-holder live
 **Owner role:** API/Effect.
 **Change policy:** a change requires compatibility review against docs/api/versioning.md.
 
+## Serving on `rewrite/0.2`
+
+On `rewrite/0.2` an app is served with `App.make` and `Akter.serve` from `@rikalabs/akter/server`, over one RPC group at `/rpc` ([protocol](../contracts/protocol.md)). They replace `Actors.serve`, `Actors.layer` and the HTTP command and query routes that the rest of this page describes for 0.1.
+
+```ts
+import { Akter, App, Auth, Store } from "@rikalabs/akter/server"
+import { Layer } from "effect"
+
+const app = App.make({ actors: [Counter], layer: CounterLive })
+
+Akter.serve({ app, auth: Auth.jwt({ issuer, audience, jwks, tenant: () => "default" }) }).pipe(
+  Layer.provide(Store.fileSystem("./data")),
+  Layer.launch,
+)
+```
+
+- `App.make({ actors, layer })` names the actors to serve and one layer that implements every one of them. A layer that leaves an actor unimplemented, or requires a service other than `AppServices` (`Crypto`), is a compile error. `App.is` holds only for values it made; a failure building the layer is `AppLayerFailed` with the original cause.
+- `Akter.serve(options)` is a layer over the provided `Store`. It builds the engine for the app's actors, serves `{basePath}/rpc` (WebSocket on `GET`, NDJSON over HTTP on `POST`), `GET {basePath}/ready`, and `POST {basePath}/assertion-keys/refresh` when `auth` holds a key-set URL, and runs on Bun or Node, whichever runs it. `ServeOptions`: `app`; `auth`; `port` (default 8080, `0` for a free port); `hostname` (default `0.0.0.0`); `basePath`; `origins`, browser origins admitted besides the server's own; `reauthorizeEvery` (default 60 seconds); `credentialBytes` (default 8 KiB).
+- `auth` is required. `Auth.none` serves every request as `Anonymous`, which the default `access` refuses; `Auth.make(authenticate)` runs a function of the request's headers (and, with `{ authenticate, cookies: { name } }`, one cookie); `Auth.jwt(...)` verifies bearer JWTs; `Auth.assertion(...)` verifies a hosted edge's signed assertions. A provider answers a `User` or `Anonymous` caller, the tenant and the credential's expiry, never a `System` caller.
+- Before the RPC handler runs, a request with a foreign `Origin` is refused `403`, and a failed `auth` is answered with its status and the error envelope (`401` with `www-authenticate: Bearer`, `403`, `429` or `503` with `retry-after`). A WebSocket binds its caller at the upgrade and reauthorizes every `reauthorizeEvery`; each HTTP request is authenticated on its own ([security](../contracts/10-security.md)).
+- Only the `default` tenant is served for now: a provider that answers another tenant is refused `access_denied`, because actor ids are not yet scoped by tenant.
+
+`apps/self-host` serves an app this way on `Store.s3` or `Store.fileSystem` in a Bun or Node image ([self-host operations](../operations/self-host.md)). Clients call it with [`AkterClient`](03-typescript-sdk.md).
+
 The Effect-native server API is one package, `@rikalabs/akter`. Its root entry exports `Actor`, `Actors`, `Intent`, errors, identity (`ActorRef`, `Caller`, `User`, `System`, `Anonymous`, `Principal`, `CurrentCaller`, `Tenant`), and the `Policy`, `Handle`, `Intents`, and context types. The root entry holds browser-safe declarations only. Runtime construction and serving are imported separately from `@rikalabs/akter/runtime`: `Actors.layer`, `Actors.serve` for HTTP commands and queries (M3.2), and the `Auth` providers; `Fleet` is a target API and is not exported yet. The same entry exports `Inspector.serve({ auth, basePath?, runner?, region? })`, read-only routes over the joined `durable` inspection views for the authenticated principal's tenant, with placement read directly from each view and unchanged response shapes ([ADR 0112](../decisions/0112-postgres-and-pglite-only.md)) and, inside a runtime, over that runner's own memory (live rates, latency, resident activations, connections and a redacted command stream, which name `runner` and `region` as given), which `akter dev` serves ([inspection views](../operations/inspection-views.md#the-local-inspector)), `Telemetry.serve({ basePath? })`, `GET /metrics` in Prometheus text ([observability](../operations/03-observability.md)), and `Operators.serve({ auth, basePath? })`, the operator routes for inspection, actor export, receipt reads, defects, dead-letter repair, and the audit log, authenticated only by an `OperatorAuth.make` or `OperatorAuth.tokens` provider whose grant lists action- and resource-scoped capabilities ([ADR 0050](../decisions/0050-operator-authority-and-audited-repair.md)). `GET /operator/actors/:type/:id/export?tenant=` needs the `export` action, which no other action implies, and answers one actor's seed: `format`, `actor`, `created`, the stored `state` and its `stateVersion`, the pending `intents` and `jobs` with `dueInMs` measured from the export, and `omitted` counts of the receipts, events, workflows, dead letters, owned-table rows, and blob entries it does not carry. It runs bound to the tenant, as the runtime's tenant role when row-level security is on. It carries no tenant, caller, or credential. It reads in one read-only snapshot, is audited before it answers, answers 404 for an actor the tenant does not have, and answers 409 `ExportRefused` for state that does not decode or more than 10,000 pending intents or jobs. The runtime entry exports the `Seed` schema and `SeedJson` codec. `akter export Room/r1 --url <runner> --tenant <t> --output r1.seed` writes the file for its owner alone and never replaces one.
 
 ## Implemented foundation subset

@@ -1,6 +1,6 @@
 # Error model
 
-Status: proposal (0.2), owned by ADR 0128; promoted when E1 (reasons and defects) and E4 (wire mapping) failure evidence lands, each section with its milestone.
+Status: proposal (0.2), owned by ADR 0128; promoted when E1 (reasons and defects) and E4 (wire mapping) failure evidence lands, each section with its milestone. E4 wire-mapping evidence is in [E4 RPC and serving](../verification/e4-rpc-serve.md).
 
 **Responsibility:** define framework errors, retry metadata, defects and their wire form.  
 **Authority:** normative target on `rewrite/0.2`.  
@@ -65,7 +65,7 @@ Defects are not `ActorError` reasons. The caller observes a defect, its outcome 
 
 ## Wire form
 
-Inside `/rpc`, a failure MUST travel in the RPC exit as the `ActorError` envelope (`reason` with its fields, `isRetryable`, `retryAfter` in milliseconds), as the declared error in its own schema encoding, or as an opaque defect. `ActorUnavailable` MUST NOT carry its internal cause on the wire. Refusals before the RPC handler use HTTP statuses ([protocol](protocol.md)) and also send `retry-after` in whole seconds, rounded up. Every mapping MUST preserve the reason, retry metadata, the command id when present, and declared-error identity.
+Inside `/rpc`, a failure MUST travel in the RPC exit as the `ActorError` envelope (`_tag: "ActorError"`, `reason` with its fields, `isRetryable`, `retryAfter` in milliseconds), as `ActionFailed { error, replayed }` carrying the declared error in its own schema encoding, or as an opaque defect. A receiver MUST derive `isRetryable` and `retryAfter` from the reason, never from the envelope's copies. `ActorUnavailable` MUST NOT carry its internal cause on the wire. Refusals before the RPC handler use HTTP statuses ([protocol](protocol.md)) and also send `retry-after` in whole seconds, rounded up. Every mapping MUST preserve the reason, retry metadata, the command id when present, and declared-error identity.
 
 ## Verification
 

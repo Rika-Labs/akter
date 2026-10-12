@@ -1,6 +1,6 @@
 # Security and tenancy
 
-Status: proposal (0.2), owned by ADR 0130; promoted when E2 (store isolation) and E4 (callers, sessions, assertions and access) failure evidence lands, each section with its milestone.
+Status: proposal (0.2), owned by ADR 0130; promoted when E2 (store isolation) and E4 (callers, sessions, assertions and access) failure evidence lands, each section with its milestone. E4 evidence for callers, sessions, reauthorization and origin refusal is in [E4 RPC and serving](../verification/e4-rpc-serve.md); hosted assertions over `/rpc` end to end are open there.
 
 **Responsibility:** define trust boundaries, caller and tenant identity, access, store and tenant isolation, runner trust and operator authority.  
 **Authority:** normative target on `rewrite/0.2`.  
@@ -34,7 +34,8 @@ Status: proposal (0.2), owned by ADR 0130; promoted when E2 (store isolation) an
 
 ## Sessions
 
-- A WebSocket session MUST bind its caller and tenant at open. Every call over the session, actions included, MUST run as that caller; a caller taken from frame content MUST NOT be used.
+- A WebSocket session MUST bind its caller and tenant at open. Every call over the session, actions included, MUST run as that caller; a caller taken from frame content MUST NOT be used, and a header a frame repeats MUST NOT replace one the transport set.
+- `$reauthenticate` MUST run `auth` on the fresh credential and accept it only for the same caller and tenant (and, hosted, the same `sid`); a credential for another caller MUST end the session with `access_denied`. An accepted credential becomes the one later reauthorizations rerun.
 - A live session MUST reauthorize within `reauthorizeEvery` (default 60 seconds, and never past the credential's own expiry) by running `auth` again and `access` with kind `reauthorize`. A refused check MUST end the session with `Unauthorized` code `access_denied`; when no check succeeds within the bound the session MUST end with `Unauthorized` code `reauthorization_unavailable`, without extension. Buffered frames MUST be discarded on revocation.
 - Connection ids passed to `connect` and `disconnect` MUST be minted by the runtime, unguessable, and never accepted from the client.
 

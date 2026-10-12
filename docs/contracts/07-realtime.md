@@ -1,6 +1,6 @@
 # Realtime: state, views, presence, events and `find`
 
-Status: proposal (0.2), owned by ADR 0130; promoted when E4 (streams, presence and events) and E7 (`find`) failure evidence lands, each section with its milestone.
+Status: proposal (0.2), owned by ADR 0130; promoted when E4 (streams, presence and events) and E7 (`find`) failure evidence lands, each section with its milestone. E4 evidence so far is in [E4 RPC and serving](../verification/e4-rpc-serve.md); slow consumers and owner moves are open there.
 
 **Responsibility:** define what clients read and watch, when they see changes, how presence and events behave, and what `find` promises.  
 **Authority:** normative target on `rewrite/0.2`.  
@@ -19,7 +19,8 @@ Status: proposal (0.2), owned by ADR 0130; promoted when E4 (streams, presence a
 
 ## Lag, loss and owner moves
 
-- A stream whose consumer falls behind its bounded buffer MUST either replace the queued patches with one new full value or end with `SessionEnded { cause: "SlowConsumer", resync: true }`. It MUST NOT skip a patch silently.
+- A stream whose consumer falls behind its bounded buffer MUST either replace the queued patches with one new full value or end with `SessionEnded { cause: "SlowConsumer", resync: true }`. It MUST NOT skip a patch silently. Served state, list and view streams keep the newest of 64 values and send one patch from the last value sent; event streams end with `SlowConsumer` when 64 events wait.
+- A client that resubscribes after a lost connection receives a full value first and MUST NOT deliver it again when it equals the value it already delivered.
 - When the actor's shard moves, its streams MUST end with `SessionEnded { cause: "OwnerMoved", resync: true }`; a client that resubscribes MUST receive a full value first.
 
 ## Presence
