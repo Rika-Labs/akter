@@ -33,11 +33,19 @@ export interface PostgresBackendOptions {
   readonly logicalDecoding?: boolean
   /** The server lets the suite create databases beside its main one. */
   readonly freshDatabases?: boolean
+  /**
+   * How many of the suite's databases close at once, default 8. Each drop
+   * opens its own administrative session and waits for a checkpoint that
+   * concurrent drops share, so a small bound keeps teardown fast without one
+   * session per database, which a suite holding about a hundred databases
+   * turns into exhausting the server's connection slots beside another worker.
+   */
+  readonly dropsAtOnce?: number
 }
 
 /**
  * The conformance backend for a Postgres-protocol server: each suite gets its
- * own disposable databases on it, dropped together when the suite closes.
+ * own disposable databases on it, dropped a few at a time when the suite closes.
  * Databases created on the primary replicate, so a replica serves each under
  * the same name. A template copy is a whole-database snapshot of a stopped
  * deployment; a disposed runtime's server sessions can outlive its pool
@@ -58,13 +66,18 @@ export const postgresBackend = (options: PostgresBackendOptions): ConformanceBac
       Effect.gen(function* () {
         const url = Redacted.make(yield* options.url)
         const crypto = yield* Crypto.Crypto
-        const scope = yield* Scope.make("parallel")
+        const scopes: Array<Scope.Closeable> = []
 
         const provision = (prefix: "actors" | "isolated" | "restored", template?: string) =>
-          disposableDatabase({ url, prefix, template }).pipe(
-            Scope.provide(scope),
-            Effect.provideService(Crypto.Crypto, crypto),
-          )
+          Effect.gen(function* () {
+            const scope = yield* Scope.make()
+            scopes.push(scope)
+
+            return yield* disposableDatabase({ url, prefix, template }).pipe(
+              Scope.provide(scope),
+              Effect.provideService(Crypto.Crypto, crypto),
+            )
+          })
 
         const main = yield* provision("actors", options.template?.())
 
@@ -141,7 +154,9 @@ export const postgresBackend = (options: PostgresBackendOptions): ConformanceBac
               : Effect.die(new Error("The Postgres backend copies only Postgres databases")),
           connect,
           replica,
-          close: Scope.close(scope, Exit.void),
+          close: Effect.forEach(scopes, (scope) => Effect.exit(Scope.close(scope, Exit.void)), {
+            concurrency: options.dropsAtOnce ?? 8,
+          }).pipe(Effect.flatMap(Exit.asVoidAll), Effect.uninterruptible),
         }
       }),
     ),

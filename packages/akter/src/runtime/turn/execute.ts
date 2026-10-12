@@ -510,6 +510,8 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 ) {
   const sql = yield* SqlClient.SqlClient
   const hooks = yield* TurnHooks
+  const beforeCommitSend = (batch: ReadonlyArray<Delivery>) =>
+    Effect.forEach(batch, ({ request }) => hooks.at("beforeCommitSend", request), { discard: true })
   const clock = yield* FrameworkClock
   const tier = yield* ColdTier
   const scope = yield* TenantScope
@@ -1513,25 +1515,28 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                 flight,
               }))
 
-          return Effect.flatMap(upcoming, ({ admission: next, flight }) => {
-            const answered = awaitReplies(flight.slice(0, commit.length))
+          return Effect.flatMap(
+            ending === "COMMIT" ? Effect.andThen(beforeCommitSend(batch), upcoming) : upcoming,
+            ({ admission: next, flight }) => {
+              const answered = awaitReplies(flight.slice(0, commit.length))
 
-            return Effect.map(
-              ending === "COMMIT" ? answered.pipe(Effect.withSpan(SpanNames.commit)) : answered,
-              () => ({
-                plan,
-                version,
-                endedAtMs,
-                ending,
-                tag,
-                following,
-                chained:
-                  next === undefined
-                    ? undefined
-                    : { admission: next, admitted: flight.slice(commit.length) },
-              }),
-            )
-          })
+              return Effect.map(
+                ending === "COMMIT" ? answered.pipe(Effect.withSpan(SpanNames.commit)) : answered,
+                () => ({
+                  plan,
+                  version,
+                  endedAtMs,
+                  ending,
+                  tag,
+                  following,
+                  chained:
+                    next === undefined
+                      ? undefined
+                      : { admission: next, admitted: flight.slice(commit.length) },
+                }),
+              )
+            },
+          )
         }
 
         const alone = (
@@ -1693,7 +1698,8 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                 }),
               ]
 
-              return sendPipelined(flight).pipe(
+              return beforeCommitSend(batch).pipe(
+                Effect.andThen(sendPipelined(flight)),
                 Effect.withSpan(SpanNames.commit),
                 Effect.as(true),
                 Effect.catch((error) => {
@@ -1856,6 +1862,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                 : undefined
 
             const writes = (plan.writes ?? []).map(onMember(member))
+            if (plan.writes !== undefined) yield* beforeCommitSend(batch)
             const waiting = member.commit(writes, handoff)
             const shared = yield* writes.length > 0
               ? waiting.pipe(Effect.withSpan(SpanNames.commit))
@@ -2008,6 +2015,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
                 if (decided.writes === undefined) return yield* Effect.fail(new RolledBack(decided))
 
+                yield* beforeCommitSend(batch)
                 yield* sendSequentially(decided.writes).pipe(Effect.withSpan(SpanNames.commit))
 
                 return decided

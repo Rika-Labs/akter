@@ -1,4 +1,4 @@
-import { Deferred, Effect, Fiber, Schema } from "effect"
+import { Data, Deferred, Effect, Fiber, Schema } from "effect"
 import { SqlClient } from "effect/sql"
 import { ActorTest } from "../../../../../packages/akter/src/testing/actor-test.ts"
 import type { ConformanceCase } from "../../conformance.ts"
@@ -15,6 +15,12 @@ import {
   sourceRows,
   tagMismatches,
 } from "./harness.ts"
+
+/** Carries the probe's measured plan out through rollback instead of deleting its large fixture with cascading foreign-key checks. */
+class Probed extends Data.TaggedError("Probed")<{
+  readonly plan: unknown
+  readonly rows: number
+}> {}
 
 /** Feed rows, the tag summary, and wake-ups of event subscriptions. */
 export const subscriptionFeedConformance: ReadonlyArray<ConformanceCase<SubscriptionsFixture>> = [
@@ -173,44 +179,67 @@ export const subscriptionFeedConformance: ReadonlyArray<ConformanceCase<Subscrip
           const sql = yield* SqlClient.SqlClient
           const routingKey = "1"
 
-          yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
-            SELECT ${routingKey}::bigint, ${test.tenant}, 'SubProbe', 'p' || n
-            FROM generate_series(1, 100000) AS n`.pipe(Effect.orDie)
-          yield* sql`INSERT INTO actor_subscription_tags (routing_key, tenant_id, source_type, source_id, event, rows)
-            SELECT ${routingKey}::bigint, ${test.tenant}, 'SubProbe', 'p' || n, 'OrderPlaced', 1
-            FROM generate_series(1, 100000) AS n`.pipe(Effect.orDie)
-          yield* sql`ANALYZE actor_subscription_tags`.pipe(Effect.orDie)
+          for (const locked of [false, true])
+            yield* Effect.gen(function* () {
+              if (locked) {
+                const maintenance = yield* environment.connect!
+                yield* maintenance.query("BEGIN")
+                yield* maintenance.query(
+                  "LOCK TABLE actor_subscription_tags IN SHARE UPDATE EXCLUSIVE MODE",
+                )
+              }
 
-          const [row] = yield* sql<{
-            "QUERY PLAN": unknown
-          }>`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
-            SELECT 1 FROM actor_subscription_tags t
-            WHERE t.routing_key = ${routingKey}::bigint AND t.tenant_id = ${test.tenant}
-              AND t.source_type = 'SubProbe' AND t.source_id = 'missing' AND t.event IN ('OrderPlaced', 'OrderCancelled')`.pipe(
-            Effect.orDie,
-          )
+              const probed = yield* Effect.gen(function* () {
+                yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
+                  SELECT ${routingKey}::bigint, ${test.tenant}, 'SubProbe', 'p' || n
+                  FROM generate_series(1, 100000) AS n`.pipe(Effect.orDie)
+                yield* sql`INSERT INTO actor_subscription_tags (routing_key, tenant_id, source_type, source_id, event, rows)
+                  SELECT ${routingKey}::bigint, ${test.tenant}, 'SubProbe', 'p' || n, 'OrderPlaced', 1
+                  FROM generate_series(1, 100000) AS n`.pipe(Effect.orDie)
+                yield* sql`ANALYZE (SKIP_LOCKED) actor_subscription_tags`.pipe(Effect.orDie)
 
-          const [explained] = yield* Schema.decodeUnknownEffect(ExplainOutput)(
-            row!["QUERY PLAN"],
-          ).pipe(Effect.orDie)
+                const [count] = yield* sql<{ rows: number }>`SELECT count(*)::integer AS rows
+                  FROM actor_subscription_tags WHERE routing_key = ${routingKey}::bigint
+                    AND tenant_id = ${test.tenant} AND source_type = 'SubProbe'`.pipe(Effect.orDie)
+                const [row] = yield* sql<{
+                  "QUERY PLAN": unknown
+                }>`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+                  SELECT 1 FROM actor_subscription_tags t
+                  WHERE t.routing_key = ${routingKey}::bigint AND t.tenant_id = ${test.tenant}
+                    AND t.source_type = 'SubProbe' AND t.source_id = 'missing' AND t.event IN ('OrderPlaced', 'OrderCancelled')`.pipe(
+                  Effect.orDie,
+                )
 
-          const nodes = planNodes(explained.Plan)
-          expect(nodes.some((node) => node["Index Name"] === "actor_subscription_tags_pkey")).toBe(
-            true,
-          )
-          expect(nodes.some((node) => node["Node Type"] === "Seq Scan")).toBe(false)
-          expect(explained.Plan["Actual Rows"]).toBe(0)
-          expect(
-            nodes.reduce(
-              (sum, node) => sum + node["Shared Hit Blocks"] + node["Shared Read Blocks"],
-              0,
-            ) < 16,
-          ).toBe(true)
+                return yield* new Probed({ plan: row!["QUERY PLAN"], rows: count!.rows })
+              }).pipe(sql.withTransaction, Effect.catchTag("Probed", Effect.succeed), Effect.orDie)
 
-          yield* sql`DELETE FROM actor_subscription_tags WHERE source_type = 'SubProbe'`.pipe(
-            Effect.orDie,
-          )
-          yield* sql`DELETE FROM actor_generations WHERE actor_type = 'SubProbe'`.pipe(Effect.orDie)
+              const [explained] = yield* Schema.decodeUnknownEffect(ExplainOutput)(
+                probed.plan,
+              ).pipe(Effect.orDie)
+
+              expect(probed.rows).toBe(100_000)
+              const nodes = planNodes(explained.Plan)
+              expect(
+                nodes.some((node) => node["Index Name"] === "actor_subscription_tags_pkey"),
+              ).toBe(true)
+              expect(nodes.some((node) => node["Node Type"] === "Seq Scan")).toBe(false)
+              expect(explained.Plan["Actual Rows"]).toBe(0)
+              expect(
+                nodes.reduce(
+                  (sum, node) => sum + node["Shared Hit Blocks"] + node["Shared Read Blocks"],
+                  0,
+                ) < 16,
+              ).toBe(true)
+
+              expect(
+                yield* sql`SELECT count(*)::integer AS rows FROM actor_subscription_tags
+                  WHERE tenant_id = ${test.tenant} AND source_type = 'SubProbe'`.pipe(Effect.orDie),
+              ).toEqual([{ rows: 0 }])
+              expect(
+                yield* sql`SELECT count(*)::integer AS rows FROM actor_generations
+                  WHERE tenant_id = ${test.tenant} AND actor_type = 'SubProbe'`.pipe(Effect.orDie),
+              ).toEqual([{ rows: 0 }])
+            }).pipe(Effect.scoped)
         }),
       ),
   },

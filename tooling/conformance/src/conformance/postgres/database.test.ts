@@ -1,9 +1,11 @@
 import {
+  Cause,
   Clock,
   Config,
   Context,
   Crypto,
   Effect,
+  Exit,
   Fiber,
   Layer,
   ManagedRuntime,
@@ -110,6 +112,109 @@ describe("Postgres test databases", () => {
           expect(yield* exists(stale)).toBe(false)
           expect(yield* exists(live)).toBe(true)
           yield* admin.unsafe(`DROP DATABASE "${live}" WITH (FORCE)`)
+        }).pipe(Effect.scoped),
+      ),
+  )
+  it(
+    "still attempts every database drop when an earlier drop fails, and reports that failure",
+    { timeout: DROPS_MS },
+    () =>
+      harness.runPromise(
+        Effect.gen(function* () {
+          const url = yield* Config.Redacted("TEST_DATABASE_URL")
+          const admin = Context.get(
+            yield* Layer.build(PgClient.layer({ url, maxConnections: 1 })),
+            SqlClient.SqlClient,
+          )
+          const opened = yield* Effect.promise(() =>
+            postgresBackend({ url: Effect.succeed(Redacted.value(url)), dropsAtOnce: 2 }).open(),
+          )
+          const fresh = yield* Effect.forEach(Array.from({ length: 2 }), () => opened.freshDatabase)
+          const names = [opened.database, ...fresh].map((database) =>
+            new URL(Redacted.value(database as Redacted.Redacted<string>)).pathname.slice(1),
+          )
+          yield* Effect.addFinalizer(() =>
+            Effect.forEach(names, (name) =>
+              admin<{
+                datname: string
+              }>`SELECT datname FROM pg_database WHERE datname = ${name}`.pipe(
+                Effect.flatMap((rows) =>
+                  rows.length === 0
+                    ? Effect.void
+                    : admin
+                        .unsafe(`ALTER DATABASE "${name}" IS_TEMPLATE false`)
+                        .pipe(Effect.andThen(admin.unsafe(`DROP DATABASE "${name}" WITH (FORCE)`))),
+                ),
+              ),
+            ).pipe(Effect.orDie),
+          )
+          yield* admin.unsafe(`ALTER DATABASE "${names[0]!}" IS_TEMPLATE true`)
+
+          const closed = yield* Effect.exit(opened.close)
+          expect(Exit.isFailure(closed) ? Cause.pretty(closed.cause) : "closed").toContain(
+            "cannot drop a template database",
+          )
+          expect(
+            yield* admin<{ datname: string }>`SELECT datname FROM pg_database
+              WHERE datname IN ${admin.in(names)} ORDER BY datname`,
+          ).toEqual([{ datname: names[0]! }])
+        }).pipe(Effect.scoped),
+      ),
+  )
+  it(
+    "drops a suite's databases a few at a time, so closing many stays within a login role's connection limit",
+    { timeout: DROPS_MS },
+    () =>
+      harness.runPromise(
+        Effect.gen(function* () {
+          const url = yield* Config.Redacted("TEST_DATABASE_URL")
+          const admin = Context.get(
+            yield* Layer.build(PgClient.layer({ url, maxConnections: 1 })),
+            SqlClient.SqlClient,
+          )
+          const uuid = (yield* (yield* Crypto.Crypto).randomUUIDv4()).replaceAll("-", "")
+          const role = `teardown_${uuid}`
+          const dropsAtOnce = 2
+          const limit = 2 * dropsAtOnce
+          yield* Effect.acquireRelease(
+            admin.unsafe(
+              `CREATE ROLE "${role}" LOGIN CREATEDB CONNECTION LIMIT ${limit} PASSWORD '${uuid}'`,
+            ),
+            () => admin.unsafe(`DROP ROLE IF EXISTS "${role}"`).pipe(Effect.orDie),
+          )
+          const owned = admin<{ readonly datname: string }>`SELECT datname FROM pg_database
+            WHERE datdba = (SELECT oid FROM pg_roles WHERE rolname = ${role})`
+          yield* Effect.addFinalizer(() =>
+            owned.pipe(
+              Effect.flatMap((rows) =>
+                Effect.forEach(rows, ({ datname }) =>
+                  admin.unsafe(`DROP DATABASE IF EXISTS "${datname}" WITH (FORCE)`),
+                ),
+              ),
+              Effect.orDie,
+            ),
+          )
+          const roleUrl = new URL(Redacted.value(url))
+          roleUrl.username = role
+          roleUrl.password = uuid
+          const opened = yield* Effect.promise(() =>
+            postgresBackend({ url: Effect.succeed(roleUrl.href), dropsAtOnce }).open(),
+          )
+          const fresh = yield* Effect.forEach(
+            Array.from({ length: 2 * limit }),
+            () => opened.freshDatabase,
+          )
+          expect((yield* owned).map(({ datname }) => datname).sort()).toEqual(
+            [opened.database, ...fresh]
+              .map((database) =>
+                new URL(Redacted.value(database as Redacted.Redacted<string>)).pathname.slice(1),
+              )
+              .sort(),
+          )
+
+          const closed = yield* Effect.exit(opened.close)
+          expect(Exit.isFailure(closed) ? Cause.pretty(closed.cause) : "closed").toBe("closed")
+          expect(yield* owned).toEqual([])
         }).pipe(Effect.scoped),
       ),
   )

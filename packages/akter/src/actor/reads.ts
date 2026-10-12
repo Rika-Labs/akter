@@ -248,7 +248,12 @@ export const queriesOf = ({
               Read,
               reads === undefined ? context : recordingRead(context, reads),
             ),
-            Effect.provideContext(watch ? Context.empty() : services),
+            Effect.provideContext(
+              (watch ? Context.empty() : services).pipe(
+                Context.add(CurrentCaller, request.caller),
+                Context.add(Tenant, request.ref.tenant),
+              ),
+            ),
             Effect.provideService(InsideTurn, query),
           ) as Effect.Effect<Outcome>
         }),
@@ -391,9 +396,12 @@ export const streamOf = ({
             Stream.ensuring(Effect.sync(() => (open = false))),
             Stream.provideService(Read, context),
             Stream.provideService(InStream, { stream }),
-            Stream.provideContext(services),
-            Stream.provideService(CurrentCaller, input.caller),
-            Stream.provideService(Tenant, input.ref.tenant),
+            Stream.provideContext(
+              services.pipe(
+                Context.add(CurrentCaller, input.caller),
+                Context.add(Tenant, input.ref.tenant),
+              ),
+            ),
             Stream.provideService(InsideTurn, stream),
           ) as Stream.Stream<string, { readonly failure: string }>
         }),
