@@ -11,6 +11,8 @@
     "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. tooling/conformance/src"
   },
   "devDependencies": {
+    "@effect/platform-bun": "catalog:",
+    "@effect/platform-node": "catalog:",
     "effect": "catalog:",
     "vitest": "catalog:"
   }

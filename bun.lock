@@ -92,6 +92,8 @@
     "tooling/conformance": {
       "name": "@akter/conformance",
       "devDependencies": {
+        "@effect/platform-bun": "catalog:",
+        "@effect/platform-node": "catalog:",
         "effect": "catalog:",
         "vitest": "catalog:",
       },
