@@ -3,6 +3,8 @@ import { BunRuntime } from "@effect/platform-bun"
 
 interface Check {
   readonly command: ReadonlyArray<string>
+  /** Variables set for this check on top of the inherited environment. */
+  readonly env?: Readonly<Record<string, string>>
 }
 
 const missingProcess = Schema.is(Schema.Struct({ code: Schema.Literal("ESRCH") }))
@@ -36,6 +38,7 @@ export const runChecks = (checks: ReadonlyArray<Check>) =>
         Effect.acquireRelease(
           Effect.sync(() =>
             Bun.spawn([...check.command], {
+              env: { ...process.env, ...check.env },
               stdout: "inherit",
               stderr: "inherit",
               detached: true,
