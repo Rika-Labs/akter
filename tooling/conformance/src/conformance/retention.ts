@@ -373,10 +373,15 @@ export const retentionConformance: ReadonlyArray<ConformanceCase<RetentionFixtur
         Effect.gen(function* () {
           const test = yield* ActorTest
           const brief = yield* Brief.get("short-horizon")
-          const pause = yield* test.pauseNext("beforeHandler")
-          yield* test.crashNext("beforeCommit")
+          const bystander = yield* Journal.get("expiry-bystander")
+          expect(yield* bystander.Add(1)).toBe(1)
           const now = yield* databaseTime
           const id = `v1.${now - 59_500}.${now + 500}.2d1f6a3e-7b9c-4e21-8f0a-5c6d7e8f9a01`
+          const pause = yield* test.pauseNext("beforeHandler", { commandId: id })
+          yield* test.crashNext("beforeCommit", { commandId: id })
+          const committed = yield* test.pauseNext("afterCommit", { commandId: id })
+
+          const competing = yield* bystander.Add(4).pipe(Effect.forkChild)
 
           const waiter = yield* brief
             .Tally(9)
@@ -385,6 +390,11 @@ export const retentionConformance: ReadonlyArray<ConformanceCase<RetentionFixtur
           yield* pause.reached
           yield* Effect.sleep("550 millis")
           yield* pause.release
+          yield* committed.reached
+          expect(waiter.pollUnsafe()).toBe(undefined)
+          expect(yield* test.inspect(brief.ref)).toMatchObject({ state: { total: 9 }, receipts: 1 })
+          expect(yield* Fiber.join(competing)).toBe(5)
+          yield* committed.release
           expect((yield* Fiber.join(waiter)).reason).toBeInstanceOf(CommandExpired)
           expect(yield* test.inspect(brief.ref)).toMatchObject({ state: { total: 9 }, receipts: 1 })
 

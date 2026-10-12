@@ -81,8 +81,8 @@ export interface ClusterSimulationStep {
   readonly fault: ClusterSimulationFault | "none"
   /** The runner the caller first sent the command through. */
   readonly runner: number
-  /** Where a `runnerKill` cuts the turn; `beforeCommit` for every other fault except `crashAfterCommit`. */
-  readonly point: "beforeCommit" | "afterCommit"
+  /** Landed connection faults pause the final commit send; other faults pause handler planning or publication. */
+  readonly point: "beforeCommit" | "beforeCommitSend" | "afterCommit"
   /** Whether a `connectionLoss` or `primaryFailover` lets the database make the COMMIT before the cut. */
   readonly landed: boolean
 }
@@ -197,6 +197,7 @@ export const simulateCluster = Effect.fnUntraced(function* <E, R>(
           : "beforeCommit"
 
       const landed = (fault === "connectionLoss" || fault === "primaryFailover") && draw() < 0.5
+      const pauseAt = landed ? "beforeCommitSend" : point
 
       const commandId = yield* on(entry)(
         Effect.gen(function* () {
@@ -211,7 +212,7 @@ export const simulateCluster = Effect.fnUntraced(function* <E, R>(
         Effect.orDie,
       )
 
-      steps.push({ label, commandId, fault, runner: entry, point, landed })
+      steps.push({ label, commandId, fault, runner: entry, point: pauseAt, landed })
       const call = effect.pipe(Actor.commandId(commandId))
       const send = (runner: number) => on(runner)(call).pipe(Effect.timeout(attempt))
 
@@ -249,7 +250,7 @@ export const simulateCluster = Effect.fnUntraced(function* <E, R>(
        */
       const holdTurn = Effect.gen(function* () {
         const paused = yield* Effect.forEach(runners, (runner) =>
-          on(runner)(ActorTest.use((test) => test.pauseNext(point, { commandId }))),
+          on(runner)(ActorTest.use((test) => test.pauseNext(pauseAt, { commandId }))),
         )
 
         const first = yield* Effect.forkChild(Effect.exit(send(entry)))
@@ -259,7 +260,7 @@ export const simulateCluster = Effect.fnUntraced(function* <E, R>(
         ).pipe(
           Effect.timeoutOrElse({
             duration: within,
-            orElse: () => Effect.die(new Error(`${label} (${commandId}) never reached ${point}`)),
+            orElse: () => Effect.die(new Error(`${label} (${commandId}) never reached ${pauseAt}`)),
           }),
         )
 

@@ -164,6 +164,40 @@ export const sums = (expected: ReadonlyMap<string, number>) =>
  */
 export const simulationConformance: ReadonlyArray<ConformanceCase> = [
   {
+    name: "resolves a warm intent turn after a landed connection loss without pausing speculative admission",
+    requiresIndependentConnections: true,
+    timeoutMs: 300_000,
+    run: ({ expect, environment }) =>
+      withCluster(
+        environment,
+        Effect.gen(function* () {
+          const { report, expected, held } = yield* clusterScript({
+            expect,
+            options: {
+              seed: "c774862372",
+              faults: [
+                "crashBeforeCommit",
+                "crashAfterCommit",
+                "dropReply",
+                "runnerKill",
+                "heartbeatLoss",
+                "connectionLoss",
+              ],
+            },
+            commands: 3,
+          })
+
+          expect(report.steps.map(({ fault, landed }) => ({ fault, landed }))).toEqual([
+            { fault: "none", landed: false },
+            { fault: "none", landed: false },
+            { fault: "connectionLoss", landed: true },
+          ])
+          expect(expected).toEqual(new Map([["wallet:c774862372-a", 6]]))
+          expect(held).toEqual(new Map([["wallet:c774862372-a", { total: 6 }]]))
+        }),
+      ),
+  },
+  {
     name: "keeps receipts and outbox delivery exactly once across seeded runner kills, lost heartbeats, crashes, and lost connections on three runners",
     requiresIndependentConnections: true,
     timeoutMs: 1_800_000,

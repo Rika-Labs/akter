@@ -1,10 +1,13 @@
-import { Config, Effect, FileSystem, Redacted, Stream } from "effect"
+import { Config, Console, type Duration, Effect, FileSystem, Redacted, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { Pool } from "pg"
 import type { RunnerAuthority } from "../../../../../../packages/akter/src/runtime/peering/authority.ts"
 import type { RunnerCredentials } from "../../../../../../packages/akter/src/runtime/peering/credentials.ts"
 import { disposableDatabase } from "../../../../../../packages/akter/src/testing/database.ts"
 import { freePort, until } from "./failover.ts"
+
+/** Escalates cleanup so a stalled runner cannot hide the drill's original failure behind an endless SIGTERM wait. */
+export const drillCleanup = { forceKillAfter: "2 seconds" } as const
 
 export interface RunnerProcess {
   readonly port: number
@@ -19,6 +22,23 @@ export interface RunnerProcess {
   readiness: string | undefined
   committedCron: string | undefined
 }
+
+/** Names a graceful-exit stall before an outer test timeout can hide it behind process cleanup. */
+export const awaitDrillExit = Effect.fnUntraced(function* (
+  runner: Pick<RunnerProcess, "port" | "child">,
+  within: Duration.Input = "15 seconds",
+) {
+  yield* Console.log(`DRILL_STAGE exit-wait begin ${runner.port}`)
+  yield* runner.child.exitCode.pipe(
+    Effect.ignore,
+    Effect.timeoutOrElse({
+      duration: within,
+      orElse: () =>
+        Effect.die(new Error(`Timed out waiting for runner ${runner.port} to exit after EXIT`)),
+    }),
+  )
+  yield* Console.log(`DRILL_STAGE exit-wait complete ${runner.port}`)
+})
 
 /**
  * Writes the files a drill runner reloads its peer credentials from, each
@@ -82,6 +102,7 @@ export const processTopology = Effect.fnUntraced(function* (
     }
     const child = yield* spawner.spawn(
       ChildProcess.make("bun", [new URL("./runner.ts", import.meta.url).pathname], {
+        ...drillCleanup,
         env: {
           DRILL_DATABASE_URL: Redacted.value(database),
           DRILL_PORT: String(port),
@@ -96,7 +117,6 @@ export const processTopology = Effect.fnUntraced(function* (
         extendEnv: true,
         stdin: { stream: "pipe", endOnDone: false },
         stderr: "inherit",
-        forceKillAfter: pooling === undefined ? undefined : "2 seconds",
       }),
     )
     const runner: RunnerProcess = {

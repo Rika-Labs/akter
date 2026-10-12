@@ -13,6 +13,7 @@ export type TurnPoint =
   | "afterColdFetch"
   | "afterColdWriteBack"
   | "beforeCommit"
+  | "beforeCommitSend"
   | "afterCommit"
   | "beforeFlush"
   | "afterClaim"
@@ -41,6 +42,9 @@ export class RetryTurn extends Schema.TaggedError<RetryTurn>()("RetryTurn", {
  * `beforeCommit` follows handler planning, not necessarily `BEGIN`: eligible
  * warm turns can reach it speculatively and repeat it after ordinary admission.
  * Ambient turn SQL forces fenced admission before its first statement runs.
+ * `beforeCommitSend` follows final planning and any separate admission flight,
+ * immediately before sending the staged writes and COMMIT, so delaying replies
+ * cannot block an admission the turn still needs.
  */
 export const TurnHooks = Context.Reference<{
   readonly at: (point: TurnPoint, request: Request) => Effect.Effect<void>
