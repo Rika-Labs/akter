@@ -4,6 +4,7 @@ import { CreateBucketCommand, S3Client } from "@aws-sdk/client-s3"
 import { describe, expect, it } from "@effect/vitest"
 import { Config, Effect, Option, Predicate, Random } from "effect"
 import { engineConformance } from "../../../../tooling/conformance/src/conformance/engine.ts"
+import { jobConformance } from "../../../../tooling/conformance/src/conformance/jobs.ts"
 import { storeConformance } from "../../../../tooling/conformance/src/conformance/store.ts"
 import { StorageUnavailable } from "./errors.ts"
 import { s3Bucket } from "./s3.ts"
@@ -63,7 +64,7 @@ storeConformance({
   ),
 })
 
-engineConformance({
+const engineBackend = {
   name: "an S3-compatible bucket (TEST_S3_URL)",
   location: Effect.gen(function* () {
     const options = yield* target
@@ -78,7 +79,10 @@ engineConformance({
       },
     }
   }),
-})
+}
+
+engineConformance(engineBackend)
+jobConformance(engineBackend)
 
 /**
  * An S3 stand-in that answers a conditional create with 412 and then drops the

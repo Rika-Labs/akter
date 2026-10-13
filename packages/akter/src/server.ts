@@ -25,6 +25,8 @@ export type { S3Options } from "./store/s3.ts"
 
 export { Store }
 
+export { DurableClock } from "./execution/sleep.ts"
+
 export { Akter } from "./serve/akter.ts"
 export type { ServeOptions } from "./serve/akter.ts"
 export { Auth } from "./serve/providers.ts"

@@ -1,6 +1,6 @@
 # Durability, identity and outcomes
 
-Status: partially normative (0.2), owned by ADR 0124. E2b promotes the append-before-reply/publication gate on the tested engine paths, ambiguous-append resolution and synchronous Store hashing in [E2 recovery](../verification/e2-recovery.md). Index, job and wire publication guarantees and the remaining identity, authorization, page-layout, revocation and deadline clauses retain their proposal status until their own evidence lands.
+Status: partially normative (0.2), owned by ADR 0124. E2b promotes the append-before-reply/publication gate on the tested engine paths, ambiguous-append resolution and synchronous Store hashing in [E2 recovery](../verification/e2-recovery.md). E5 promotes job starts, journal durability and job-call deduplication/retirement in [E5 jobs](../verification/e5-jobs.md). The other clauses retain their milestone-specific proposal status until their evidence lands.
 
 **Responsibility:** define when an action is durable, what may be observed before that, how command identity deduplicates retries, and who may read a stored outcome.  
 **Authority:** normative target on `rewrite/0.2`.  
@@ -18,6 +18,7 @@ Status: partially normative (0.2), owned by ADR 0124. E2b promotes the append-be
 ## Command identity
 
 - An **external** command id is client-minted: `v1.<issuedAtMs>.<expiresAtMs>.<uuidv4>`. A client MUST send the same id on every attempt of one intent and MUST NOT mint a replacement for an id it has sent; a fresh id is a new operation.
+- Millisecond fields MUST be integers. Minting MUST floor a fractional clock reading before computing the expiry; a fractional simulator clock MUST NOT mint a malformed id.
 - A **derived** command id is a UUIDv8 computed with `Crypto.digest("SHA-256")` from a parent id and an ordinal: sends and timers from the staging action's id, job calls from (job id, enclosing step name or `body`, attempt, ordinal within that scope), `ctx.id()` values from the action's id. Derived ids MUST be accepted only from the store's own log and from peer runners of the store; a derived id presented by a client MUST be refused with `InvalidCommandId` code `version`.
 - The shard owner MUST refuse an external id, before any execution, with `InvalidCommandId` and a code: `malformed` (unparsable), `version` (not `v1`), `future` (`issuedAt` more than the store's future bound, default 60 seconds, after admission time; the refusal carries the owner's admission time and the client MAY resend the same id later), or `window` (`expiresAt` more than 10 minutes after `issuedAt`; the lifetime is fixed in 0.2.0 and not configurable). These are terminal and MUST NOT be retried with a new id automatically.
 - An external id whose `expiresAt` is at or before admission time MUST be refused with `CommandExpired` carrying the id, whether or not any record of it remains. Admission time never decreases within a shard ([actions](02-actions.md)), so an expired id stays refused after deduplication state is dropped, after an owner change and after a restore.

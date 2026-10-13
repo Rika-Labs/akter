@@ -69,7 +69,16 @@ type JobServices<H, J> = {
  * context-sensitive job handlers.
  */
 type LayerOf<Name extends string, R> = [Extract<R, Scope.Scope>] extends [never]
-  ? Layer.Layer<Implementation<Name>, never, Exclude<R, Client>>
+  ? Layer.Layer<
+      Implementation<Name>,
+      never,
+      Exclude<
+        R,
+        | Client
+        | import("effect/workflow").WorkflowEngine.WorkflowEngine
+        | import("effect/workflow").WorkflowEngine.WorkflowInstance
+      >
+    >
   : TypeError<"a job requires Scope: jobs get no finalizers, so close scopes inside the job with Effect.scoped">
 
 /** An actor contract: shared with clients; `toLayer` binds its handlers on the server. */

@@ -36,6 +36,7 @@ import type { ActorRecord, Catalog, PendingSend, ShardImage, TimerRecord } from 
 import { Entry, EntryCodec, Origin, Outcome } from "./entries.ts"
 import type { ActionEntry, Emit } from "./entries.ts"
 import { Layouts } from "./layout.ts"
+import { pendingClocks } from "./workflow.ts"
 import type { Image } from "./layout.ts"
 import { StaleEpoch } from "../store/errors.ts"
 import type { Lease } from "../store/log.ts"
@@ -163,6 +164,9 @@ const nextDueOf = (image: ShardImage): number | undefined => {
   let earliest: number | undefined
   for (const { timer } of image.timers.values())
     if (earliest === undefined || timer.at < earliest) earliest = timer.at
+  for (const job of image.jobs.values())
+    for (const at of pendingClocks(job.workflow))
+      if (earliest === undefined || at < earliest) earliest = at
   return earliest
 }
 

@@ -1,0 +1,52 @@
+# E5: durable jobs
+
+E5 implements jobs over the owning shard's create-once bucket log on `rewrite/0.2`. It preserves E2b recovery and E4 admission. No 0.1 behavioral suite is removed. Real storage evidence is local filesystem and MinIO, not R2 or Tigris support, latency or atomicity evidence.
+
+## Failure evidence
+
+The simulator uses the public actor handle and real execution/journal path, with a seeded scheduler, virtual clock and bucket faults. Real-backend scenarios share the same `JobWorker` fixture and crash-point predicates in `tooling/conformance/src/conformance/job-runner.ts` and `jobs.ts`; they interrupt scopes at actual create-once segment writes and reopen an independent runner over the same bucket.
+
+| Failure                                       | Wrong implementation rejected                                                                                                 | Independent assertions                                                                                                                                                                                                                                                                                                                                          |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| F17, inside a running step                    | Lost accepted work; rerunning already completed steps; exactly-once external I/O.                                             | The same attempt calls the in-flight external boundary twice after one crash; the finished preparation runs once, the actor total is 17 and completion is recorded once.                                                                                                                                                                                        |
+| F17, effect returned before `Step` is durable | Treating an unjournaled result as completed.                                                                                  | Preparation runs twice when its success append is lost; its typed bigint result recovers correctly and the actor receives 7 once. A later completed effect whose journal append is lost also reruns.                                                                                                                                                            |
+| F17′                                          | Applying a durable actor call twice when the job's reply journal is missing.                                                  | Interrupt the internal call-result `Step` append after the `credit` action is durable. Recovery resumes attempt one, retains one `credit` action, and returns the original reply; a completed call inside an unfinished step is independently journaled.                                                                                                        |
+| F18                                           | Losing the failure before delivery; treating typed rejection as ambiguous; repeating `onFailure` after its action is durable. | Typed failure, defect and timeout each spend three attempts and preserve the matching cause/ambiguity. Totals are independently 3 + 11 + 19 = 33; completed preparations run once. Backoff is at least 100 ms, and provider keys stay stable and distinct between steps. A crash before workflow completion after failure delivery leaves one rejection action. |
+| F19                                           | A per-instance concurrency limit or out-of-order admission.                                                                   | Twelve starts alternate two actors of one declaration on one shard. Peak external concurrency is exactly two, durable `Attempt` order equals start order, actor totals are 36 and 42 and each completes six jobs.                                                                                                                                               |
+| Completion cleanup                            | Dropping the job before receiver streams retire.                                                                              | A crash before `JobRetired` resumes cleanup without executing the body again. After settling, receiver call tables are empty.                                                                                                                                                                                                                                   |
+| Sleep and owner movement                      | A local sleep; resetting a deadline on restart; omitting job clocks from `nextDue`.                                           | Checkpoint and drain retain the original clock deadline. A new owner finishes with total 13, one preparation and one clock schedule; real completion does not precede that deadline.                                                                                                                                                                            |
+| Streaming                                     | Treating progress as durable events or repeating a final state update.                                                        | Observed progress is `partial`, `whole`, ` answer` across a mid-stream failure; the final state contains only `stream:whole answer`, total 5 and one completed external finish step.                                                                                                                                                                            |
+| Incompatible journal                          | Dropping a removed completed step or failing incompatible code through `onFailure`.                                           | Focused simulator guards replace the job handler, retain the original journal and state, set a suspend reason and deliver no failure action. This is not a full cross-build operator inspection/deploy drill.                                                                                                                                                   |
+
+The job matrix runs 200 seeds `0x5eed_e500` through `0x5eed_e5c7`, including random crashes, lost responses, outages and delayed log writes. Exact replay compares complete segment/checkpoint bytes for 20 seeds `0x5eed_f500` through `0x5eed_f513`. Every run independently checks total 43, the two successful results, one three-attempt typed failure and retired call streams. The existing E2b 1,000 stationary seeds, 200 moving-owner seeds and exact replay cases remain unchanged.
+
+An initial Node replay run under parallel load exposed a host-promise path: Effect's `Workflow.execute` computes the execution id with `crypto.subtle.digest`. The runner now calls the public workflow engine directly with its durable job id; no host digest or global monkeypatch sits on the simulated job path. Repeating a test until it happened to pass was not treated as a fix.
+
+`execution/workflow.test.ts` retains all 22 upstream Effect 4.0.3 workflow/queue behavior cases against the shard-journal adapter, not `layerMemory`. They include interruption, preemption, queued child registration, deferred completion and finalizer behavior inside the adapter. Internal compatibility evidence is not an Akter compensation/deferred API.
+
+## Reproduction
+
+From the repository root:
+
+```sh
+bun install --frozen-lockfile
+bun run check
+bun run --cwd packages/akter test
+node node_modules/vitest/vitest.mjs run packages/akter/src --exclude packages/akter/src/store/s3.test.ts
+bun run test:node:units
+bun --bun node_modules/vitest/vitest.mjs run packages/akter/src/execution/jobs.test.ts packages/akter/src/testing/simulation.test.ts
+node node_modules/vitest/vitest.mjs run packages/akter/src/execution/jobs.test.ts packages/akter/src/testing/simulation.test.ts
+TEST_S3_URL=http://project:project-minio@127.0.0.1:33250/akter-e5 bun run --cwd packages/akter test:integration
+bun run pack:smoke
+SMOKE_RUNTIME=node bun run pack:smoke
+```
+
+The MinIO endpoint above is a disposable local fixture with public fixture credentials, not a provider secret or a fixed port requirement. Start a private container on an unused localhost port using the image pinned in `packages/akter/compose.yaml`, substitute its actual port, and remove that container afterwards. Do not remove another worktree's service.
+
+The Node package run includes the portable `node:crypto` SHA-256 fixture in `serve/assertion/binding.test.ts`; it is no longer a Bun-only test. Minting ids also floors fractional clock readings, which the faulted job matrix needs after jittered bucket retries. The captain's completion report records final command results and commits.
+
+## Limits and seams
+
+E3 must supply `JobRouting.execute` and `JobRouting.retire` when shard owners differ; the default is the single-runner/all-shards path. Calls preserve the derived id, caller and original outcome through that seam, and terminal jobs retain their cleanup obligation until retirement is durable. No Cluster assignment, runner storage, socket peering or actor timer-wheel implementation is changed here. The engine only adds pending workflow clocks to checkpoint/drain `nextDue`.
+
+Suspend reasons are owner-local metadata on retained job records and reset on recovery; the journal is authority. Operator inspection and a complete incompatible-build deploy drill remain E8. Raw Effect `DurableClock.sleep` has its own in-memory threshold: only the framework server export promises durable short sleeps. External provider I/O is at least once, and no hosted provider or production sleep/wake orchestration is certified by these local scenarios.

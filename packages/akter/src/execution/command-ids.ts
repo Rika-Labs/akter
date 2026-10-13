@@ -68,7 +68,8 @@ const mint = (now: number): Effect.Effect<string> =>
       const bytes = new Uint8Array(16)
       const view = new DataView(bytes.buffer)
       words.forEach((word, index) => view.setUint32(index * 4, word >>> 0))
-      return `v1.${now}.${now + commandLifetime}.${uuid(bytes, 4)}`
+      const issuedAt = Math.floor(now)
+      return `v1.${issuedAt}.${issuedAt + commandLifetime}.${uuid(bytes, 4)}`
     },
   )
 

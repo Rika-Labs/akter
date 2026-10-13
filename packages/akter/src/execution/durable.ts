@@ -63,6 +63,11 @@ export interface JobRecord {
   readonly key: string | undefined
   readonly onBehalfOf: string | undefined
   attempt: number
+  at: number
+  failure: typeof Entry.cases.JobFailed.Type | undefined
+  done: "Succeeded" | "Failed" | undefined
+  suspended: string | undefined
+  readonly workflow: Array<Schema.Json>
   readonly steps: Map<string, Schema.Json>
 }
 
@@ -255,6 +260,11 @@ const recordAction = (
       key: start.key,
       onBehalfOf: principalOf(entry.caller),
       attempt: 0,
+      at: 0,
+      failure: undefined,
+      done: undefined,
+      suspended: undefined,
+      workflow: [],
       steps: new Map(),
     })
   }
@@ -297,14 +307,29 @@ const record = (
       if (remaining.length === 0) image.outbox.delete(stream)
       else image.outbox.set(stream, remaining)
     },
-    Attempt: ({ jobId, attempt }) => {
+    Attempt: ({ jobId, attempt, at }) => {
       const job = image.jobs.get(jobId)
-      if (job !== undefined) job.attempt = attempt
+      if (job !== undefined) {
+        job.attempt = attempt
+        job.at = at
+        job.failure = undefined
+      }
+    },
+    JobFailed: (entry) => {
+      const job = image.jobs.get(entry.jobId)
+      if (job !== undefined) job.failure = entry
+    },
+    Workflow: ({ jobId, value }) => {
+      image.jobs.get(jobId)?.workflow.push(value)
     },
     Step: ({ jobId, name, value }) => {
       image.jobs.get(jobId)?.steps.set(name, value)
     },
-    Done: ({ jobId }) => {
+    Done: ({ jobId, outcome }) => {
+      const job = image.jobs.get(jobId)
+      if (job !== undefined) job.done = outcome
+    },
+    JobRetired: ({ jobId }) => {
       image.jobs.delete(jobId)
     },
     Retired: ({ jobId }) => {
