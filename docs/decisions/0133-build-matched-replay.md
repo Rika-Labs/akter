@@ -30,6 +30,14 @@ Every segment records the `build` that wrote it: a digest of the application bun
 - After a graceful handoff, the new build decodes the checkpoint's state and later payloads with its own schemas; action payload schemas MUST stay able to decode what clients still send during the rollout.
 - Job bodies follow §6 of [ADR 0129](0129-jobs-timers-and-shard-workflow-engine.md): steps by name, incompatible open jobs suspended, never failed.
 
+## E2b amendment: actionable tails
+
+Build matching applies to segments that replay application code: currently `Action` runs a handler and `Seed` applies the state schema. The build equality check compares every recorded build field, not just the bundle digest. Empty open segments and bookkeeping-only segments (`Released`, `Skipped`, delivery acknowledgements and job journal bookkeeping) do not run that code and do not require a matching build. An undecodable entry is still refused; the exception is not permission to ignore corruption or a `ReplayMismatch`.
+
+A clean drain checkpoints through the last action, then writes `Released`. This leaves no actionable old-build tail, rather than literally no tail. A new build may decode that checkpoint and replay its bookkeeping. After a crash, an incompatible actionable tail is refused; assigning a runner of the old build lets it recover, drain and hand over. `replay: "current"` opts into current-code replay but never disables the recorded-effects comparison.
+
+[E2 recovery](../verification/e2-recovery.md) records the old-build refusal/replay/drain/new-build sequence on the simulator and real-store harness. Cross-engine identity matching is implemented, but an actual Node-to-Bun or Bun-to-Node recovery run (F12′), host replay-runner orchestration, image retention, readiness and inspection reporting are not established by that sequence.
+
 ## Supersedes and amends
 
 No earlier record is superseded; build-matched replay is new.

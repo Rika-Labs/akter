@@ -15,7 +15,7 @@ The public distribution is `@rikalabs/akter` with three entries:
 - `@rikalabs/akter/server`: `Akter.serve`, `Store.s3`, `Store.fileSystem`, `Store.memory` and `App.make`;
 - `@rikalabs/akter/testing`: `Simulation`.
 
-Framework conformance, the seeded simulator and the bucket-protocol suites are repository-only tools in `tooling/conformance`, not public APIs ([ADR 0111](../decisions/0111-framework-verification-workspace.md)). Repository placement is defined by [repository structure](../architecture/repository-structure.md).
+Framework conformance and the bucket-protocol suites are repository-only tools in `tooling/conformance`, not public APIs ([ADR 0111](../decisions/0111-framework-verification-workspace.md)). The seeded `Simulation` is the public testing entry at `@rikalabs/akter/testing`; its implementation and conformance harness remain repository code. Repository placement is defined by [repository structure](../architecture/repository-structure.md).
 
 Key words MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119. Invariant ids (I1–I9) and failure ids (F1–F27) name rows of the 0.2 verification matrix, written in E1.
 

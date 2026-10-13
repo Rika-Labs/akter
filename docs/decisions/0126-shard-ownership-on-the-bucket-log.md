@@ -2,6 +2,8 @@
 
 Status: proposed, 2026-10-12 (rewrite/0.2).
 
+E2b implements the engine/store boundary described in the amendment below; this is partial evidence, not acceptance of the cluster, rollout or clock-suspension clauses.
+
 **Responsibility:** decide how a runner becomes the one writer of a shard, how batches become durable in the store's bucket, how a stale owner is fenced, how admission is bounded, and how a shard moves between releases.
 
 **Owner role:** runtime architecture and reliability.
@@ -88,6 +90,18 @@ Releases of one store overlap during a rollout. They are separate clusters (diff
 ### 10. Shard count
 
 The shard count is fixed in `meta/store` at store creation (default 16, at most 256). A runner configured with another count refuses to start. Resharding is a later, offline operation.
+
+## E2b amendment: engine ownership, freshness and release
+
+Store opens an epoch before the engine loads and replays its checkpoint and tail. The open segment is empty (`open` equals its own offset); it is the `Open` operation, not an application entry. Recovery must succeed before admission or publication. Store falls back from an undecodable manifest or one naming a missing page only while the gapless log still reaches every skipped checkpoint's offset. A failed replay refuses the shard even though Store took the epoch.
+
+On `StaleEpoch`, the engine discards pending work, answers `ShardMoved` and stays `fenced`. Only the runner layer's `engine.assign` can assign that shard back and initiate another open; caller reads, retries and autonomous restart cannot. An assigned shard's own crash or unavailable append may restart with backoff, so accepted timers and sends do not wait for a caller. These are distinct failure paths, not two names for the same restart policy.
+
+Store owns `validFor` (default 10 seconds), confirmation time and `fresh(lease)`. The engine uses that freshness for reads and admission, including duplicates answered from memory, and calls `verify` when it expires. Successful append or verification renews Store's window; a detected fence never remains fresh. The discontinuity/suspend-safe-clock requirements of §5 remain proposals, not established by advancing `TestClock`.
+
+Engine drain stops admission, flushes, writes the checkpoint, then appends a segment containing only `Released`. It returns `{ outcome: "clean" | "timedOut", shards: [{ shard, offset, nextDue }] }`, with `nextDue` in epoch milliseconds or `null`. An incomplete release closes without publishing undurable work. The next build has no application entries to replay, although the bookkeeping-only `Released` tail remains. The runner layer still owns unready/readiness, registration and routing, rollout standby/no-open-before-release (F24), advisory lease release, and self-host `DRAINED` output; `engine.assign` establishes none of those guarantees.
+
+[E2 recovery](../verification/e2-recovery.md) maps F6–F12 to the seeded ownership suite and the six real-store engine scenarios. Provider performance and production-bucket atomicity remain T5 evidence, not simulator or filesystem claims.
 
 ## Supersedes and amends
 

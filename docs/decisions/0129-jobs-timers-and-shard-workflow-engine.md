@@ -55,6 +55,12 @@ Jobs compile to Effect workflows run by `ShardWorkflowEngine`, Akter's implement
 
 Job bodies follow Effect Workflow's replay model: finished steps return their journaled results; a renamed or removed step in a new build is an incompatibility. A shard whose open jobs name a declaration or step the running build does not have suspends those jobs (reported through inspection) and keeps serving everything else; it never fails them. A graceful drain leaves no running attempt behind; open jobs resume on the next owner from their journal ([ADR 0133](0133-build-matched-replay.md)).
 
+## E2b amendment: durable cron catch-up
+
+The catch-up threshold is inclusive: a pending tick exactly `cronSkipIfOlderThan` late (default one hour) fires once; only a tick older than the threshold is skipped. A skip is a durable `Skipped { commandId, at }` entry, which removes that pending tick and schedules the first tick after `at`. The state transition is replayed from the log; a crash must not resurrect a durably skipped tick, and days of downtime must not create a tick backlog.
+
+E2b's ownership suite exercises recovery on both sides of the threshold and after days of downtime, while the real-store restart scenario recovers a pending one-shot timer. Engine drain checkpoints and reports `nextDue` per shard, with `null` for none. This does not establish cluster failover, DST (F15), a host waking a scaled-to-zero store (F27), or the E5 job guarantees; those remain their own milestones. Evidence and remaining boundary checks are in [E2 recovery](../verification/e2-recovery.md).
+
 ## Supersedes and amends
 
 - Supersedes [ADR 0012](0012-workflows-internals-effects-defects-merging-regions.md) — scope: §1 workflows on the framework engine and §3 effect routes.

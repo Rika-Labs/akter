@@ -1,6 +1,6 @@
 # Failure and recovery
 
-Status: proposal (0.2), owned by ADR 0126; promoted when E2 failure evidence lands.
+Status: partially normative (0.2), owned by ADR 0126. E2b promotes checkpoint-plus-tail recovery, unknown-outcome resolution, engine drain/report, fenced-shard reassignment and actionable-tail build matching on the tested same-runtime paths in [E2 recovery](../verification/e2-recovery.md). All other clauses, including cross-runtime recovery, lazy actor paging, jobs, connection cleanup, clock discontinuities, restore, startup/runners and release rollout/readiness, remain proposal for their later milestones.
 
 **Responsibility:** define how shards open and recover, how unknown outcomes resolve, how runners drain and hand off, which build replays a tail, and how a store is restored.  
 **Authority:** normative target on `rewrite/0.2`.  
@@ -13,10 +13,10 @@ Recovery MUST derive authority and consequences only from `meta/store`, segments
 
 ## Opening a shard
 
-1. List the newest checkpoint; list the segments after its offset. The tail MUST be gapless; a gap MUST refuse the shard.
-2. Load the checkpoint's shard state (actor pointers, timers, pending sends, jobs, deduplication state, connections, index) and replay the tail. Replay MUST compare each recorded outcome and raise `ReplayMismatch` on a difference ([actions](02-actions.md)).
-3. Create the next segment with an `Open` entry using `If-None-Match: *`. A conflict means another runner opened first: re-list and retry a bounded number of times, then give the shard up.
-4. Run `disconnect` for every connection the previous owner recorded, deliver pending sends, resume open jobs, and fire timers that came due.
+1. Store MUST choose the newest intact checkpoint and list the segments after its offset. The tail MUST be gapless; a gap MUST refuse the shard. A checkpoint whose manifest is undecodable or names a missing page MUST be skipped; if the remaining log no longer reaches the skipped checkpoint's offset, the shard MUST be refused rather than reopened from an incomplete prefix.
+2. Store MUST create the next empty open segment using `If-None-Match: *`. Its offset is the new epoch. A conflict means another runner opened first: re-list and retry a bounded number of times, then give the shard up. Taking this epoch alone MUST NOT permit the engine to serve before recovery succeeds.
+3. The engine MUST load the checkpoint's shard state and replay the tail. Replay MUST compare each recorded outcome and raise `ReplayMismatch` on a difference ([actions](02-actions.md)). An incompatible build or an undecodable checkpoint state MUST refuse the shard, never substitute default state.
+4. After successful recovery, deliver pending sends, resume open jobs, and fire timers that came due. A timer due during downtime MUST retain its original due time while recovery decides whether to fire it. Connection cleanup (run `disconnect` for every connection the previous owner recorded) remains a proposal obligation for runner integration.
 
 Actors are rebuilt lazily from their manifest plus their tail entries when first used. A replayed shard MUST reach the same states and outcomes from any retained checkpoint (I3).
 
@@ -30,15 +30,17 @@ Actors are rebuilt lazily from their manifest plus their tail entries when first
 
 ## Drain and release handoff
 
-- Drain MUST make the runner unready before it stops admission, then for each owned shard: stop admission (callers get `ShardMoved` with `retryAfter`), flush the committer, write a checkpoint, and append a final segment holding one `Released` entry. Drain MUST finish within its configured bound and report `{ outcome: "clean" | "timedOut", shards: [{ shard, offset, nextDue }] }`; a self-hosted runner prints it as `DRAINED` followed by the JSON report.
+- For each owned shard, engine drain MUST stop admission (callers get `ShardMoved` with `retryAfter`), flush the committer, write a checkpoint, and append a final segment holding one `Released` entry. Drain MUST finish within its configured bound and report `{ outcome: "clean" | "timedOut", shards: [{ shard, offset, nextDue }] }`. `offset` is the final durable offset; `nextDue` is the earliest pending timer or cron tick in epoch milliseconds, or `null` when none remains. If release cannot complete within the bound, drain MUST close the shard without publishing undurable work and report `timedOut`.
+- The runner integration MUST make the runner unready before engine drain stops admission. A self-hosted runner MUST print `DRAINED` followed by the JSON report. These host-integration clauses remain proposal for E3.
 - Closing the runtime MAY cut off admitted actions; a cut-off action, or one sent during or after shutdown, MUST fail with a retryable reason within a bound and MUST NOT wait without end.
 - A runner of another release MUST NOT open a shard whose last segment is not `Released` unless the owning runner's lease object has expired; the create-once fence decides between racers.
 - A new release MUST start in standby and open shards only through the rule above.
+- A shard fenced by a newer epoch MUST remain closed on the old runner. Only the runner layer's `engine.assign` may make that runner try to reopen it; callers and autonomous engine restart MUST NOT do so. `ShardMoved` is the caller-visible result while it is fenced.
 
 ## Build-matched replay
 
 - Every segment records its build (application bundle digest, framework version, JavaScript engine and version).
-- A tail written by another build MUST be replayed by a runner of that build. A runner without it MUST refuse the shard and report it, unless the operator configured `replay: "current"`. A tail written by another JavaScript engine MUST be refused without operator opt-in, even when the bundle matches ([ADR 0133](../decisions/0133-build-matched-replay.md)).
+- A tail written by another build MUST be replayed by a runner of that build. A runner without it MUST refuse the shard and report it, unless the operator configured `replay: "current"`. A tail written by another JavaScript engine MUST be refused without operator opt-in, even when the bundle matches ([ADR 0133](../decisions/0133-build-matched-replay.md)). Bookkeeping-only segments such as an empty `Open` segment or `Released`/`Skipped` entries do not require application-code replay; the build check applies to segments that run handlers or schemas.
 - A runner that cannot decode a checkpoint's state with its schemas MUST refuse the shard.
 
 ## Clocks and suspension
@@ -60,4 +62,4 @@ Owner validity uses elapsed time on the owner's own clock ([actor authority](01-
 
 ## Verification
 
-I3, I6; F5, F6, F6′, F9, F10, F11 (drain under load), F12 and F12′ (tail from another build or engine), F24 (no open before release), F26 (interrupted store retirement, Cloud), T6 (a shard moves in at most 5 s and replays a 10,000-entry tail in at most 1 s).
+I3, I6; F5, F6, F6′, F7, F8, F9, F10, F11 (drain under load), F12 and F12′ (tail from another build or engine), F24 (no open before release), F26 (interrupted store retirement, Cloud), T6 (a shard moves in at most 5 s and replays a 10,000-entry tail in at most 1 s). [E2 recovery](../verification/e2-recovery.md) maps F6–F12 to simulator and real-store scenarios, including filesystem runs under Bun and Node; F24, readiness, real cluster routing and self-host `DRAINED` output remain E3 or host work.
