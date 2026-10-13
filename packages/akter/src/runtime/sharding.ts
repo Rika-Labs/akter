@@ -1,5 +1,6 @@
 import {
   Context,
+  Clock,
   Deferred,
   Duration,
   Effect,
@@ -8,6 +9,7 @@ import {
   HashRing,
   Layer,
   Option,
+  Result,
   Schema,
   Stream,
 } from "effect"
@@ -35,6 +37,7 @@ import { Origin, Outcome } from "../execution/entries.ts"
 import { Transports } from "../execution/transport.ts"
 import { ErrorEnvelope, FindCodec, FindPayload, Frame, RangePayload } from "../rpc/group.ts"
 import { runnerDefaults, runnerStorage } from "../store/runners.ts"
+import { StaleEpoch } from "../store/errors.ts"
 import type { Readiness } from "./drain.ts"
 import { mtls, PeerHealth } from "./peering/transport.ts"
 import type { MutualTlsOptions } from "./peering/transport.ts"
@@ -50,6 +53,8 @@ export interface RunnerOptions {
   readonly refreshAssignmentsInterval?: Duration.Input
   readonly shardLockRefreshInterval?: Duration.Input
   readonly drainDeadline?: Duration.Input
+  /** One peer request's bound; a retry repeats the command id. Default 10 seconds. */
+  readonly requestTimeout?: Duration.Input
 }
 
 const CALLER = "x-akter-peer-caller"
@@ -122,6 +127,25 @@ export class Sharding extends Context.Service<
 
 type AwaitedReply = Effect.Success<ReturnType<typeof Transports.reply>>
 
+const engineReady = (engine: Engine, ids: Iterable<number>): Effect.Effect<Readiness> =>
+  Effect.gen(function* () {
+    for (const id of ids) {
+      if (engine.status(id).status !== "open") return { ready: false, reason: "routing" }
+      const lease = engine.lease(id)
+      if (lease === undefined) return { ready: false, reason: "routing" }
+      const verified = yield* engine.store
+        .verify(lease)
+        .pipe(Effect.result, Effect.timeoutOption("1 second"))
+      if (Option.isNone(verified)) return { ready: false, reason: "storage" }
+      if (Result.isFailure(verified.value))
+        return {
+          ready: false,
+          reason: Schema.is(StaleEpoch)(verified.value.failure) ? "routing" : "storage",
+        }
+    }
+    return { ready: true }
+  })
+
 /** A single process uses the same control surface without a peer listener. */
 const local = (engine: Engine) =>
   Effect.gen(function* () {
@@ -133,12 +157,13 @@ const local = (engine: Engine) =>
       reads: (caller) => Transports.reads(engine, caller),
       admitted: (caller, id, request) => Transports.admitted(engine, caller, id, request),
       execute: engine.execute,
-      readiness: Effect.sync(() =>
+      readiness: Effect.suspend(() =>
         draining
-          ? { ready: false, reason: completed ? "drained" : "draining" }
-          : engine.shards().every((shard) => shard.status === "open")
-            ? { ready: true }
-            : { ready: false, reason: "routing" },
+          ? Effect.succeed<Readiness>({ ready: false, reason: completed ? "drained" : "draining" })
+          : engineReady(
+              engine,
+              Array.from({ length: engine.catalog.shards }, (_, id) => id),
+            ),
       ),
       drain: (deadline) =>
         Effect.suspend(() => {
@@ -185,6 +210,7 @@ const clustered = (engine: Engine, options: RunnerOptions) =>
     )
     let draining = false
     let registered = false
+    let registration: Effect.Success<ReturnType<typeof raw.register>> | undefined
     let storageHealthy = true
     let completed = false
     let drainReport: Deferred.Deferred<DrainReport> | undefined
@@ -221,12 +247,22 @@ const clustered = (engine: Engine, options: RunnerOptions) =>
         ),
       ),
       register: (runner, healthy) =>
-        raw.register(runner, !draining && healthy).pipe(
-          Effect.tap(() =>
-            Effect.sync(() => {
-              registered = true
-            }),
-          ),
+        Effect.suspend(() =>
+          draining && registration !== undefined
+            ? Effect.succeed(registration)
+            : raw.register(runner, healthy).pipe(
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    registered = true
+                  }),
+                ),
+                Effect.tap((id) =>
+                  Effect.sync(() => {
+                    registration = id
+                  }),
+                ),
+                Effect.tap(() => (draining ? raw.unregister(runner.address) : Effect.void)),
+              ),
         ),
       acquire: (runner, ids) =>
         Effect.gen(function* () {
@@ -411,7 +447,13 @@ const clustered = (engine: Engine, options: RunnerOptions) =>
     const refail = <A, E, R>(
       run: Effect.Effect<A, E | ActorError, R>,
     ): Effect.Effect<A, ActorError, R> =>
-      run.pipe(Effect.mapError((error) => (Schema.is(ActorError)(error) ? error : unavailable())))
+      run.pipe(
+        Effect.mapError((error) => (Schema.is(ActorError)(error) ? error : unavailable())),
+        Effect.timeoutOrElse({
+          duration: options.requestTimeout ?? "10 seconds",
+          orElse: () => Effect.fail(unavailable()),
+        }),
+      )
     const streamRefail = <A, E>(run: Stream.Stream<A, E | ActorError>) =>
       run.pipe(Stream.mapError((error) => (Schema.is(ActorError)(error) ? error : unavailable())))
     const payloadOf = (command: Command) => ({
@@ -552,7 +594,7 @@ const clustered = (engine: Engine, options: RunnerOptions) =>
           )
             return { ready: false, reason: "routing" }
         }
-        return { ready: true }
+        return yield* engineReady(engine, expected)
       }),
       drain: (deadline) =>
         Effect.suspend(() => {
@@ -560,13 +602,24 @@ const clustered = (engine: Engine, options: RunnerOptions) =>
           draining = true
           drainReport = Deferred.makeUnsafe<DrainReport>()
           return Effect.gen(function* () {
+            const started = yield* Clock.monotonicTimeNanos
             const report = yield* engine.drain(deadline)
-            yield* raw.releaseAll(address).pipe(Effect.ignore)
-            yield* raw.unregister(address).pipe(Effect.ignore)
+            const elapsed = Number((yield* Clock.monotonicTimeNanos) - started) / 1_000_000
+            const remaining = Math.max(
+              0,
+              Duration.toMillis(Duration.fromInputUnsafe(deadline)) - elapsed,
+            )
+            yield* raw
+              .unregister(address)
+              .pipe(
+                Effect.andThen(raw.releaseAll(address)),
+                Effect.ignore,
+                Effect.timeoutOption(Duration.millis(remaining)),
+              )
             completed = true
             yield* Deferred.succeed(drainReport!, report)
             return report
-          })
+          }).pipe(Effect.uninterruptible)
         }),
     })
   })

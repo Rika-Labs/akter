@@ -351,76 +351,81 @@ const make = (catalog: Catalog, options: EngineOptions) =>
      * scope ended in a crash or a release.
      */
     const open = (shard: Shard): Effect.Effect<void, ActorError> =>
-      Effect.suspend(() => {
-        if (shard.status === "open") return Effect.void
-        if (shard.status === "refused") return Effect.fail(unavailable())
-        if (!shard.assigned || shard.status === "fenced" || shard.status === "draining")
-          return Effect.fail(moved())
-        if (shard.status === "opening") return Deferred.await(shard.opened)
-        shard.status = "opening"
-        shard.opened = Deferred.makeUnsafe<void, ActorError>()
-        const generation = ++shard.generation
-        const opened = shard.opened
-        const previous = shard.settled
-        const settled = Deferred.makeUnsafe<void>()
-        shard.settled = settled
-        const attempt = Effect.andThen(Deferred.await(previous), recoverShard(shard.id)).pipe(
-          Effect.flatMap(({ lease, recovered }) =>
-            Effect.suspend(() => {
-              if (shard.generation !== generation) return Effect.fail(unavailable())
-              if (Result.isFailure(recovered)) {
-                shard.status = "refused"
-                shard.refusal = recovered.failure
-                if (!Predicate.isTagged(recovered.failure, "BuildMismatch"))
-                  options.observer?.violation(
-                    "recovery",
-                    `${recovered.failure._tag}: ${recovered.failure.message}`,
-                  )
+      Effect.uninterruptibleMask((restore) =>
+        Effect.suspend(() => {
+          if (shard.status === "open") return Effect.void
+          if (shard.status === "refused") return Effect.fail(unavailable())
+          if (!shard.assigned || shard.status === "fenced" || shard.status === "draining")
+            return Effect.fail(moved())
+          if (shard.status === "opening") return restore(Deferred.await(shard.opened))
+          shard.status = "opening"
+          shard.opened = Deferred.makeUnsafe<void, ActorError>()
+          const generation = ++shard.generation
+          const opened = shard.opened
+          const previous = shard.settled
+          const settled = Deferred.makeUnsafe<void>()
+          shard.settled = settled
+          const attempt = Effect.andThen(Deferred.await(previous), recoverShard(shard.id)).pipe(
+            Effect.flatMap(({ lease, recovered }) =>
+              Effect.suspend(() => {
+                if (shard.generation !== generation) return Effect.fail(unavailable())
+                if (Result.isFailure(recovered)) {
+                  shard.status = "refused"
+                  shard.refusal = recovered.failure
+                  if (!Predicate.isTagged(recovered.failure, "BuildMismatch"))
+                    options.observer?.violation(
+                      "recovery",
+                      `${recovered.failure._tag}: ${recovered.failure.message}`,
+                    )
+                  Deferred.doneUnsafe(opened, Exit.fail(unavailable()))
+                  return Effect.fail(unavailable())
+                }
+                shard.durable = recovered.success
+                shard.lease = lease
+                shard.lastAt = recovered.success.lastAt
+                shard.sinceCheckpoint = 0
+                shard.scope = Scope.makeUnsafe()
+                shard.ended = Deferred.makeUnsafe<never, ActorError>()
+                shard.firing.clear()
+                shard.acked.clear()
+                shard.armed.clear()
+                shard.delivering.clear()
+                return TimerWheels.make.pipe(
+                  Effect.provideService(Scope.Scope, shard.scope),
+                  Effect.flatMap((wheel) => {
+                    if (shard.generation !== generation) return Effect.fail(unavailable())
+                    shard.wheel = wheel
+                    shard.status = "open"
+                    Deferred.doneUnsafe(opened, Exit.void)
+                    for (const address of recovered.success.actors.keys())
+                      if (channels.has(address)) notify(address)
+                    return Effect.forkIn(committer(shard, generation), shard.scope).pipe(
+                      Effect.andThen(after(shard)),
+                    )
+                  }),
+                )
+              }),
+            ),
+            Effect.onExit((exit) =>
+              Effect.sync(() => {
+                if (
+                  Exit.isSuccess(exit) ||
+                  shard.generation !== generation ||
+                  shard.status !== "opening"
+                )
+                  return
+                shard.status = "closed"
                 Deferred.doneUnsafe(opened, Exit.fail(unavailable()))
-                return Effect.fail(unavailable())
-              }
-              shard.durable = recovered.success
-              shard.lease = lease
-              shard.lastAt = recovered.success.lastAt
-              shard.sinceCheckpoint = 0
-              shard.scope = Scope.makeUnsafe()
-              shard.ended = Deferred.makeUnsafe<never, ActorError>()
-              shard.firing.clear()
-              shard.acked.clear()
-              shard.armed.clear()
-              shard.delivering.clear()
-              return TimerWheels.make.pipe(
-                Effect.provideService(Scope.Scope, shard.scope),
-                Effect.flatMap((wheel) => {
-                  if (shard.generation !== generation) return Effect.fail(unavailable())
-                  shard.wheel = wheel
-                  shard.status = "open"
-                  Deferred.doneUnsafe(opened, Exit.void)
-                  for (const address of recovered.success.actors.keys())
-                    if (channels.has(address)) notify(address)
-                  return Effect.forkIn(committer(shard, generation), shard.scope).pipe(
-                    Effect.andThen(after(shard)),
-                  )
-                }),
-              )
-            }),
-          ),
-          Effect.onExit((exit) =>
-            Effect.sync(() => {
-              if (
-                Exit.isSuccess(exit) ||
-                shard.generation !== generation ||
-                shard.status !== "opening"
-              )
-                return
-              shard.status = "closed"
-              Deferred.doneUnsafe(opened, Exit.fail(unavailable()))
-            }),
-          ),
-          Effect.ensuring(Deferred.done(settled, Exit.void)),
-        )
-        return Effect.andThen(Effect.forkIn(attempt, root), Deferred.await(opened))
-      })
+              }),
+            ),
+            Effect.ensuring(Deferred.done(settled, Exit.void)),
+          )
+          return Effect.andThen(
+            Effect.forkIn(attempt, root, { uninterruptible: false }),
+            restore(Deferred.await(opened)),
+          )
+        }),
+      )
 
     /**
      * The shard's one committer: whenever the log is free it takes every group staged so far, up to
@@ -981,9 +986,17 @@ const make = (catalog: Catalog, options: EngineOptions) =>
             source: record.timer.cron ? "cron" : "timer",
             subject: record.timer.cron ? `cron:${owner.actor.name}` : `actor:${record.address}`,
             ref: record.address,
+            onBehalfOf: record.onBehalfOf,
           }),
           connection: undefined,
-        }).pipe(Effect.ignore)
+        }).pipe(
+          Effect.catchIf(
+            (error) => error.isRetryable,
+            (error) => Effect.andThen(Effect.sleep("50 millis"), Effect.fail(error)),
+          ),
+          Effect.retry({ while: (error) => error.isRetryable }),
+          Effect.ignore,
+        )
       })
 
     /**
