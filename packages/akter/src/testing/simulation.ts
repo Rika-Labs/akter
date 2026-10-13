@@ -30,6 +30,7 @@ import { Jobs } from "../execution/jobs.ts"
 import { Layouts } from "../execution/layout.ts"
 import type { Decoded } from "../execution/layout.ts"
 import { Transports } from "../execution/transport.ts"
+import { Finds } from "../contract/find.ts"
 import { frameworkVersion } from "../snapshots/build.ts"
 import { Recovery } from "../snapshots/recovery.ts"
 import type { ReplayPolicy } from "../snapshots/recovery.ts"
@@ -419,13 +420,13 @@ const layer = <const Actors extends ReadonlyArray<AnyActor>>(
             Transports.reads(
               {
                 ...first.engine,
-                instances: (actor) =>
+                find: (actor, query) =>
                   Effect.map(
                     Effect.forEach(
                       every,
-                      (id) => ownerEngine(id)?.instances(actor, [id]) ?? missing,
+                      (id) => ownerEngine(id)?.find(actor, query, [id]) ?? missing,
                     ),
-                    (partitions) => partitions.flat(),
+                    (partitions) => Finds.rows(query, partitions.flat()),
                   ),
               },
               caller,

@@ -6,6 +6,7 @@ import { ByValue, MemberCodec } from "../contract/handle.ts"
 import type { AnyActor } from "../contract/make.ts"
 import { isList } from "../contract/members.ts"
 import type { Action, MemberSchema } from "../contract/members.ts"
+import { Finds } from "../contract/find.ts"
 
 /**
  * `ActorError` as it travels: the reason with its fields, `isRetryable` and `retryAfter` in
@@ -82,16 +83,14 @@ export const RangePayload = Schema.Struct({
 export const JoinPayload = Schema.Struct({ id: Schema.Json, presence: Schema.Json })
 
 /** One encoded condition of a `find`: equality, or range bounds. */
-export const Condition = Schema.Union([
-  Schema.Struct({ eq: Schema.Json }),
-  Schema.Struct({
-    gt: Schema.optionalKey(Schema.Json),
-    gte: Schema.optionalKey(Schema.Json),
-    lt: Schema.optionalKey(Schema.Json),
-    lte: Schema.optionalKey(Schema.Json),
-    in: Schema.optionalKey(Schema.Array(Schema.Json)),
-  }),
-])
+export const Condition = Schema.Struct({
+  eq: Schema.optionalKey(Schema.Json),
+  gt: Schema.optionalKey(Schema.Json),
+  gte: Schema.optionalKey(Schema.Json),
+  lt: Schema.optionalKey(Schema.Json),
+  lte: Schema.optionalKey(Schema.Json),
+  in: Schema.optionalKey(Schema.Array(Schema.Json)),
+})
 
 /** A `find` query with every condition encoded by its field's schema. */
 export const FindPayload = Schema.Struct({
@@ -281,11 +280,7 @@ const invalidQuery = (path: string, message: string): ActorError =>
     reason: InvalidInput.make({ code: "decode", issues: [{ path, message }] }),
   })
 
-const scalarField = (actor: AnyActor, field: string): MemberSchema | undefined => {
-  const fields: Fields = actor.state.fields
-  const schema = fields[field]
-  return schema === undefined || isList(schema) ? undefined : schema
-}
+const scalarField = Finds.field
 
 const isBounds = (condition: unknown): condition is Bounds<MemberSchema["Type"]> =>
   Predicate.isObject(condition) && !DateTime.isDateTime(condition) && !Array.isArray(condition)
@@ -309,10 +304,10 @@ const encodeQuery = (
         continue
       }
       const bounds: Bounds<MemberSchema["Type"]> = condition
-      const encoded: { -readonly [K in "gt" | "gte" | "lt" | "lte"]?: Schema.Json } & {
+      const encoded: { -readonly [K in "eq" | "gt" | "gte" | "lt" | "lte"]?: Schema.Json } & {
         in?: ReadonlyArray<Schema.Json>
       } = {}
-      for (const key of ["gt", "gte", "lt", "lte"] as const) {
+      for (const key of ["eq", "gt", "gte", "lt", "lte"] as const) {
         const value = bounds[key]
         if (value !== undefined) encoded[key] = yield* encode(value)
       }
@@ -322,6 +317,13 @@ const encodeQuery = (
     const payload: Writable<typeof FindPayload.Type> = { where }
     if (query.orderBy !== undefined) payload.orderBy = query.orderBy
     if (query.limit !== undefined) payload.limit = query.limit
+    if (query.orderBy !== undefined && scalarField(actor, query.orderBy.field) === undefined)
+      return yield* invalidQuery(query.orderBy.field, "not a scalar state field")
+    if (
+      query.limit !== undefined &&
+      (!Number.isInteger(query.limit) || query.limit < 0 || query.limit > 1_000)
+    )
+      return yield* invalidQuery("limit", "must be an integer between 0 and 1000")
     return payload
   })
 
@@ -341,14 +343,14 @@ const decodeQuery = (
           onSuccess: Effect.succeed,
           onFailure: (error) => Effect.fail(invalidQuery(field, error.message)),
         })
-      if ("eq" in condition) {
+      if (condition.eq !== undefined && Object.keys(condition).length === 1) {
         where[field] = yield* value(condition.eq)
         continue
       }
       const bounds: {
         -readonly [K in keyof Bounds<MemberSchema["Type"]>]: Bounds<MemberSchema["Type"]>[K]
       } = {}
-      for (const key of ["gt", "gte", "lt", "lte"] as const) {
+      for (const key of ["eq", "gt", "gte", "lt", "lte"] as const) {
         const encoded = condition[key]
         if (encoded !== undefined) bounds[key] = yield* value(encoded)
       }

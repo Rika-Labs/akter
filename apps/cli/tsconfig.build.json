@@ -14,5 +14,5 @@
       "@akter/cloud-api": ["../../packages/cloud-api/src/index.ts"]
     }
   },
-  "exclude": ["src/**/*.test.ts", "src/testing.ts"]
+  "exclude": ["src/**/*.test.ts", "src/testing.ts", "src/fixtures/**"]
 }

@@ -1,5 +1,7 @@
 # Launch npm and CI verification
 
+> Historical 0.1 verification, retained as of 2026-10-12. Recorded observations below are unchanged; they do not establish support for the 0.2 bucket engine. See [current verification](README.md).
+
 Recorded on 2026-10-08 for `chore/launch-npm-ci` (PR #705), rebased onto `origin/main` after #700. The former PR #703 was replaced when its release branch was renamed. This record covers local candidate evidence, not registry publication; current GitHub Actions results are on the PR.
 
 ## Environment

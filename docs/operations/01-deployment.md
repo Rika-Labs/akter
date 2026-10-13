@@ -1,138 +1,24 @@
 ---
 title: "Self-host deployment"
-description: "Run embedded or served applications and configure one-host runner peering."
+description: "Deploy a bucket-backed Akter 0.2 app with bounded drain and mTLS routing."
 ---
 
 # Deployment
 
-**Responsibility:** define supported operating shapes.  
-**Authority:** operational.  
-**Owner role:** operations/platform.
-**Change policy:** a change requires operator review when a procedure or limit changes.
+Use one store bucket per environment and one credential scope per store. The [Compose recipe](self-host.md) starts one runner on MinIO. For local development use `Store.fileSystem`; memory is not a durable deployment.
 
-For separate actor-data databases, configure `Database.postgres({ coordination: { url: Redacted.make(authorityUrl) } })` on every runner with the same authoritative Postgres primary. That pool owns resource locks, Cluster runner/compute-shard ownership, and the fleet maintainer lock; include its connections in the server budget. Startup creates its coordination-only schema with a separate migration ledger, so its login needs DDL privileges. Never point it at a read replica. Switching an existing deployment's authority requires stopping every runner first, or old and new runners will coordinate independently ([ADR 0066](../decisions/0066-authoritative-coordination.md)).
+## Before starting
 
-The intended deployment has one shared relational database and one `Actors.layer` runtime per runner process; a deployment may have multiple runners. Embedded and served processes are implemented; `Runner.socket` is the public multi-process Postgres configuration ([deploy guide](../guides/deploy.md#several-runners)). Its evidence is three Bun processes on loopback, over plaintext and over mutual TLS (`Runner.mtls`, [ADR 0086](../decisions/0086-runner-mutual-tls.md)), not hosted or separate-host certification. The operating shapes are:
+Run `akter storage check` against the actual bucket endpoint. Save its date, provider/version, target region, and probe numbers. A generic S3 API or a passing MinIO run is not production-provider validation. Give the runner only its own store's credentials and let temporary credentials refresh.
 
-- **Embedded:** provide `Actors.layer` from `@rikalabs/akter/runtime` inside the application.
-- **Served:** add `Actors.serve` for HTTP, WebSocket, SSE, and OpenAPI access.
-- **Akter Cloud client:** the public CLI retains `login`, `logout`, `whoami`, and `deploy`. The hosted service implementation belongs to the private Akter Cloud repository; it is not required for self-hosting.
+Set a stable application bundle digest and framework version through `StoreOptions.build`. The descriptor fixes shard count and retention; startup refuses conflicting configuration. Back up the whole store, not a selection of actor pages.
 
-The `akter` CLI in `apps/cli` runs an app locally (`akter dev`), checks a deploy against stored workflows and payloads, adopts existing tables, and inspects and repairs a running deployment through its operator routes. Cloud client commands are separate from self-host operations; see the [CLI reference](../api/06-cli.md). Customer-served deployments do not require the hosted control plane.
+## Multiple runners
 
-Every runner must advertise a unique private address reachable directly by its peers. Separate-host networks and provider topologies require their own reachability and failover evidence; the OSS launch claim is multi-runner on one host. Use `Runner.mtls` on the peer listener and never expose it to public clients.
+`Akter.serve({ app, auth, runner })` accepts reachable peer addresses and mTLS peering configuration. Cluster locks choose candidates; the log epoch fences writers. New releases start in standby and wait for a durable `Released` tail or owner expiry. Authorized releases share a store-scoped peering identity; it adds no authority beyond the store bucket credential.
 
-The supported Postgres server version at launch is **18.6**, the version tested in CI. Other server versions are unverified; see the [support matrix](support-matrix.md).
+## Drain and readiness
 
-Intended deployment order: provision database and secrets; run framework and actor-table migrations; start compatible runners; verify readiness; route new traffic; drain old runners. Keep database URLs redacted and set auth explicitly—`Actors.serve` requires an auth policy.
+`/ready` checks registration, assignment, peer health, store verification, and drain state. Use `RuntimeControl.waitForSignal({ deadline })` inside the live runtime scope. The runner becomes unready before flushing and releasing shards, then prints `DRAINED` with durable offsets and `nextDue`. Keep the root alive until drain completes; an abrupt scope interruption is not a clean handoff.
 
-## Postgres connections across runners
-
-Each runner opens three pools through `Database.postgres`: the turn pool, up to `maxConnections` (default 50); the off-turn pool for command admission, receipt replays, the relay, migrations, and cluster storage, up to `offTurnConnections` (default 10); and the query pool, up to `queryConnections` (default 10). A command holds a turn connection until its transaction ends, so under load a runner uses its whole turn pool, and idle connections close after 10 seconds. Each pool hands out connections first come, first served, so a caller waits behind earlier callers only, never for the length of the load. A runner configured with `coordination` opens a fourth pool, up to that configuration's `maxConnections` (default 10), which takes over cluster storage and the resource locks from the off-turn pool and is first come, first served too. Size the pools against the server:
-
-```text
-runners × (maxConnections + offTurnConnections + queryConnections + coordination maxConnections) + reserved ≤ max_connections
-```
-
-Apply the budget per server: count the coordination pool here only when it points at this primary, otherwise budget it on its own authority server. An optional replica pool uses its configured `maxConnections` (default 10) on the replica server instead. When multiple configured pools point at the same physical server, count all of them.
-
-`reserved` covers `superuser_reserved_connections` (3 by default), migrations, backups, monitoring, and operator sessions. Without `coordination`, count it as 0. The default `max_connections` of 100 on a Postgres server fits one runner at the default pools (70 connections) with that headroom, not two. For more runners either lower the pools per runner, for example `maxConnections: 10` with 5 off-turn and 5 query connections each for four runners, or raise `max_connections` with the memory the server has. This direct-endpoint budget counts server sessions. The explicit transaction-pooling mode below budgets logical clients and backend sessions separately.
-
-`Database.postgres({ url, preset: "low-connection" })` is the supported small-budget choice: **1 turn / 2 off-turn / 1 query**, four primary sessions per runtime. Explicit pool sizes override the preset; replica and coordination pools remain additional with their existing defaults. Effect 4.0.2 permanently reserves one off-turn session for Cluster, including table-lease mode, and needs the other for bootstrap/registration and ordinary work. That reserved session is included in the two, not added to the four. Framework startup migrations hold one bounded transaction, including their startup lock and history creation, and release it before Cluster starts. One off-turn session without independent coordination deadlocks startup; three total sessions are not supported by the current pool split.
-
-The four-session floor covers serving, relay/jobs, workflow persistence, inspector reads and restart without application-held SQL reservations or fleet maintenance. Fleet needs another off-turn session (at least three) when it shares the data/coordination client; application `reserve`/`listen` and independent pools also need capacity. Held row locks can queue off-turn readers; the separate query pool does not serve owned-table/blob queries. See the [wait-cycle and peak-session evidence](../verification/low-connection-postgres.md). Lower capacity trades throughput for connection footprint, not durable correctness. Budget **all concurrently live runtimes**, including replacements during rolling deploys, plus external migration tools and operator headroom. Twenty available four-session runtime slots means nineteen steady-state runners if one replacement must overlap.
-
-### Transaction pooling
-
-Use `Database.postgres({ url, pooling: "transaction", preset: "low-connection" })` only for the verified socket/table-lease envelope in [ADR 0119](../decisions/0119-transaction-pooling.md). No endpoint URL enables this mode implicitly. Embedded/advisory runners, fleet, cold storage, replicas and separate coordination are refused. No session lock is moved into a long I/O transaction. Application `LISTEN`, session advisory locks, temporary tables and other session-local state are unsupported through this endpoint.
-
-Keep two budgets: the low-connection preset uses up to four **logical proxy clients per runtime**, including one reserved but normally idle Cluster client; count rolling replacements and external clients against the proxy's client limit. Independently size the proxy's server pool against the Postgres server's connection limit with operator headroom. Table-mode reservation does not pin a server backend between transactions. Evidence uses three server backends for public serving and multi-runner recovery, fewer than the logical clients; it does not establish a smaller global backend floor or a throughput SLA. Backend wait queues need capacity and deadlines of their own; framework checkout bounds do not bound a proxy's queue.
-
-The tested configuration uses transaction mode, no reserve pool, `max_prepared_statements=0`, round-robin server reuse, and `DISCARD ALL` after each transaction. Akter forces `prepare: false` and disables speculative warm turns. It does not inject `tcp_keepalives_*` startup GUCs in this mode: many proxies refuse or reinterpret server startup parameters. Configure PgBouncer's `tcp_keepalive`, `tcp_keepidle`, `tcp_keepintvl`, `tcp_keepcnt`, connection/queue timeouts and the Postgres server's proxy-facing transport explicitly. Client-to-proxy and proxy-to-server failures are separate boundaries. Caller-supplied startup parameters are still the caller's responsibility, not silently stripped.
-
-The [fixture and evidence](../verification/low-connection-postgres.md#transaction-pooling) pin Docker tag `edoburu/pgbouncer:v1.25.1-p0` by digest; that image reports binary version **1.25.2**. Do not read the tag as proof of binary 1.25.1. Other versions/proxies, session/statement pooling, pooler TLS, Node pooled transport and managed-provider behavior remain unverified.
-
-Measured on one machine (see [performance](../../BENCHMARKS.md)): under 64 callers each runner reached its pool size and no more, so peak connections were the sum of the runners' pools plus one connection outside them. With one runner and 64 callers over 10,000 actors, 50 connections lowered steady-state p99 against 25 in both runs (96 against 179 ms, and 130 against 166 ms). Those runners shared one process and CPU, so the runs show how connections add up across runners, not what latency separate runner processes would see; separate-process functional support is scoped by the [support matrix](support-matrix.md), and this benchmark is not its performance evidence.
-
-Memory bounds the other runner limit. A resident activation holds about 20 KiB of JavaScript heap, so the default `maxResidentActors` of 10,000 is about 200 MiB per runner before the rest of the process. Raise it only with the memory you give the process.
-
-## Postgres primary failover
-
-`Database.postgres` without `pooling: "transaction"` sends TCP keepalive defaults through startup options to every pool: `tcp_keepalives_idle=5`, `tcp_keepalives_interval=2`, and `tcp_keepalives_count=3`. A runner that disappears without closing its sockets can otherwise keep shard advisory locks and open transactions alive for the operating system's long default timeout. With these probes a Postgres server can drop an unresponsive TCP peer after roughly 11 seconds; detection, shard acquisition, activation, and caller backoff still add recovery time. Caller values in `startupParameters`, `startupOptions`, or the URL's `options` win; the replica has its own overrides. Values of `0` restore the OS defaults rather than disabling TCP keepalive entirely. Unix sockets ignore these settings. A proxy may reject or filter startup options; the explicit transaction-pooling mode above does not inject these defaults.
-
-Gate external traffic on `GET /ready`. The underlying Effect Bun server can briefly accept connections and answer `404 not found` before routes install during startup; listening on the port is not readiness. PostgreSQL shutdown/startup and resource-exhaustion errors follow the retryable `ActorUnavailable` path, so preserve the command id when retrying. The failure drills, versions, and caveats are in [BENCHMARKS.md](../../BENCHMARKS.md).
-
-A receipt, the state it covers, and the outbox rows staged with it commit in one transaction, so a failover keeps or loses them together. That makes two requirements:
-
-- **Replicate synchronously to the standby you will promote.** Run the primary with `synchronous_commit` at `on` (the default) or `remote_apply`, and name that standby in `synchronous_standby_names`. A commit then returns only after the standby has flushed it, so every command a caller was told about survives promotion. With asynchronous replication a promoted replica can lack acknowledged commits: their receipts are gone, and a retry under the same command id runs the handler again on the older state.
-- **Give runners one database address that moves.** Runners reconnect on their own through a DNS name or virtual IP that the failover moves to the promoted primary; they need no restart.
-
-A turn whose `COMMIT` was sent when the primary died is commit-unknown. Its caller's retry under the same command id replays the receipt if the commit reached the standby, and runs the command once if it did not. Commands issued while the database is unreachable, including their command-id mint, fail `ActorUnavailable`, which handles retry. The failover drill measures this on three runner processes. A command caught by the failover is answered `ActorUnavailable` and retried by its caller; in the drill every runner committed again in about a second or less of the kill. The drill runs Cluster's table shard leases (`shardLockDisableAdvisory: true`); shard ownership by session advisory locks, which a failover drops, is not yet covered.
-
-## Row-level security
-
-Row-level security is opt-in defense in depth under the mandatory `tenant_id` predicates ([ADR 0051](../decisions/0051-row-level-security.md)). Migration `0018_rls` puts a `durable_tenant` policy on every tenant-bearing framework table, and `Actor.table` puts the same policy in each owned table's drizzle-kit migration. The policy admits only the tenant named by the transaction's `durable.tenant` setting. It exempts the table owner, so a deployment that doesn't opt in sees no change.
-
-To opt in:
-
-1. Run the framework and owned-table migrations, for example by starting one runner without the option.
-2. As the table owner, create the tenant role and a separate view-owner role, and hand the inspection views to the view owner. Replace `public` with the runtime's schema and `runtime_login` with its login:
-
-   ```sql
-   CREATE ROLE durable_tenant NOLOGIN;
-   GRANT USAGE ON SCHEMA public TO durable_tenant;
-   GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO durable_tenant;
-   GRANT durable_tenant TO runtime_login;
-
-   CREATE ROLE durable_views NOLOGIN;
-   GRANT USAGE ON SCHEMA public TO durable_views;
-   GRANT SELECT ON ALL TABLES IN SCHEMA public TO durable_views;
-   GRANT durable_views TO CURRENT_USER;
-   GRANT CREATE ON SCHEMA durable TO durable_views;
-   DO $$ DECLARE v record; BEGIN
-     FOR v IN SELECT relname FROM pg_class WHERE relnamespace = 'durable'::regnamespace AND relkind = 'v'
-     LOOP EXECUTE format('ALTER VIEW durable.%I OWNER TO durable_views', v.relname); END LOOP;
-   END $$;
-   REVOKE CREATE ON SCHEMA durable FROM durable_views;
-   ```
-
-   `durable_views` must not be a superuser or have `BYPASSRLS`, must not own a table with RLS on, and must not be granted to `durable_tenant`. Otherwise the views would ignore the policies, or the role that runs turns could alter or drop a view.
-
-3. Start every runner with `Actors.layer({ rowLevelSecurity: { role: "durable_tenant" } })`.
-
-Command turns, queries, and every read that serves a caller outside a turn (feed pages, workflow polls, and the reads a stream or connection handler makes) then run as `durable_tenant` with their actor's tenant set, and the inspection views return only the tenant the reader's transaction names. The relay, executors, retention, and other cross-tenant framework work keep the connecting role. With the option on, each query or read outside a turn costs a transaction (`BEGIN`, the tenant settings, `COMMIT`); turns cost nothing more.
-
-Rerun step 2 after any migration that adds a table or a view; a new view stays with the migrating role until you do. Until then, a runner with the option refuses to start and names the object ([runbooks](runbooks.md)). The role must not be a superuser or have `BYPASSRLS`, and the runtime's login must be able to `SET ROLE` to it.
-
-## Fleet views
-
-Fleet views ([ADR 0056](../decisions/0056-fleet-views.md)) are maintained from Postgres logical decoding, so a deployment that registers any needs:
-
-- `wal_level = logical` on the primary (`ALTER SYSTEM SET wal_level = logical`, then a restart). `compose.yaml` sets it for development.
-- A runtime login with the `REPLICATION` attribute, which the slot functions need.
-- `akter fleet setup --entry <module> --database-url <url>`, run as a role that may alter the source tables and create publications: it gives each source `REPLICA IDENTITY FULL` (an update then names the group a row left), sets publication `durable_fleet` to the sources, and creates the logical slot `durable_fleet`, or recreates it when it was lost. The entry module exports `fleet`, an array of the views. One slot serves one database of a server; slot names are server-wide. Creating the slot waits until every transaction open on the server when it starts has ended, so a long transaction delays setup.
-- The recompute index of each view and its derived table, from the application's migrations.
-
-The runtime refuses to start, naming the fix, when `wal_level` is below logical, the login lacks `REPLICATION`, a source is outside the publication or lacks full replica identity, the slot is missing or lost, a source's actor type is not tenant-placed, the index or the derived table is missing, or the row-level-security tenant role owns a derived table.
-
-One runner at a time maintains the views: it holds the session advisory lock `akter/fleet` on a connection of its off-turn pool (the coordination pool when one is configured), and the others retry every two seconds. It polls the slot every 200 ms, recomputes each touched group, commits, and only then advances the slot, so a crash replays a batch harmlessly. Update-heavy sources write more WAL under full replica identity, and an unread slot pins WAL until `max_slot_wal_keep_size` invalidates it; see the [runbook](runbooks.md#fleet-views).
-
-## Readiness and bounded graceful drain
-
-The accepted behavior in [ADR 0003](../decisions/0003-failure-scoping-drain-and-hosted-trust.md) requires usable storage, compatible schemas, registered actors, operational routing, and a runner that is not draining before advertising readiness. Listening on a port is insufficient; waking every actor or finishing all workflows is unnecessary.
-
-Drain makes the runner unready, stops new local admission and acquisition of additional work, and waits for in-flight work within a bounded deadline. At expiry it interrupts remaining local execution, preserves pending durable obligations, and reports deadline expiry or forced shutdown distinctly from a clean drain. Release ownership only once the old writer cannot still commit; otherwise use safe expiry and fencing before takeover. A receipt committed before reply loss remains recoverable with the original command id.
-
-Stopping an executor cannot undo a completed external call; ambiguous provider outcomes require reconciliation or proven idempotency. Parked sockets survive activation sleep, not transport-process shutdown. Draining one runner is not deployment-wide quiescence: [restore](04-backup-restore.md) also pauses ingress and all relevant execution.
-
-`RuntimeControl` from `@rikalabs/akter/runtime` implements this (M4.2); [the server API](../api/01-server-api.md#runtime-control-readiness-and-drain) lists its signatures. There is no default deadline: every `drain` names its own, so no timeout is an implied availability guarantee. The drained runner keeps its shard locks until its layer closes, so exit the process as soon as `drain` returns; a graceful exit hands the shards to the other runners at once, while a crash leaves them to lock expiry. Readiness answers `{ ready: false, reason }` with `draining`, `drained`, `storage`, `routing`, or `unregistered`; `Actors.serve` answers it at `GET /ready` without credentials (`200`, or `503` with the reason; [ADR 0053](../decisions/0053-served-readiness-route.md)), so point the load balancer's or orchestrator's readiness probe there, and restart a runner only when the probe fails to connect, never on a `503`. The [runbook](runbooks.md#drain-a-runner) gives the required drain sequence. `conformance/drain.ts` covers clean and deadline-expired drains, new-work rejection, interrupted transactions, pending delivery, safe takeover, receipt replay, and provider ambiguity.
-
-## Embedded PGlite in production
-
-Built by M4.14 ([ADR 0035](../decisions/0035-pglite-embedded-production-backend.md)). One process embeds `Actors.layer`, and optionally `Actors.serve`, with `Database.pglite({ dataDir })` on a local Linux or macOS filesystem. The layer takes an exclusive `flock` on `<dataDir>/.akter.lock` before PGlite opens and holds it until the layer closes, so a second process, or a second layer in the same process, fails with `DataDirLocked`; the kernel drops the lock when the process dies, so a restart after a crash needs no manual step. A `dataDir` written by another Postgres major fails with `DataDirVersion`, and `relaxedDurability` is refused. It recovers from a process crash to the last commit, but power-loss durability is not claimed. It runs one turn or query at a time on one connection, with no replicas, failover, or multi-runner support. Back it up by stopping the process and copying the `dataDir`. Move to a Postgres server with `DATABASE_URL` when those limits bind.
-
-## Command overload
-
-`Actors.layer({ admission: { concurrency, wait, requests } })` bounds command processing before turns start. Defaults are 64 executing commands, at most 64 FIFO waiters waiting up to 100 ms, and 64 HTTP command request handlers before authentication or body parsing. A refused attempt receives `ActorUnavailable` (`503` and `retry-after` over HTTP); retry the same command id, never mint a replacement for the same operation. A refused attempt ran no handler and wrote no receipt, but an earlier attempt with the same id may already have committed. A timeout remains an unknown outcome, not a refusal.
-
-An actor without a declared `policy.mailboxCapacity` holds at most 1,024 active commands. Turn, off-turn, query, replica and coordination pools each cap excess checkouts at 64, and serve the admitted ones first come, first served, so query and background callers cannot grow an unlimited waiter list. Raise command limits only after measuring accepted p99 and refusals with your handler cost and database. Bound proxy concurrency and socket/connection admission separately: Akter can refuse only after a request reaches its handler, not while it waits upstream. See [benchmarks](../../BENCHMARKS.md) for the disclosed local-runner measurements, not a production SLO.
+The host must preserve matching builds for unclean tails and restart stopped stores at their earliest due work. Local E3 measurements show roughly 15-second clean moves and 31-second crash takeover under defaults, not the five-second target. See [E3 verification](../verification/e3-cluster.md).

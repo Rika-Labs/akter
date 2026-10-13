@@ -1,5 +1,7 @@
 # Served clock discontinuity evidence
 
+> Historical 0.1 verification, retained as of 2026-10-12. Recorded observations below are unchanged; they do not establish support for the 0.2 bucket engine. See [current verification](README.md).
+
 `packages/akter/src/serve/clock.test.ts` rejects retaining a pre-suspend offset after a 304-second backward or 155-second forward monotonic discontinuity. The expected clock comes from an independent database-time fixture, not from the cached offset. It also rejects preferring a faster obsolete sample, resampling once per concurrent request, adding a database read because a sample is merely old, and serving stale time when the required database refresh fails. These focused clock-algebra tests mock the clocks and sampler, not a storage-admission claim.
 
 The HTTP conformance case `resamples served time after monotonic discontinuities before SDK-minted identities reach unchanged database admission` serves real `/protocol`, `/command-ids` and actor command endpoints over loopback on both Postgres and PGlite. It shifts only the served process's monotonic clock, compares body/header timestamps with independently read database time within 500 milliseconds, and requires SDK-local and server-minted IDs to execute through unchanged identity admission. Retaining the original offset fails the timestamp comparison; accepting future identities would not repair it.

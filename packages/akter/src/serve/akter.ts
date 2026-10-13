@@ -19,6 +19,9 @@ import { RuntimeControl } from "../runtime/drain.ts"
 import { Routing } from "../runtime/sharding.ts"
 import type { RunnerOptions } from "../runtime/sharding.ts"
 import { Store } from "../store/service.ts"
+import type { OperatorAuth } from "../runtime/operators/auth.ts"
+import { OperatorRequest, Operators } from "../runtime/operators/service.ts"
+import { Telemetry } from "../runtime/telemetry/observability.ts"
 import { KEY_REFRESH_PATH, requestDigest } from "./assertion/binding.ts"
 import type { AuthProvider, AuthRequest } from "./auth.ts"
 import { CREDENTIAL_BYTES, oversizedCredential, readsCookies, withinLimits } from "./auth.ts"
@@ -47,6 +50,10 @@ export interface ServeOptions {
   readonly credentialBytes?: number
   /** Omitted for one process; multi-runner stores require directly reachable mTLS peers. */
   readonly runner?: RunnerOptions
+  /** Separate operator credentials; omitted disables the operator endpoint. */
+  readonly operatorAuth?: OperatorAuth<HttpClient.HttpClient>
+  /** Expose stable metrics at `/metrics`; disabled unless explicitly enabled. */
+  readonly prometheus?: boolean
 }
 
 const refused = (code: (typeof Unauthorized.Type)["code"]) =>
@@ -137,6 +144,7 @@ const serve = (options: ServeOptions) => {
   const routes = Effect.gen(function* () {
     const crypto = yield* Crypto.Crypto
     const engine = yield* engineOf(options.app)
+    const operators = Operators.make(engine)
     const routing = yield* Routing.make(engine, options.runner)
     const control = RuntimeControl.of({
       readiness: routing.readiness,
@@ -249,6 +257,38 @@ const serve = (options: ServeOptions) => {
         )
           return yield* refusalResponse(refused("access_denied"))
         const path = new URL(request.url, "http://runner").pathname.replace(/(.)\/$/, "$1")
+        if (path === `${base}/metrics` && request.method === "GET" && options.prometheus === true)
+          return HttpServerResponse.text(yield* Telemetry.prometheus(), {
+            contentType: "text/plain; version=0.0.4",
+            headers: { "cache-control": "no-store" },
+          })
+        if (
+          path === `${base}/operator` &&
+          request.method === "POST" &&
+          options.operatorAuth !== undefined
+        ) {
+          const grant = yield* Effect.result(
+            options.operatorAuth.authenticate(authRequest(request)),
+          )
+          if (Result.isFailure(grant)) return yield* refusalResponse(grant.failure)
+          const body = yield* Effect.result(
+            request.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(OperatorRequest))),
+          )
+          if (Result.isFailure(body))
+            return HttpServerResponse.jsonUnsafe({ error: "invalid_request" }, { status: 400 })
+          const response = yield* Effect.result(operators.run(grant.success, body.success))
+          return Result.isSuccess(response)
+            ? HttpServerResponse.jsonUnsafe(response.success, {
+                headers: { "cache-control": "no-store" },
+              })
+            : HttpServerResponse.jsonUnsafe(
+                { error: "OperatorRefused", reason: response.failure.reason },
+                {
+                  status: response.failure.reason === "scope" ? 403 : 409,
+                  headers: { "cache-control": "no-store" },
+                },
+              )
+        }
         if (path === rpcPath && request.method === "GET")
           return yield* gate(request, socket, "socket")
         if (path === rpcPath && request.method === "POST") return yield* gate(request, http, "http")

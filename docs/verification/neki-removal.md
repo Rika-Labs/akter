@@ -1,5 +1,7 @@
 # Postgres/PGlite-only backend verification
 
+> Historical 0.1 verification, retained as of 2026-10-12. Recorded observations below are unchanged; they do not establish support for the 0.2 bucket engine. See [current verification](README.md).
+
 Recorded on 2026-10-08 for [ADR 0112](../decisions/0112-postgres-and-pglite-only.md), rebased onto the merged [framework package split](framework-package.md). This is local runtime and package evidence, not a hosted-provider or production-upgrade certification.
 
 ## Removal and retained behavior

@@ -30,6 +30,8 @@ import type { Outcome } from "./entries.ts"
 import { Layouts } from "./layout.ts"
 import type { Decoded } from "./layout.ts"
 import { Transports } from "./transport.ts"
+import { Metrics, count } from "../runtime/telemetry/metrics.ts"
+import { SpanNames } from "../runtime/telemetry/spans.ts"
 import { DurableClock } from "./sleep.ts"
 import * as ShardWorkflowEngine from "./workflow.ts"
 
@@ -264,7 +266,7 @@ const install = (engine: Engine, routing?: JobRouting) => {
               : Effect.void,
           ),
         )
-      })
+      }).pipe(Effect.withSpan("step"))
     }
     const ctx = {
       self: Handles.derive({ actor: owner.actor, id: owner.keyJson, self: true }, jobTransport),
@@ -302,6 +304,7 @@ const install = (engine: Engine, routing?: JobRouting) => {
     ).pipe(
       Effect.provideService(Client, jobTransport),
       Effect.provideContext(bound.registered.context),
+      Effect.withSpan(SpanNames.job(owner.actor.name, record.job)),
     )
     const limited =
       declaration.timeout === undefined
@@ -439,6 +442,7 @@ const install = (engine: Engine, routing?: JobRouting) => {
                 )
                 if (record.suspended !== undefined) return yield* Effect.interrupt
                 if (Exit.isSuccess(exit)) {
+                  yield* count(Metrics.jobs, { job: record.job, outcome: "success" }, 1)
                   return
                 }
                 if (Cause.hasInterruptsOnly(exit.cause)) return yield* Effect.interrupt
@@ -454,6 +458,7 @@ const install = (engine: Engine, routing?: JobRouting) => {
                       Duration.toMillis(Duration.fromInputUnsafe(declaration.retry.backoff)),
                   }),
                 )
+                yield* count(Metrics.jobs, { job: record.job, outcome: "failure" }, 1)
               }
             })
             yield* adapter.register(workflow, () => body.pipe(Effect.orDie))

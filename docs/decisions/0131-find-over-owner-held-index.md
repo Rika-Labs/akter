@@ -1,6 +1,6 @@
 # ADR 0131: `find` over the owner-held index
 
-Status: proposed, 2026-10-12 (rewrite/0.2).
+Status: accepted for the `default` tenant, 2026-10-12 (rewrite/0.2). General multi-tenant addresses remain a target, not established support.
 
 **Responsibility:** decide how applications query across actors of one type, where the index lives, and what freshness a query promises.
 
@@ -28,7 +28,7 @@ Every top-level scalar field of an actor's state is indexed: strings, numbers, b
 
 - `where` holds equality and range conditions (`eq`, `gt`, `gte`, `lt`, `lte`) on indexed fields, joined by conjunction. `orderBy` names one indexed field and a direction. `limit` is at most 1,000.
 - String comparisons use the truncated 64-byte prefix: values that share a prefix compare equal, and ordering among them is by actor id.
-- A result is the actor id and its indexed field values.
+- A result contains actor ids only. Indexed ordering values travel between trusted owners and the gateway for the merge; they are not client result fields.
 - `find` is tenant-scoped: it returns only actors of the caller's tenant. It runs `access` once with kind `find` and no id.
 
 ### 4. Scatter-gather
@@ -38,6 +38,12 @@ The gateway sends the query to every shard of the store, each owner answers from
 ### 5. Freshness
 
 Each shard's part of a result reflects every action that was durable on that shard when its owner answered, and nothing that was not durable. A caller whose action completed before it called `find` sees that action's effect. There is no snapshot across shards: two shards answer at different moments, so a result can include one actor's newer state and another's older state. `find` has no `after` token and no consumer lag.
+
+## E7 implementation and evidence
+
+`execution/indexes.ts` holds one row per created actor and sorted field structures. `Durable.record` updates them only after the live append or a verified replay; a failed action records its unchanged state. The checkpoint stores index rows in the same content-addressed page as the durable state, and both manifest page lists reference that hash. Recovery restores those rows and reprojects decoded state fields, so schema defaults and transformations cannot leave stale indexed values. The gateway authorizes once and peers return bounded normalized rows; the public Effect client receives only ids. String prefixes preserve all first 64 UTF-8 bytes, including a prefix ending inside a code point. Missing optional ordered values sort last in both directions.
+
+[E7 evidence](../verification/e7-find-operators.md) covers held/lost appends, discarded drafts, crash/checkpoint/tail recovery, seeded split-owner moves, UTF-8 boundaries, limits, denied `find`, and real mTLS scatter-gather. The served runtime refuses non-default tenants rather than sharing an address. This promotes the default-tenant index/durability behavior, not general multi-tenant `find` or a production-provider guarantee.
 
 ## Supersedes and amends
 

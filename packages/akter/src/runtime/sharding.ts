@@ -37,6 +37,7 @@ import {
 } from "../contract/errors.ts"
 import type { CallRequest, Transport } from "../contract/handle.ts"
 import type { AnyActor } from "../contract/make.ts"
+import { Finds } from "../contract/find.ts"
 import { Durable } from "../execution/durable.ts"
 import type { Command, DrainReport, Engine } from "../execution/engine.ts"
 import { Origin, Outcome } from "../execution/entries.ts"
@@ -469,19 +470,10 @@ const clustered = (engine: Engine, options: RunnerOptions) =>
           Find: ({ payload, headers }) =>
             guard(
               Effect.gen(function* () {
-                const caller = yield* callerOf(headers)
+                yield* callerOf(headers)
                 const actor = actorOf(payload.actor)
                 const query = yield* FindCodec.decode(actor, payload)
-                const ids = yield* Transports.reads(engine, caller, [shard]).find({ actor, query })
-                return yield* Effect.forEach(ids, (id) =>
-                  Effect.map(engine.durableRecord(actor, id), (record) => ({
-                    id,
-                    order:
-                      payload.orderBy === undefined
-                        ? null
-                        : (record.image.encoded[payload.orderBy.field] ?? null),
-                  })),
-                )
+                return yield* engine.find(actor, query, [shard])
               }),
             ),
         })
@@ -615,6 +607,7 @@ const clustered = (engine: Engine, options: RunnerOptions) =>
         }),
       find: (request) =>
         Effect.gen(function* () {
+          yield* Transports.allowed(request.actor, caller, { kind: "find", member: "find" })
           const payload = yield* FindCodec.encode(request.actor, request.query)
           const partitions = yield* Effect.forEach(
             keys,
@@ -622,16 +615,10 @@ const clustered = (engine: Engine, options: RunnerOptions) =>
               refail(clients(key).Find({ actor: request.actor.name, ...payload }, header(caller))),
             { concurrency: "unbounded" },
           )
-          const rows = partitions.flat()
-          const order = request.query.orderBy
-          if (order !== undefined)
-            rows.sort((a, b) =>
-              a.order === b.order
-                ? 0
-                : ((a.order ?? "") < (b.order ?? "") ? -1 : 1) *
-                  (order.direction === "desc" ? -1 : 1),
-            )
-          return rows.slice(0, request.query.limit ?? 1_000).map((row) => row.id)
+          return Finds.rows(
+            request.query,
+            partitions.flat() as ReadonlyArray<import("../contract/find.ts").FindRow>,
+          ).map((row) => row.id)
         }),
     })
     return Sharding.of({

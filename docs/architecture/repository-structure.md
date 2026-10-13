@@ -1,60 +1,29 @@
 # Repository structure
 
-**Responsibility:** define the public framework repository's layout and package ownership boundaries.
-**Authority:** design. **Owner role:** runtime architecture.
-
-The hosted Akter Cloud implementation is maintained separately in a private repository. That repository consumes the published npm packages (`@rikalabs/akter`, `@rikalabs/akter-cli` and the cloud API contract); it does not mount this repository as a submodule. This tree contains the framework, public clients, CLI, public cloud API contract and shared tooling. Framework rules for the private repository are maintained there; cloud-only decisions are private.
-
-## Tree
+This is a Bun/Turbo monorepo. Production code in `packages/akter` imports no other workspace package; dependency direction is applications to packages, never the reverse.
 
 ```text
-apps/
-  cli/                      @rikalabs/akter-cli the `akter` bin: local development, inspection, repair and cloud client commands
-  self-host/                @akter/self-host private example app and Docker Compose deployment recipe
-packages/
-  akter/                    @rikalabs/akter  the framework; published with browser-safe root, server and testing entries
-  cloud-api/                @akter/cloud-api public Akter Cloud HTTP contract and Schema types
-  react/                    @akter/react     React hooks over @rikalabs/akter/client
-  python-client/            @akter/python-client  Python client generated from the served OpenAPI document
-tooling/
-  conformance/              @akter/conformance unpublished framework suites, cluster/simulation harnesses and crash fixtures
-  oxlint/                   @akter/oxlint    anti-slop rules, directives and runtime-import checks
-  structure/                @akter/structure tree checker and its exemptions
-docs/                       framework API, contracts, architecture, guides and verification
-.github/src/                public CI, release, policy and package verification helpers
+apps/cli/          @rikalabs/akter-cli; Effect CLI, operators, dev, cloud client
+apps/self-host/    private example server and bucket-only Compose recipe
+packages/akter/   @rikalabs/akter; framework rewritten in place
+packages/cloud-api/ public hosted HTTP schemas, bundled in CLI cloud-api entry
+tooling/conformance/ unpublished protocol and failure suites
+tooling/oxlint/    repository and deterministic-handler rules
+tooling/structure/ tree checker and explicit exemptions
+docs/             framework vision, contracts, design, API, operations, evidence
+.github/src/      CI, package, and release verification
 ```
 
-Dependency direction is `apps → packages → nothing app-ward`. Production code in `packages/akter` imports no workspace package. Repository-only tests may use fixtures from `tooling/conformance`; those fixtures never enter the framework build. `packages/cloud-api` is a public contract only; its hosted implementation and consumers live in Akter Cloud.
+## Framework entries
 
-## The framework package
+The source manifest currently has four public entries: `.` for browser-safe contracts and Effect handles, `./server` for serving and store adapters, `./client` for `AkterClient.layer`, and `./testing` for `Simulation`. `X.toLayer` binds handlers; `X.client` and `X.find` reach the engine through the `Client` service. The separate client transport entry is part of the same Effect client, not a second facade.
 
-`@rikalabs/akter` ships one distribution. On `rewrite/0.2` it has three entries while the 0.2 runtime lands: `.` (`src/index.ts`), `./server` (`src/server.ts`) and `./testing` (`src/testing/index.ts`); the 0.1 entries `./client`, `./runtime` and `./cold-storage/s3` were removed with the 0.1 runtime. The root entry carries the actor contract (`Actor`, callers, errors) and the Effect client, and never imports SQL, cluster, store, engine (`src/execution/`, `src/snapshots/`) or testing modules. Only `./server` imports the S3 SDK: it carries the 0.2 store from `src/store/` as the `Store` namespace over `src/store/layer.ts`, and a build that does not read `Store.s3` drops the SDK. `./testing` carries `Simulation`, which runs the engine over the store's memory bucket. `X.toLayer` provides an actor's implementation, and `X.client` and `X.find` reach the engine only through the `Client` tag. Folders under `src/` are named for the responsibility they own; the source tree, not this page, lists them.
+The root imports no store, SQL, Cluster, or runtime module. The S3 SDK belongs only to the server path and is excluded from filesystem-only bundles. No side-by-side engine package, React package, or Python client remains.
 
-`./testing` contains application testing: `ActorTest`, cleanup/content sweeps, database fixtures, batch-law checks, and fault controls. The complete conformance suite, foundation fixtures, and cluster/simulation helpers live in the private `@akter/conformance` tooling workspace, which owns their Vitest configurations and imports framework internals for verification. It is not published or imported by production framework code.
+## Naming and boundaries
 
-## Naming contract
+Reusable packages use `@akter/<directory>` except the published framework and CLI. Folders and files use kebab-case responsibilities, not generic `utils`, `shared`, or `common` buckets. `index.ts` is a package or subpath entry with explicit exports. Tests are colocated as `x.test.ts`; deviations need a live entry in `tooling/structure/src/exemptions.ts`.
 
-- Package name is `@akter/<directory basename>`, except the framework in `packages/akter`, which is `@rikalabs/akter`.
-- Folders are kebab-case nouns with one responsibility. Forbidden: `core shared common utils helpers lib misc domain types internal`.
-- Files are kebab-case and named for an operation or role (`create.ts`, `contract.ts`, `layer.ts`, `queries.ts`, `schema.ts`).
-- `index.ts` exists only as a package or subpath entry and names real files; wildcard exports are forbidden.
-- Unit and integration tests are `x.test.ts` beside `src/x.ts`, one test file per source module. Browser E2E is not part of this public repository.
-- Every deviation is one entry in `tooling/structure/src/exemptions.ts` with a reason; an entry that matches nothing fails the check.
+The CLI uses `effect/cli` for every command. Hosted infrastructure, edge, console, billing, and cloud operator tooling live in the private Akter Cloud repository, which consumes published packages. It never mounts this repository as a submodule.
 
-The oxlint rules in `tooling/oxlint` check names, runtime-import boundaries, decision references and inline comments. The tree checker in `tooling/structure` owns package names, dependency direction, explicit exports, index placement and colocated tests.
-
-## Public CLI and cloud contract
-
-`apps/cli` publishes the `@rikalabs/akter-cli` package with the `akter` bin, built with Effect's `effect/cli` module. It supports local development, deployment checks, adoption, operator inspection and repair, and the public cloud client commands `login`, `logout`, `whoami`, `env` and `deploy`. Cloud operator commands such as billing catalog setup and tenant-directory creation belong to the private platform.
-
-`packages/cloud-api` defines the public HTTP contract used by those client commands and by the hosted console. It does not contain the hosted service implementation.
-
-## Ways to run
-
-- **Embedded:** an application provides `Actors.layer` from `@rikalabs/akter/runtime` and calls actors as Effects.
-- **Served:** `Actors.serve` runs in its own process; a customer's BYO runner is a served container.
-- **Hosted:** Akter Cloud runs the same framework behind its private API and edge services. Hosted deployment, billing, metering, databases and UI are not public workspace packages.
-
-## Verification and release
-
-The workspace resolves the framework entries to TypeScript sources during development. `bun run --cwd packages/akter build` emits `dist/`, `publishConfig` points the tarball's exports and types there, `.github/src/pack.ts` stages and checks the tarball, and the release workflow publishes it on a `v<version>` tag. Public CI runs the framework's integration suites (`packages/akter` `test:integration`, today the store's S3 suite) against a MinIO server.
+`bun run lint:structure` checks these boundaries. `pack:check` verifies compiled public exports and dependencies; `pack:smoke` installs a clean consumer and exercises HTTP and WebSocket on Bun and Node.

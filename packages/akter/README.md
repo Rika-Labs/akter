@@ -1,116 +1,62 @@
 # @rikalabs/akter
 
-**The framework for durable, stateful backends that power realtime apps, background work, and agents.**
+The Effect-native framework for durable actors, realtime state, background jobs and agents.
 
-Define each part of your app once: its data, the commands it accepts, the work it schedules, and the clients it updates. The framework keeps all of it consistent, retries what fails, and picks up where it left off.
-
-## Start
+## Install
 
 ```sh
-bun add @rikalabs/akter@alpha effect @effect/sql-pg @effect/sql-pglite
+bun add @rikalabs/akter effect
 ```
 
-The runtime needs [Bun](https://bun.sh) 1.4.2 or later, or [Node.js](https://nodejs.org) 24 or later. Provide `BunCrypto` / `BunHttpServer` from `@effect/platform-bun` on Bun, or `NodeCrypto` / `NodeHttpServer` from `@effect/platform-node` on Node. Effect, its SQL drivers, and Drizzle are shared peer dependencies with compatible caret ranges, so your app and the framework use the same peer-provided copy. Keep the generated lockfile; see the [quickstart](https://docs.akter.dev/quickstart) for both runtimes.
+Use Bun 1.4.2+ or Node 24+. The runtime needs the matching `@effect/platform-bun` or `@effect/platform-node` package. Stores use an S3-compatible bucket (`Store.s3`) or a directory (`Store.fileSystem`); no SQL driver is required by the framework.
 
-## Example
+## Declare and implement an actor
 
-An order that records its lines, emits an event, and charges the customer. The contract is the only file clients import:
-
-```ts title="src/order/contract.ts"
+```ts
 import { Actor } from "@rikalabs/akter"
-import { integer, pgTable, text } from "drizzle-orm/pg-core"
-import { Schema } from "effect"
+import { Effect, Schema } from "effect"
 
-export const orderLines = Actor.table(
-  pgTable("order_lines", {
-    sku: text("sku").primaryKey(),
-    quantity: integer("quantity").notNull(),
-    unitPrice: integer("unit_price").notNull(),
+export const Counter = Actor.make("Counter", {
+  state: Schema.Struct({
+    value: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
+    labels: Actor.list(Schema.Struct({ id: Schema.String, value: Schema.String }), {
+      key: "id",
+      by: "id",
+    }),
   }),
-)
-
-export const OrderPlaced = Actor.event("OrderPlaced", { total: Schema.Int })
-
-export class AlreadyPlaced extends Schema.TaggedError<AlreadyPlaced>()("AlreadyPlaced", {}) {}
-
-export const Charge = Actor.job("Charge", {
-  payload: { amount: Schema.Int },
-  success: Schema.Struct({ chargeId: Schema.String }),
+  actions: { add: Actor.action(Schema.Finite, { success: Schema.Finite }) },
 })
 
-export const Place = Actor.command("Place", {
-  payload: {
-    lines: Schema.Array(
-      Schema.Struct({ sku: Schema.String, quantity: Schema.Int, unitPrice: Schema.Int }),
-    ),
+export const CounterLive = Counter.toLayer({
+  add: (counter, amount) => {
+    counter.value += amount
+    return counter.value
   },
-  success: Schema.Int,
-  error: AlreadyPlaced,
-})
-
-export const Charged = Actor.command("Charged", { payload: { chargeId: Schema.String } })
-
-export const Order = Actor.make("Order", {
-  key: Schema.NonEmptyString,
-  state: Actor.state({
-    total: Schema.optional(Schema.Int),
-    chargeId: Schema.optional(Schema.String),
-  }),
-  tables: [orderLines],
-  events: [OrderPlaced],
-  jobs: { Charge: { job: Charge, onSuccess: Charged } },
-  api: { Place },
-  internal: { Charged },
 })
 ```
 
-Implement its commands. Each handler runs inside its command's transaction:
+Actions are synchronous and deterministic. They publish no reply, event, send, timer or job until their bucket-log segment is durable. Jobs are the only place for I/O.
 
-```ts title="src/order/layer.ts"
-import { Effect } from "effect"
-import { AlreadyPlaced, Charge, Order, OrderPlaced, orderLines } from "./contract.ts"
+## Client and server
 
-export const OrderLive = Order.toLayer({
-  Place: Effect.fn(function* ({ lines }) {
-    const turn = yield* Order.Turn
+```ts
+import { Akter, App, Auth, Store } from "@rikalabs/akter/server"
 
-    if (turn.state.total !== undefined) return yield* AlreadyPlaced.make({})
-
-    const total = lines.reduce((sum, line) => sum + line.quantity * line.unitPrice, 0)
-
-    yield* turn.rows(orderLines).insert(lines)
-    yield* turn.emit(OrderPlaced.make({ total }))
-    yield* turn.enqueue(Charge.make({ amount: total }))
-    yield* turn.state.set({ total })
-
-    return total
-  }),
-
-  Charged: Effect.fn(function* ({ chargeId }) {
-    const turn = yield* Order.Turn
-
-    yield* turn.state.set({ chargeId })
-  }),
-})
+const app = App.make({ actors: [Counter], layer: CounterLive })
+const server = Akter.serve({ app, auth: Auth.none })
 ```
 
-`Place` inserts the lines, emits `OrderPlaced`, records the total, and enqueues `Charge` in one commit. The charge runs after the commit and reports back as `Charged`, and a retry of `Place` with the same command ID returns the stored total instead of placing the order again.
+Provide `Store.fileSystem(".akter/store")` for local development or `Store.s3({ bucket, credentials })` for an S3-compatible store. The single Effect client is `Counter.client(id)`. Its actions are Effects, state and views are Streams, lists expose `range` and watch, and static `Counter.find({ where, orderBy, limit })` returns ids only.
+
+The one RPC group is `/rpc`: WebSocket JSON and HTTP NDJSON. The server can opt into `/metrics` with `prometheus: true`; `Telemetry.layer` composes OTLP traces/metrics and Effect DevTools without an OTLP logs exporter.
 
 ## Entry points
 
-| Import                    | What it holds                                                                                  |
-| ------------------------- | ---------------------------------------------------------------------------------------------- |
-| `@rikalabs/akter`         | Browser-safe declarations: `Actor.make`, commands, queries, events, jobs, errors, and handles. |
-| `@rikalabs/akter/runtime` | `Actors.layer`, `Actors.serve`, `Auth`, and the database layers.                               |
-| `@rikalabs/akter/client`  | The browser-safe Promise client: commands, queries, reducers, feeds, streams, and connections. |
-| `@rikalabs/akter/testing` | `ActorTest`, crash and clock controls, and inspection.                                         |
+| Entry                     | Use                                                          |
+| ------------------------- | ------------------------------------------------------------ |
+| `@rikalabs/akter`         | Browser-safe contracts, callers, errors and actor types      |
+| `@rikalabs/akter/server`  | `Akter.serve`, `App`, `Store`, operator grants and telemetry |
+| `@rikalabs/akter/client`  | The same Effect client transport                             |
+| `@rikalabs/akter/testing` | Seeded simulation and failure evidence                       |
 
-## Learn more
-
-- [Repository](https://github.com/Rika-Labs/akter#readme): what you build with it, how it works, and how it compares.
-- [Quickstart](https://github.com/Rika-Labs/akter/blob/main/docs/quickstart.md): create, run, and test an app.
-- [Concepts](https://github.com/Rika-Labs/akter/blob/main/docs/guides/concepts.md): actors, commands, receipts, and the work that continues after a commit.
-
-## License
-
-Apache-2.0. See `LICENSE` and `NOTICE`.
+See the [0.2 documentation](https://docs.akter.dev) for contracts, storage layout, operator commands and verification limits.

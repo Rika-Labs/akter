@@ -1,5 +1,7 @@
 # Cold-tier amendment: real-Postgres protocol model
 
+> Historical 0.1 verification, retained as of 2026-10-12. Recorded observations below are unchanged; they do not establish support for the 0.2 bucket engine. See [current verification](README.md).
+
 **Scope:** design evidence for proposed [ADR 0114](../decisions/0114-cold-tier-admission-and-garbage.md), not a claim that ADR 0036 or its failure tests are implemented.
 
 ## What the model rejects

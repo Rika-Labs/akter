@@ -16,7 +16,7 @@ import {
   Stream,
 } from "effect"
 import { describe, expect, it } from "vitest"
-import { Actor, isAuthenticated, isUser, user } from "../index.ts"
+import { Actor, anonymous, isAuthenticated, isUser, user } from "../index.ts"
 import { Akter, App, Auth, RuntimeControl } from "../server.ts"
 import { AkterClient } from "../client/index.ts"
 import { HttpServer } from "effect/http"
@@ -32,6 +32,7 @@ import { Store, storeOf } from "../store/service.ts"
 import { RunnerAuthority } from "./peering/authority.ts"
 import { Routing } from "./sharding.ts"
 
+let findChecks = 0
 const Ledger = Actor.make("Ledger", {
   state: Schema.Struct({
     total: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
@@ -43,10 +44,12 @@ const Ledger = Actor.make("Ledger", {
     receive: Actor.action(Schema.Finite, { internal: true }),
     remind: Actor.action(Schema.Finite),
   },
-  access: (caller: Caller, request: AccessRequest) =>
-    request.kind === "action" && request.member === "add"
+  access: (caller: Caller, request: AccessRequest) => {
+    if (request.kind === "find") findChecks++
+    return request.kind === "action" && request.member === "add"
       ? isUser(caller) && caller.subject === "ana"
-      : isAuthenticated(caller),
+      : isAuthenticated(caller)
+  },
 })
 
 const LedgerLive = Ledger.toLayer({
@@ -139,6 +142,46 @@ const setup = (requestTimeout: Duration.Input = "10 seconds", count = 2) =>
   })
 
 describe("bucket-backed Cluster routing", () => {
+  it(
+    "scatter-gathers ids from durable owner indexes with one access check, a global limit and id ties over real mTLS peering",
+    () =>
+      Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const { runners } = yield* setup()
+            const gateway = runners[0]!.routing
+            for (const [id, total] of [
+              ["z", 17],
+              ["c", 29],
+              ["b", 17],
+              ["m", 8],
+              ["a", 5],
+            ] as const)
+              yield* gateway.admitted(
+                user("ana"),
+                yield* CommandIds.mint(yield* Clock.currentTimeMillis),
+                { actor: Ledger, id, member: "add", payload: total },
+              )
+            findChecks = 0
+            const request = {
+              actor: Ledger,
+              query: {
+                where: { total: { gte: 8, lte: 29 } },
+                orderBy: { field: "total" as never },
+                limit: 3,
+              },
+            }
+            expect(yield* gateway.reads(user("ana")).find(request)).toEqual(["m", "b", "z"])
+            expect(findChecks).toBe(1)
+            expect((yield* Effect.flip(gateway.reads(anonymous).find(request))).reason._tag).toBe(
+              "Unauthorized",
+            )
+            expect(findChecks).toBe(2)
+          }),
+        ),
+      ),
+    20_000,
+  )
   it(
     "F16 serves the real public HTTP/WebSocket client through a non-owner and resubscribes its live state after owner drain",
     () =>

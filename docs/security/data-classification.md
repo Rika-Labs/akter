@@ -1,16 +1,7 @@
 # Data classification
 
-**Responsibility:** control sensitive information across surfaces.  
-**Authority:** security/operations.  
-**Owner role:** security.
-**Change policy:** a change requires security review.
+A store contains end-user data: actor state and lists, action payloads and outcomes, pending jobs and sends, retained history, and operator audit metadata. It is not merely a cache. Akter Cloud's environment bucket therefore holds customer data, not just snapshots of a customer-owned database.
 
-Classify data at the field level across commands, receipts, keyed state, actor tables, events, workflow payloads and results, job payloads, dead letters, blobs, connection state, logs, traces, and backups.
+Treat backups and exports at the highest classification of their contents. Restrict bucket credentials to one store, encrypt backups, and limit operator scope. A historical checkpoint can retain personal data after current-state deletion until retention and GC grace periods expire.
 
-Bearer tokens, API keys, database URLs, provider credentials, signed URLs, and encryption material are secrets. Store configuration URLs as redacted values and never put credentials or raw auth headers in envelopes, receipts, logs, traces, client bundles, OpenAPI examples, or dashboards.
-
-Principals, tenant ids, actor ids, command ids, connection ids, workflow keys, and trace ids are sensitive identifiers. They may be needed for attribution and incident response, but metrics must avoid high-cardinality identity labels and operator access must be audited.
-
-Connection params, frames, and sessions are classified like command payloads, and the event cursors on delivered frames, open baselines, and `Resync` frames are visible metadata that reveals the actor's event rate unless the member sets `stampCursor: false`; sessions persist in `actor_connections` and must not hold credentials, and connection handler spans carry no frame, param, or session contents ([ADR 0023](../decisions/0023-connections-parking-and-streams.md)). Private command payloads can be persisted in messages or receipts; private job payloads can remain in dead letters; events and blobs may be client-visible. Each contract therefore defines exposure and retention before deployment. Parked connection state is bounded session data, not a place for credentials. A client's offline store holds queued command payloads on the device, in whatever store the application passes, until the server answers or the application discards them; it never holds headers or credentials ([ADR 0058](../decisions/0058-offline-command-queue.md)).
-
-Backups contain all tenants in a deployment database and inherit the highest classification present. Encrypt backups and blob stores, restrict restore access, and test redaction using representative failures rather than trusting logger configuration.
+Logs, spans, and metrics must not disclose credentials or payloads. Metrics carry no tenant, actor id, or command id labels. Audit records identify the operator and target but exclude payload values and secrets. Test redaction with representative failures instead of trusting logger configuration.

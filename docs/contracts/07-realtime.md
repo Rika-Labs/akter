@@ -1,6 +1,6 @@
 # Realtime: state, views, presence, events and `find`
 
-Status: proposal (0.2), owned by ADR 0130; promoted when E4 (streams, presence and events) and E7 (`find`) failure evidence lands, each section with its milestone. E4 evidence so far is in [E4 RPC and serving](../verification/e4-rpc-serve.md); slow consumers and owner moves are open there.
+Status: partially normative (0.2), owned by ADR 0130. [E7](../verification/e7-find-operators.md) promotes ids-only `find`, owner index durability/recovery, one access check and scatter-gather for the supported `default` tenant. General tenant addressing remains proposal. E4 evidence for streams, presence and events is in [E4 RPC and serving](../verification/e4-rpc-serve.md); its stated limits remain.
 
 **Responsibility:** define what clients read and watch, when they see changes, how presence and events behave, and what `find` promises.  
 **Authority:** normative target on `rewrite/0.2`.  
@@ -43,6 +43,7 @@ Session binding, reauthorization every `reauthorizeEvery` and revocation are def
 
 - `X.find({ where, orderBy, limit })` MUST query every top-level scalar state field of one actor type (string, number, boolean, literal, branded scalar, `DateTime`) with equality and range conditions joined by conjunction, one `orderBy` field, and `limit` at most 1,000.
 - String comparisons MUST use the first 64 bytes (UTF-8) of the value; values sharing that prefix compare equal and are ordered by actor id.
+- The public result MUST contain actor ids only. Index ordering values MAY travel on trusted owner peering for the merge, never as public result fields.
 - `find` MUST return only actors of the caller's tenant (I8b) and MUST run `access` with kind `find` once.
 - `find` MUST NOT be callable from an action.
 - **Freshness.** Each shard's part of a result MUST reflect every action durable on that shard when its owner answered and nothing that was not durable. A caller whose action completed before it called `find` MUST see that action's effect. A result is not a snapshot across shards: different shards answer at different moments. Shards without an owner MUST be opened to answer.

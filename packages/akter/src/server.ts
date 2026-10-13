@@ -22,6 +22,11 @@ export type { Leases } from "./store/leases.ts"
 export type { Lease, StoredSegment } from "./store/log.ts"
 export type { StoreOptions } from "./store/service.ts"
 export type { S3Options } from "./store/s3.ts"
+export { Telemetry } from "./runtime/telemetry/observability.ts"
+export type { TelemetryOptions } from "./runtime/telemetry/observability.ts"
+export { OperatorAuth } from "./runtime/operators/auth.ts"
+export { OperatorRequest, OperatorRefused, Operators } from "./runtime/operators/service.ts"
+export { OperatorGrant, OperatorAction, Capability } from "./runtime/operators/grants.ts"
 
 export { Store }
 

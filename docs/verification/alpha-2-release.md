@@ -1,5 +1,7 @@
 # Alpha.2 release preparation evidence
 
+> Historical 0.1 verification, retained as of 2026-10-12. Recorded observations below are unchanged; they do not establish support for the 0.2 bucket engine. See [current verification](README.md).
+
 Recorded on 2026-10-07 for `chore/664-alpha-2`. This is candidate verification, not a publication or a production upgrade rehearsal. No npm public-registry publish, tags, dist-tag changes or production deployment were performed.
 
 This record predates [ADR 0112](../decisions/0112-postgres-and-pglite-only.md): Neki is removed, not a pending release gate. [Removal verification](neki-removal.md) records the current Postgres/PGlite-only checks.

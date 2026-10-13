@@ -1,32 +1,10 @@
+---
+title: "Overview"
+description: "Build synchronous actors, Effect jobs, live clients, and bucket-backed deployments."
+---
+
 # Overview
 
-**Responsibility:** the entry page for the guides: what they cover and where the rest of the documentation lives.  
-**Authority:** operational.  
-**Owner role:** documentation.  
-**Change policy:** change when a guide is added or removed.
+Start with the [quickstart](../quickstart.md). [Concepts](concepts.md) explains actors, actions, segments, and jobs. [Actions and jobs](actions-and-jobs.md) shows the deterministic boundary, [testing](testing.md) shows seeded evidence, and [deployment](deploy.md) covers a bucket-backed app.
 
-Akter is the framework for durable, stateful backends that power realtime apps, background work, and agents.
-
-You declare an actor with `Actor.make`, and each command it receives runs as one turn inside one database transaction: the actor's state, its owned Drizzle rows, its events, the command's receipt, and the work it hands off all commit together or not at all.
-
-The framework is published on npm as `@rikalabs/akter`; install the `alpha` dist-tag as shown in the [quickstart](../quickstart.md). The alpha supports multi-runner operation on one host through `Runner.socket` and `Runner.mtls`, verified with three Bun processes sharing a Postgres database. Separate hosts and hosting providers still need their own evidence. What has shipped is listed in each API page's implemented subset; everything else on those pages is accepted design. `@akter/react` and the Python client generator are repo-only and are not published at launch.
-
-## Guides
-
-- [Quickstart](../quickstart.md): create an app, run it, and test it.
-- [Concepts](concepts.md): actors, turns, receipts, and the work that continues after a turn.
-- Guides:
-  - [Effect all the way into the commit](effect-into-the-commit.md): how a handler's Effect runs inside the turn's transaction.
-  - [Testing](testing.md): `ActorTest`, crash points, time, and which database to test on.
-  - [Deploy](deploy.md): running on a Postgres server in production, and what is supported today.
-- [API reference](../api/README.md): the server API, the context services, the TypeScript SDK, Drizzle, generated clients, naming, and versioning.
-- [Comparison](comparison.md): Akter next to Cloudflare Durable Objects, Rivet, Restate, and Temporal, citing their documentation.
-
-## In the repository
-
-The runtime guarantees and the reasons behind them are not published here. They stay in the repository, next to the code and tests that hold them to account:
-
-- [Runtime contracts](../contracts/README.md): what a turn, a receipt, an intent, or a connection guarantees.
-- [Architecture decisions](../decisions/README.md): why each choice was made, and what was rejected.
-- [Verification](../verification/README.md): the evidence required before a guarantee is claimed.
-- [Support matrix](../operations/support-matrix.md): which backends and deployment modes are supported today.
+The [API reference](../api/README.md) describes exact spellings. The [support matrix](../operations/support-matrix.md) distinguishes implemented local evidence from target guarantees.

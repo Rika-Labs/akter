@@ -1,42 +1,7 @@
-# 01 — The problem
+# The problem
 
-**Responsibility:** define the problem, customer promise, and product intent.  
-**Authority:** product intent.  
-**Owner role:** product direction.  
-**Change policy:** a change requires product sign-off and a matching contract update when a promise shifts.
+Stateful backends combine durable data, retry-safe requests, background work, timers, and realtime sessions. Implementing each separately makes it easy to reply before data is safe, repeat a payment after a lost reply, or lose a job when a process restarts.
 
-## Vision
+Akter gives an addressable actor ownership of its state and obligations. A short deterministic action produces one recorded outcome and staged work. Durability is the publication boundary; slow or external work is a job.
 
-Important application concepts—rooms, documents, accounts, devices, orders, and agents—have identity, mutable state, live clients, and work that must survive failure. Teams usually assemble those concepts from HTTP handlers, SQL, locks, retries, schedulers, background processes, and WebSockets. Correctness then lives in the gaps between systems.
-
-Akter makes the application concept the coordination boundary. One actor owns an identity, serializes its commands, commits relational facts, and continues work after a process disappears.
-
-## The customer promise
-
-> Build stateful, realtime applications without hand-building the distributed-systems glue.
-
-An actor can:
-
-- receive typed commands and expose typed reads;
-- own keyed state and relational business rows;
-- emit durable events with a cursor;
-- run workflows, schedules, timers, and external calls;
-- hold typed connections and broadcast live hints;
-- hibernate and rebuild its activation;
-- attribute work to the caller its transport authenticated, and let each actor decide who may use it;
-- remain inspectable in Postgres and ordinary observability tools.
-
-## Product intent
-
-Akter is an Effect-native actor framework. It is not a workflow-only product: workflows are members of the actor that owns their identity and data. It is not a separate background-work product: scheduling and jobs are consequences of actor turns. It has no AI-specific product surface; an agent is simply an actor, and contract-derived OpenAPI is available to external tool generators.
-
-## We are not building
-
-- a private replacement for relational data;
-- a hosted-only platform;
-- arbitrary JavaScript continuation checkpointing;
-- hostile-code isolation;
-- globally atomic distributed application logic;
-- exactly-once outcomes from external providers that offer no idempotency or reconciliation mechanism.
-
-See [the product model](02-product-model.md) for the unit that replaces this glue and [boundaries](08-boundaries.md) for the guarantees we refuse to blur.
+The product is not a database, SQL layer, arbitrary distributed transaction system, or hostile-code sandbox. It does not make external effects exactly once without provider cooperation.
