@@ -10,6 +10,7 @@ import {
   CommandExpired,
   InvalidCommandId,
   InvalidInput,
+  ShardMoved,
   Unauthorized,
   anonymous,
   system,
@@ -383,7 +384,11 @@ describe("reads and the lease", () => {
         })
         yield* TestClock.adjust("11 seconds")
         const refused = yield* Effect.flip(simulator.engine.durableRecord(Wallet, "a"))
-        expect(Schema.is(ActorUnavailable)(refused.reason)).toBe(true)
+        expect(refused).toEqual(ActorError.make({ reason: ShardMoved.make({}) }))
+        expect(
+          simulator.engine.status(simulator.engine.shardOf(Durable.addressOf("Wallet", "a")))
+            .status,
+        ).toBe("fenced")
       }),
     ))
 })

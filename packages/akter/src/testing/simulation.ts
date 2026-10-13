@@ -9,19 +9,22 @@ import {
   Random,
   Scheduler,
   Schema,
+  Stream,
 } from "effect"
 import { TestClock } from "effect/testing"
 import { Caller, System } from "../contract/caller.ts"
 import type { FullState } from "../contract/context.ts"
-import type { ActorError } from "../contract/errors.ts"
+import { ActorError, ShardMoved } from "../contract/errors.ts"
 import { Client } from "../contract/handle.ts"
 import type { Transport } from "../contract/handle.ts"
 import type { AnyActor, DefOf } from "../contract/make.ts"
 import type { Implementation } from "../handlers/registry.ts"
 import { Lists } from "../handlers/lists.ts"
+import { CommandIds } from "../execution/command-ids.ts"
 import { Durable } from "../execution/durable.ts"
 import type { Bound, Catalog } from "../execution/durable.ts"
 import { Engine } from "../execution/engine.ts"
+import type { DrainReport } from "../execution/engine.ts"
 import type { Entry } from "../execution/entries.ts"
 import { Jobs } from "../execution/jobs.ts"
 import { Layouts } from "../execution/layout.ts"
@@ -29,6 +32,7 @@ import type { Decoded } from "../execution/layout.ts"
 import { Transports } from "../execution/transport.ts"
 import { frameworkVersion } from "../snapshots/build.ts"
 import { Recovery } from "../snapshots/recovery.ts"
+import type { ReplayPolicy } from "../snapshots/recovery.ts"
 import { runtimeBuild } from "../store/build.ts"
 import type { Build } from "../store/build.ts"
 import { Store, storeOf } from "../store/service.ts"
@@ -41,6 +45,15 @@ import { SeededScheduler } from "./seeded-scheduler.ts"
 /** The first seed of the simulator's numbered runs; run `n` uses seed `SIMULATION_SEED_BASE + n`. */
 export const SIMULATION_SEED_BASE = 0x5eed_0000
 
+/**
+ * One runner of a simulated store: the application bundle its segments record (default
+ * `"simulation"`) and which builds it replays (default `"matching"`).
+ */
+export interface RunnerOptions {
+  readonly bundle?: string
+  readonly replay?: ReplayPolicy
+}
+
 /** How one simulated run is set up. */
 export interface SimulationOptions<Actors extends ReadonlyArray<AnyActor>> {
   readonly actors: Actors
@@ -51,6 +64,10 @@ export interface SimulationOptions<Actors extends ReadonlyArray<AnyActor>> {
   readonly checkpointEvery?: number
   readonly caller?: Caller
   readonly scheduler?: SeededScheduler
+  /** The runners over the store's one bucket; runner 0 starts with every shard. Default: one runner. */
+  readonly runners?: ReadonlyArray<RunnerOptions>
+  /** How late a cron tick may fire after downtime before it is skipped. Default 1 hour. */
+  readonly cronSkipIfOlderThan?: Duration.Input
 }
 
 /** A broken invariant; its message names the seed that reproduces it. */
@@ -66,9 +83,20 @@ export class InvariantViolation extends Schema.TaggedError<InvariantViolation>()
   }
 }
 
+/** One simulated runner: its engine on its own store instance over the shared bucket. */
+export interface SimulatedRunner {
+  readonly index: number
+  readonly engine: Engine
+  readonly build: Build
+}
+
 interface Simulator {
   readonly seed: number
   readonly catalog: Catalog
+  readonly runners: ReadonlyArray<SimulatedRunner>
+  /** The runner the runner layer assigns every shard to now; none while the store is drained. */
+  readonly owner: number | undefined
+  /** The owner's engine, or runner 0's while the store is drained. */
   readonly engine: Engine
   readonly bucket: SimulatedBucket
   readonly build: Build
@@ -78,6 +106,8 @@ interface Simulator {
   readonly quiesce: Effect.Effect<string | undefined>
   readonly waiting: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
   readonly client: (caller: Caller) => Transport
+  readonly assign: (runner: number) => Effect.Effect<void>
+  readonly drain: (deadline: Duration.Input) => Effect.Effect<DrainReport>
 }
 
 /** The running simulation. */
@@ -100,13 +130,24 @@ const xorshift = (seed: number): (() => number) => {
   }
 }
 
+/** How often the simulated runner layer re-reads assignments, the store's default refresh interval. */
+const REFRESH = Duration.seconds(15)
+
+const noOwner = (): ActorError => ActorError.make({ reason: ShardMoved.make({}) })
+
 /**
- * The simulator: one engine over an in-process log with seeded faults, a seeded fiber scheduler
+ * The simulator: engines over one in-process bucket with seeded faults, a seeded fiber scheduler
  * and `TestClock`, every action run twice and compared, `Math.random` replaced for the run, and
- * the invariants checked after every `settle`. Provides `Client` (as `System` "process" unless
- * `caller` is given) and the clock. While a client call waits and the engine has nothing staged
- * or in flight, the call can only be waiting on the clock (a retry after a crash), so the
- * simulator moves the clock in growing steps; background work moves it in `settle` and `advance`.
+ * the invariants checked after every `settle`. Each runner has its own store instance and writer
+ * over the shared bucket. A runner layer assigns every shard to one owner: clients reach that
+ * owner and retry with the same id while it is not open, and every `REFRESH` the layer assigns a
+ * shard the owner lost to a fence back to it and releases the shards any other runner still holds.
+ * Provides `Client` (as `System` "process" unless `caller` is given) and the clock. While a client
+ * call waits and the engines have nothing staged or in flight, the call can only be waiting on the
+ * clock (a retry after a crash), so the simulator moves the clock in growing steps; background
+ * work moves it in `settle` and `advance`. The test clock's warning about a clock nobody advances
+ * is off: it waits on the host's clock, and its log line would join the seeded queue at a moment
+ * the host decides, so a slow host would change the run.
  */
 const layer = <const Actors extends ReadonlyArray<AnyActor>>(
   options: SimulationOptions<Actors>,
@@ -117,7 +158,7 @@ const layer = <const Actors extends ReadonlyArray<AnyActor>>(
 > => {
   const scheduler = options.scheduler ?? new SeededScheduler(options.seed)
   const services = Layer.mergeAll(
-    TestClock.layer(),
+    TestClock.layer({ warningDelay: Duration.infinity }),
     Layer.succeed(Scheduler.Scheduler, scheduler),
     Layer.effect(
       Random.Random,
@@ -134,53 +175,64 @@ const layer = <const Actors extends ReadonlyArray<AnyActor>>(
       for (const actor of options.actors)
         actors.set(actor.name, { actor, registered: yield* actor.implementation })
       const catalog: Catalog = { actors, shards: options.shards ?? 4 }
+      const every = Array.from({ length: catalog.shards }, (_, shard) => shard)
       const random = xorshift(options.seed ^ 0x9e3779b9)
       const bucket = SimulatedBucket.make(random, options.faults ?? [], options.rates)
-      const application = { bundle: "simulation", framework: frameworkVersion }
-      const build = yield* runtimeBuild(application)
-      const store = yield* Effect.orDie(
-        storeOf(bucket.bucket, {
-          shards: catalog.shards,
-          build: application,
-          writer: "simulation",
-        }),
-      )
       const violations: Array<string> = []
       const publications: Array<Publication> = []
       const original = Math.random
       const replaced = xorshift(options.seed ^ 0x51ed270b)
-      const subtle = globalThis.crypto.subtle
-      const digest = subtle.digest.bind(subtle)
       yield* Effect.acquireRelease(
         Effect.sync(() => {
           Math.random = replaced
-          subtle.digest = (algorithm, data) => scheduler.hold(digest(algorithm, data))
         }),
         () =>
           Effect.sync(() => {
             Math.random = original
-            subtle.digest = digest
           }),
       )
-      const engine = yield* Engine.make(catalog, {
-        shards: catalog.shards,
-        validFor: 10_000,
-        policy: "matching",
-        maxBatch: 64,
-        checkpointEvery: options.checkpointEvery ?? 3,
-        doubleRun: true,
-        observer: {
-          published: (shard: number, offset: number, entry: Entry) => {
-            publications.push({ shard, offset, entry })
+      const runners: Array<SimulatedRunner> = []
+      for (const [index, runner] of (options.runners ?? [{}]).entries()) {
+        const application = { bundle: runner.bundle ?? "simulation", framework: frameworkVersion }
+        const store = yield* Effect.orDie(
+          storeOf(bucket.view(index), {
+            shards: catalog.shards,
+            build: application,
+            writer: index === 0 ? "simulation" : `simulation-${index}`,
+          }),
+        )
+        const engine = yield* Engine.make(catalog, {
+          shards: catalog.shards,
+          policy: runner.replay ?? "matching",
+          maxBatch: 64,
+          checkpointEvery: options.checkpointEvery ?? 3,
+          cronSkipIfOlderThan: Duration.toMillis(
+            Duration.fromInputUnsafe(options.cronSkipIfOlderThan ?? "1 hour"),
+          ),
+          doubleRun: true,
+          observer: {
+            published: (shard: number, offset: number, entry: Entry) => {
+              publications.push({ shard, offset, entry })
+            },
+            violation: (invariant: string, detail: string) => {
+              violations.push(`${invariant}: ${detail}`)
+            },
           },
-          violation: (invariant: string, detail: string) => {
-            violations.push(`${invariant}: ${detail}`)
-          },
-        },
-      }).pipe(Effect.provideService(Store, store))
+        }).pipe(Effect.provideService(Store, store))
+        runners.push({ index, engine, build: yield* runtimeBuild(application) })
+      }
+      const first = runners[0]
+      if (first === undefined)
+        return yield* Effect.die(new RangeError("a simulation needs a runner"))
+      let owner: number | undefined = 0
+      const ownerEngine = (): Engine | undefined =>
+        owner === undefined ? undefined : runners[owner]?.engine
       const root = yield* Effect.scope
-      bucket.arm((shard) => Effect.asVoid(Effect.forkIn(engine.crash(shard), root)))
-      const jobs = Jobs.install(engine)
+      yield* first.engine.assign(every)
+      bucket.arm((runner, shard) =>
+        Effect.asVoid(Effect.forkIn(runners[runner]?.engine.crash(shard) ?? Effect.void, root)),
+      )
+      const jobs = runners.map((runner) => Jobs.install(runner.engine))
       let waiting = 0
       const counted = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
         Effect.acquireUseRelease(
@@ -193,14 +245,57 @@ const layer = <const Actors extends ReadonlyArray<AnyActor>>(
               waiting--
             }),
         )
+
+      /** Work the runner layer still owes: a shard the owner lost to a fence, or one another runner holds. */
+      const unassigned = (): string | undefined => {
+        for (const runner of runners)
+          for (const shard of every) {
+            const { status, assigned } = runner.engine.status(shard)
+            if (runner.index === owner && status === "fenced")
+              return `shard ${shard} was fenced on its owner, runner ${runner.index}`
+            if (runner.index !== owner && assigned && status !== "fenced" && status !== "refused")
+              return `runner ${runner.index} still holds shard ${shard}`
+          }
+        return undefined
+      }
+
+      yield* Effect.forkScoped(
+        Effect.forever(
+          Effect.gen(function* () {
+            yield* Effect.sleep(REFRESH)
+            for (const runner of runners)
+              for (const shard of every) {
+                const { status, assigned } = runner.engine.status(shard)
+                if (runner.index === owner && status === "fenced")
+                  yield* runner.engine.assign([shard])
+                else if (runner.index !== owner && assigned)
+                  yield* Effect.forkIn(runner.engine.release(shard), root)
+              }
+          }),
+        ),
+      )
+
       const settlers: Array<Deferred.Deferred<string | undefined>> = []
       const busyAt = (now: number): string | undefined => {
-        const running = jobs.active()
+        for (const runner of runners) {
+          const busy = runner.engine.busy(now)
+          if (busy !== undefined)
+            return runners.length === 1 ? busy : `runner ${runner.index}: ${busy}`
+        }
+        const running = jobs.reduce((sum, installed) => sum + installed.active(), 0)
         return (
-          engine.busy(now) ??
+          unassigned() ??
           (running > 0 ? `${running} jobs are running` : undefined) ??
           (waiting > 0 ? `${waiting} client calls are waiting` : undefined)
         )
+      }
+      const nextTimer = (cron: boolean): number | undefined => {
+        let earliest: number | undefined
+        for (const runner of runners) {
+          const due = runner.engine.nextTimer(cron)
+          if (due !== undefined && (earliest === undefined || due < earliest)) earliest = due
+        }
+        return earliest
       }
       yield* Effect.forkScoped(
         Effect.gen(function* () {
@@ -230,7 +325,7 @@ const layer = <const Actors extends ReadonlyArray<AnyActor>>(
             step = 1
             stalled = 0
             if (settlers.length === 0) continue
-            const due = engine.nextTimer()
+            const due = nextTimer(false)
             if (due !== undefined) {
               quiet = 0
               yield* TestClock.adjust(Duration.millis(Math.max(Math.ceil(due - now), 1)))
@@ -242,33 +337,93 @@ const layer = <const Actors extends ReadonlyArray<AnyActor>>(
           }
         }),
       )
-      return {
+
+      /**
+       * A client that reaches the owner at each attempt, so a call the old owner refuses with
+       * `ShardMoved` is retried, with the same id, on the new one.
+       */
+      const routed = (caller: Caller): Transport => {
+        const reads = () => {
+          const engine = ownerEngine()
+          return engine === undefined ? undefined : Transports.reads(engine, caller)
+        }
+        const missing = Effect.fail(noOwner())
+        return {
+          call: (request) =>
+            counted(
+              Effect.gen(function* () {
+                const commandId = yield* CommandIds.mint(yield* Clock.currentTimeMillis)
+                return yield* Transports.retryWhileUnavailable(
+                  Effect.suspend(() => {
+                    const engine = ownerEngine()
+                    return engine === undefined
+                      ? missing
+                      : Transports.admit(engine, caller, commandId, request)
+                  }),
+                )
+              }),
+            ),
+          state: (request) =>
+            Stream.suspend(() => reads()?.state(request) ?? Stream.fromEffect(missing)),
+          view: (request) =>
+            Stream.suspend(() => reads()?.view(request) ?? Stream.fromEffect(missing)),
+          event: (request) =>
+            Stream.suspend(() => reads()?.event(request) ?? Stream.fromEffect(missing)),
+          range: (request) => Effect.suspend(() => reads()?.range(request) ?? missing),
+          watch: (request) =>
+            Stream.suspend(() => reads()?.watch(request) ?? Stream.fromEffect(missing)),
+          join: (request) => counted(Effect.suspend(() => reads()?.join(request) ?? missing)),
+          find: (request) => Effect.suspend(() => reads()?.find(request) ?? missing),
+        }
+      }
+
+      const simulator: Simulator = {
         seed: options.seed,
         catalog,
-        engine,
+        runners,
+        get owner() {
+          return owner
+        },
+        get engine() {
+          return ownerEngine() ?? first.engine
+        },
         bucket,
-        build,
+        build: first.build,
         publications,
         violations,
-        logs: Effect.forEach(
-          Array.from({ length: catalog.shards }, (_, shard) => shard),
-          (shard) => Invariants.read(bucket.inspect, shard),
-        ),
+        logs: Effect.forEach(every, (shard) => Invariants.read(bucket.inspect, shard)),
         waiting: counted,
         quiesce: Effect.suspend(() => {
           const settler = Deferred.makeUnsafe<string | undefined>()
           settlers.push(settler)
           return Deferred.await(settler)
         }),
-        client: (caller: Caller): Transport => {
-          const transport = Transports.client(engine, caller)
-          return {
-            ...transport,
-            call: (request) => counted(transport.call(request)),
-            join: (request) => counted(transport.join(request)),
-          }
-        },
+        client: routed,
+        assign: (runner) =>
+          Effect.gen(function* () {
+            const target = runners[runner]
+            if (target === undefined)
+              return yield* Effect.die(new RangeError(`there is no runner ${runner}`))
+            if (owner !== runner)
+              yield* Effect.forEach(
+                every,
+                (shard) =>
+                  target.engine.status(shard).assigned ? target.engine.release(shard) : Effect.void,
+                { discard: true },
+              )
+            owner = runner
+            yield* target.engine.assign(every)
+          }),
+        drain: (deadline) =>
+          Effect.suspend(() => {
+            const engine = ownerEngine()
+            owner = undefined
+            return engine === undefined
+              ? Effect.succeed<DrainReport>({ outcome: "clean", shards: [] })
+              : engine.drain(deadline)
+          }),
       }
+      return simulator
     }),
   ).pipe(Layer.provide(services))
   const client = Layer.effect(
@@ -280,6 +435,19 @@ const layer = <const Actors extends ReadonlyArray<AnyActor>>(
   return Layer.mergeAll(client.pipe(Layer.provideMerge(simulation)), services)
 }
 
+/** The live durable image of a shard: the one held through the newest lease in its log, if any runner holds it. */
+const liveImage = (simulator: Simulator, log: ShardLogContent) => {
+  let newest: bigint | undefined
+  for (const segment of log.segments)
+    if (segment.entries.length === 0 && segment.open === segment.offset) newest = segment.open
+  for (const runner of simulator.runners) {
+    const lease = runner.engine.lease(log.shard)
+    const image = runner.engine.durableImage(log.shard)
+    if (lease !== undefined && image !== undefined && lease.open === newest) return image
+  }
+  return undefined
+}
+
 /** Every broken invariant so far, with the log-wide and replay checks run now. */
 const violationsNow = (simulator: Simulator) =>
   Effect.gen(function* () {
@@ -289,7 +457,7 @@ const violationsNow = (simulator: Simulator) =>
     found.push(...Invariants.once(logs))
     for (const log of logs) {
       found.push(...Invariants.fenced(log))
-      const live = simulator.engine.durableImage(log.shard)
+      const live = liveImage(simulator, log)
       if (live === undefined) continue
       found.push(
         ...Invariants.replays(simulator.catalog, simulator.build, log, Recovery.fingerprint(live)),
@@ -299,11 +467,12 @@ const violationsNow = (simulator: Simulator) =>
   })
 
 /**
- * Runs the simulation until nothing is staged, in flight, delivering, due or running and no call
- * waits, then checks every invariant and fails naming the seed. Time passes only when no fiber can
- * run: in growing steps while work sleeps (retries, backoffs, jobs), and straight to the next
- * one-shot timer once nothing else is left. Cron ticks never end, so they do not hold it. A run
- * that is still busy after 100,000 stalled turns fails as a liveness violation.
+ * Runs the simulation until nothing is staged, in flight, delivering, due or running, no call
+ * waits and the runner layer owes nothing, then checks every invariant and fails naming the seed.
+ * Time passes only when no fiber can run: in growing steps while work sleeps (retries, backoffs,
+ * jobs, the runner layer's refresh), and straight to the next one-shot timer once nothing else is
+ * left. Cron ticks never end, so they do not hold it. A run that is still busy after 100,000
+ * stalled turns fails as a liveness violation.
  */
 const settle: Effect.Effect<void, InvariantViolation, SimulationService> = Effect.gen(function* () {
   const simulator = yield* SimulationService
@@ -314,11 +483,39 @@ const settle: Effect.Effect<void, InvariantViolation, SimulationService> = Effec
     return yield* InvariantViolation.make({ seed: simulator.seed, violations })
 })
 
-/** Moves the clock forward, firing whatever comes due, then settles. */
+/**
+ * Moves the clock forward, firing whatever comes due at its own time, cron ticks included: the
+ * clock stops at each due time until the work it started has settled, as it would on a live owner,
+ * then the run settles at the end.
+ */
 const advance = (
   duration: Duration.Input,
 ): Effect.Effect<void, InvariantViolation, SimulationService> =>
-  Effect.andThen(TestClock.adjust(duration), settle)
+  Effect.gen(function* () {
+    const simulator = yield* SimulationService
+    const end =
+      (yield* Clock.currentTimeMillis) + Duration.toMillis(Duration.fromInputUnsafe(duration))
+    const nextDue = () => {
+      let due: number | undefined
+      for (const runner of simulator.runners) {
+        const next = runner.engine.nextTimer(true)
+        if (next !== undefined && (due === undefined || next < due)) due = next
+      }
+      return due
+    }
+    while (true) {
+      const now = yield* Clock.currentTimeMillis
+      const due = nextDue()
+      if (due === undefined || due > end) break
+      if (due > now) yield* TestClock.adjust(Duration.millis(due - now))
+      if ((yield* simulator.quiesce) !== undefined) break
+      const later = nextDue()
+      if (later !== undefined && later <= due) break
+    }
+    const now = yield* Clock.currentTimeMillis
+    if (end > now) yield* TestClock.adjust(Duration.millis(end - now))
+    yield* settle
+  })
 
 /** The durable state of an instance as `Simulation.state` shows it: client state plus every list's items. */
 const state = <X extends AnyActor>(
@@ -330,7 +527,7 @@ const state = <X extends AnyActor>(
     const layout = Layouts.of(actor)
     const record = yield* simulator.waiting(
       Transports.retryWhileUnavailable(
-        simulator.engine.durableRecord(actor, layout.key.encode(id)),
+        Effect.suspend(() => simulator.engine.durableRecord(actor, layout.key.encode(id))),
       ),
     )
     const full = { ...record.image.state }
@@ -370,7 +567,7 @@ const seed = <X extends AnyActor>(
     }
     yield* simulator.waiting(
       Transports.retryWhileUnavailable(
-        simulator.engine.seed(actor, layout.key.encode(id), set, lists),
+        Effect.suspend(() => simulator.engine.seed(actor, layout.key.encode(id), set, lists)),
       ),
     )
   })
@@ -403,6 +600,52 @@ const crash = (
   })
 
 /**
+ * The runner layer assigns every shard to `runner`, which opens them and so fences whichever
+ * runner held them. The previous owner is not told: it learns from the log when its next append or
+ * lease check fails, or when the runner layer releases its shards at the next refresh. A runner
+ * given the store back while it still holds shards from before it was moved away first releases
+ * them, as a runner whose shard locks lapsed learns at its next lock refresh, and then opens them
+ * again from the log.
+ */
+const assign = (runner: number): Effect.Effect<void, never, SimulationService> =>
+  Effect.flatMap(SimulationService, (simulator: Simulator) => simulator.assign(runner))
+
+/**
+ * Drains the owner: it stops admitting, makes what it admitted durable, checkpoints and releases
+ * every shard. The store has no owner until the next `assign`.
+ */
+const drain = (
+  deadline: Duration.Input = "30 seconds",
+): Effect.Effect<DrainReport, never, SimulationService> =>
+  Effect.flatMap(SimulationService, (simulator: Simulator) => simulator.drain(deadline))
+
+/** Cuts `runner` off from the bucket for `duration`: its calls fail as if the network were down. */
+const partition = (
+  runner: number,
+  duration: Duration.Input,
+): Effect.Effect<void, never, SimulationService> =>
+  Effect.gen(function* () {
+    const simulator = yield* SimulationService
+    const now = yield* Clock.currentTimeMillis
+    simulator.bucket.partition(runner, now + Duration.toMillis(Duration.fromInputUnsafe(duration)))
+  })
+
+/**
+ * Pauses `runner` for `duration`: every call it makes to the bucket waits until the pause ends and
+ * then lands, as the requests of a frozen process do. Its clock keeps counting, the way a clock that
+ * counts suspended time does.
+ */
+const pause = (
+  runner: number,
+  duration: Duration.Input,
+): Effect.Effect<void, never, SimulationService> =>
+  Effect.gen(function* () {
+    const simulator = yield* SimulationService
+    const now = yield* Clock.currentTimeMillis
+    simulator.bucket.pause(runner, now + Duration.toMillis(Duration.fromInputUnsafe(duration)))
+  })
+
+/**
  * Runs one simulated run as its own root fiber on the run's seeded scheduler, so the whole run,
  * including the program, interleaves as a function of the seed.
  */
@@ -432,6 +675,10 @@ export const Simulation = {
   seed,
   as,
   crash,
+  assign,
+  drain,
+  partition,
+  pause,
   run,
   violations: Effect.flatMap(SimulationService, violationsNow),
 }

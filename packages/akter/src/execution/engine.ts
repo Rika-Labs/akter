@@ -4,8 +4,10 @@ import {
   Duration,
   Effect,
   Exit,
+  Fiber,
   Latch,
   Option,
+  Predicate,
   PubSub,
   Result,
   Schema,
@@ -18,6 +20,7 @@ import {
   ActorUnavailable,
   CommandExpired,
   InvalidCommandId,
+  ShardMoved,
   Unauthorized,
 } from "../contract/errors.ts"
 import type { AnyActor } from "../contract/make.ts"
@@ -38,19 +41,41 @@ import { StaleEpoch } from "../store/errors.ts"
 import type { Lease } from "../store/log.ts"
 import { Store } from "../store/service.ts"
 
-/** How an engine runs: its shards, replay policy, batch bound and simulation hooks. */
+/** How an engine runs: its shards, replay policy, batch bound, cron catch-up and simulation hooks. */
 export interface EngineOptions {
   readonly shards: number
-  /** Milliseconds a shard answers reads from memory after its last append or lease check; at most the store's `validFor`. */
-  readonly validFor: number
   readonly policy: ReplayPolicy
   readonly maxBatch: number
   readonly checkpointEvery: number
+  /** Milliseconds past its due time after which a cron tick is skipped instead of fired. */
+  readonly cronSkipIfOlderThan: number
   readonly doubleRun: boolean
   readonly observer: Observer | undefined
 }
 
-/** What the simulator watches: every published outcome and every determinism violation. */
+/** One shard in a drain report: the offset its log ends at and its earliest pending timer. */
+export interface DrainedShard {
+  readonly shard: number
+  readonly offset: number
+  /** Epoch milliseconds of the earliest pending timer or cron tick, `null` when none is pending. */
+  readonly nextDue: number | null
+}
+
+/**
+ * What a drain did: `clean` when every shard it owned wrote its checkpoint and its `Released`
+ * segment within the bound, `timedOut` when any shard could not (the bucket did not answer in
+ * time, or another owner took the shard first).
+ */
+export interface DrainReport {
+  readonly outcome: "clean" | "timedOut"
+  readonly shards: ReadonlyArray<DrainedShard>
+}
+
+/**
+ * What the simulator watches: every published outcome and every determinism violation. A shard
+ * refused because its tail came from another build is not one: that refusal is the policy working,
+ * and the runner layer answers it by assigning the shard to a runner of that build.
+ */
 export interface Observer {
   readonly published: (shard: number, offset: number, entry: Entry) => void
   readonly violation: (invariant: string, detail: string) => void
@@ -76,7 +101,19 @@ interface Pending {
   readonly done: Deferred.Deferred<Outcome, ActorError>
 }
 
-type Status = "closed" | "restarting" | "opening" | "open" | "refused"
+/**
+ * Where a shard stands on this owner. `fenced` means another owner's open segment took it: it is
+ * reopened only when the runner layer assigns it here again, never by a caller or by the engine
+ * itself. `draining` admits nothing while what was admitted becomes durable.
+ */
+export type Status =
+  | "closed"
+  | "restarting"
+  | "opening"
+  | "open"
+  | "draining"
+  | "fenced"
+  | "refused"
 
 /** A shard on this owner: its durable image, speculative actor images, and the work not yet durable. */
 interface Shard {
@@ -87,7 +124,7 @@ interface Shard {
   settled: Deferred.Deferred<void>
   scope: Scope.Closeable
   lease: Lease | undefined
-  confirmedAt: number
+  assigned: boolean
   durable: ShardImage
   refusal: RecoveryError | undefined
   readonly speculative: Map<string, Image>
@@ -100,17 +137,15 @@ interface Shard {
   readonly acked: Set<string>
   readonly armed: Set<string>
   readonly delivering: Set<string>
+  readonly flushed: Array<Deferred.Deferred<void>>
   readonly wake: Latch.Latch
 }
 
 /** A shard rebuilt from the store: the lease that fenced earlier owners, and the image or why not. */
 interface Recovered {
   readonly lease: Lease | undefined
-  readonly startedAt: number
   readonly recovered: Result.Result<ShardImage, RecoveryError>
 }
-
-const monotonicMillis = Effect.map(Clock.monotonicTimeNanos, (nanos) => Number(nanos / 1_000_000n))
 
 /** Per-address publication channels; they live as long as the engine, across shard crashes. */
 interface Channel {
@@ -121,12 +156,23 @@ interface Channel {
 
 const unavailable = (): ActorError => ActorError.make({ reason: ActorUnavailable.make({}) })
 
+const moved = (): ActorError => ActorError.make({ reason: ShardMoved.make({}) })
+
+/** The earliest pending timer or cron tick of a shard image, the time a stopped store must wake. */
+const nextDueOf = (image: ShardImage): number | undefined => {
+  let earliest: number | undefined
+  for (const { timer } of image.timers.values())
+    if (earliest === undefined || timer.at < earliest) earliest = timer.at
+  return earliest
+}
+
 /**
  * The engine on one owner: shards in memory, each with one committer. An action runs synchronously
  * inside one block that also stages its group in the shard's batch, so per-actor order is admission
  * order and a same-shard send's entry always follows its sender's in the same segment. Nothing is
  * published until the segment holding it is durable; a lost or unknown append closes the shard
- * and discards everything speculative.
+ * and discards everything speculative. Closing the engine's scope stops every shard as a crash
+ * would, so no committer, timer or delivery outlives the engine.
  */
 const make = (catalog: Catalog, options: EngineOptions) =>
   Effect.gen(function* () {
@@ -135,6 +181,11 @@ const make = (catalog: Catalog, options: EngineOptions) =>
     const shards = new Map<number, Shard>()
     const channels = new Map<string, Channel>()
     const afterDurable: Array<(shard: number) => Effect.Effect<void>> = []
+    yield* Effect.addFinalizer(() =>
+      Effect.forEach(shards.values(), (shard) => Scope.close(shard.scope, Exit.void), {
+        discard: true,
+      }),
+    )
 
     const channel = (address: string): Effect.Effect<Channel> =>
       Effect.suspend(() => {
@@ -169,7 +220,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       settled: Deferred.makeUnsafe<void>(),
       scope: Scope.makeUnsafe(),
       lease: undefined,
-      confirmedAt: 0,
+      assigned: false,
       durable: Durable.empty(id),
       refusal: undefined,
       speculative: new Map(),
@@ -182,6 +233,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       acked: new Set(),
       armed: new Set(),
       delivering: new Set(),
+      flushed: [],
       wake: Latch.makeUnsafe(false),
     })
 
@@ -196,38 +248,48 @@ const make = (catalog: Catalog, options: EngineOptions) =>
 
     /**
      * Drops everything this owner holds for the shard without publishing: speculative images, the
-     * batch, and every waiter, which sees a retryable `ActorUnavailable`. The durable truth is the
-     * log; the next open rebuilds from it. The returned effect closes the shard's scope, which
-     * interrupts its committer and any append still in flight, then reopens the shard unless another
-     * owner fenced it, so its timers, sends and jobs go on without waiting for a caller.
+     * batch, and every waiter. The durable truth is the log; the next open rebuilds from it. The
+     * returned effect closes the shard's scope, which interrupts its committer and any append still
+     * in flight. A fenced shard stays closed and its waiters see `ShardMoved`, since another owner
+     * holds it and only the runner layer may assign it back. After its own failure an assigned shard
+     * reopens in the background, so its timers, sends and jobs go on without waiting for a caller;
+     * its waiters see `ActorUnavailable`.
      */
     const crash = (shard: Shard, fenced: boolean): Effect.Effect<void> => {
-      if (shard.status !== "open" && shard.status !== "opening") return Effect.void
-      shard.status = fenced ? "closed" : "restarting"
+      if (shard.status !== "open" && shard.status !== "opening" && shard.status !== "draining")
+        return Effect.void
+      shard.status = fenced ? "fenced" : shard.assigned ? "restarting" : "closed"
       shard.generation++
+      shard.lease = undefined
       const waiters = new Set([...shard.pending.values(), ...shard.batch.flat(), ...shard.inFlight])
       shard.pending.clear()
       shard.batch.length = 0
       shard.speculative.clear()
-      shard.firing.clear()
-      shard.acked.clear()
-      shard.armed.clear()
-      shard.delivering.clear()
       shard.inFlight = []
-      for (const waiter of waiters) Deferred.doneUnsafe(waiter.done, Exit.fail(unavailable()))
-      Deferred.doneUnsafe(shard.opened, Exit.fail(unavailable()))
+      const reason = fenced ? moved() : unavailable()
+      for (const waiter of waiters) Deferred.doneUnsafe(waiter.done, Exit.fail(reason))
+      Deferred.doneUnsafe(shard.opened, Exit.fail(reason))
+      for (const flushed of shard.flushed.splice(0)) Deferred.doneUnsafe(flushed, Exit.void)
       const closing = Scope.close(shard.scope, Exit.void)
-      return fenced ? closing : Effect.andThen(closing, restart(shard))
+      return shard.status === "restarting"
+        ? Effect.andThen(closing, Effect.asVoid(Effect.forkIn(restart(shard), root)))
+        : closing
     }
 
     /**
-     * Reopens a shard this owner lost through its own failure, backing off while the log is
-     * unavailable. It stops once the shard is open, refused, crashed again or fenced.
+     * Opens an assigned shard, backing off while the log is unavailable. It stops once the shard is
+     * open, refused, fenced, crashed again or no longer assigned here; a shard released while it
+     * backs off stays `restarting` until the loop wakes, sees that, and closes it, so the shard
+     * counts as busy for as long as the loop runs.
      */
     const restart = (shard: Shard): Effect.Effect<void> =>
       Effect.gen(function* () {
         let backoff = 10
         while (true) {
+          if (!shard.assigned) {
+            if (shard.status === "restarting") shard.status = "closed"
+            return
+          }
           const exit = yield* Effect.exit(open(shard))
           if (Exit.isSuccess(exit) || shard.status !== "closed") return
           shard.status = "restarting"
@@ -244,7 +306,6 @@ const make = (catalog: Catalog, options: EngineOptions) =>
      */
     const recoverShard = (id: number): Effect.Effect<Recovered, ActorError> =>
       Effect.gen(function* () {
-        const startedAt = yield* monotonicMillis
         const lease = yield* store.open(id)
         const manifest = Option.getOrUndefined(lease.checkpoint)
         const page = manifest?.statePages[0]
@@ -256,12 +317,11 @@ const make = (catalog: Catalog, options: EngineOptions) =>
             new Error(`Shard ${id}'s open segment ${lease.open} is missing from its log`),
           )
         const recovered = Recovery.recover(catalog, id, checkpoint, tail, own.build, options.policy)
-        return { lease, startedAt, recovered }
+        return { lease, recovered }
       }).pipe(
         Effect.catchTag("CorruptSegment", (error) =>
           Effect.succeed({
             lease: undefined,
-            startedAt: 0,
             recovered: Result.fail(
               CorruptLog.make({ shard: id, offset: -1, detail: error.message }),
             ),
@@ -274,12 +334,16 @@ const make = (catalog: Catalog, options: EngineOptions) =>
      * Opens the shard in a fiber of the engine's own scope, so a caller that gives up never leaves
      * it half open: the attempt always ends open, refused, or closed with every waiter failed. An
      * attempt starts only after the one before it ended, because an abandoned open that lands late
-     * creates a newer epoch and would fence the owner's own current lease.
+     * creates a newer epoch and would fence the owner's own current lease. An opened shard starts a
+     * new scope with no timer, delivery or firing of the last one counted as running, whether that
+     * scope ended in a crash or a release.
      */
     const open = (shard: Shard): Effect.Effect<void, ActorError> =>
       Effect.suspend(() => {
         if (shard.status === "open") return Effect.void
         if (shard.status === "refused") return Effect.fail(unavailable())
+        if (!shard.assigned || shard.status === "fenced" || shard.status === "draining")
+          return Effect.fail(moved())
         if (shard.status === "opening") return Deferred.await(shard.opened)
         shard.status = "opening"
         shard.opened = Deferred.makeUnsafe<void, ActorError>()
@@ -289,25 +353,29 @@ const make = (catalog: Catalog, options: EngineOptions) =>
         const settled = Deferred.makeUnsafe<void>()
         shard.settled = settled
         const attempt = Effect.andThen(Deferred.await(previous), recoverShard(shard.id)).pipe(
-          Effect.flatMap(({ lease, startedAt, recovered }) =>
+          Effect.flatMap(({ lease, recovered }) =>
             Effect.suspend(() => {
               if (shard.generation !== generation) return Effect.fail(unavailable())
               if (Result.isFailure(recovered)) {
                 shard.status = "refused"
                 shard.refusal = recovered.failure
-                options.observer?.violation(
-                  "recovery",
-                  `${recovered.failure._tag}: ${recovered.failure.message}`,
-                )
+                if (!Predicate.isTagged(recovered.failure, "BuildMismatch"))
+                  options.observer?.violation(
+                    "recovery",
+                    `${recovered.failure._tag}: ${recovered.failure.message}`,
+                  )
                 Deferred.doneUnsafe(opened, Exit.fail(unavailable()))
                 return Effect.fail(unavailable())
               }
               shard.durable = recovered.success
               shard.lease = lease
-              shard.confirmedAt = startedAt
               shard.lastAt = recovered.success.lastAt
               shard.sinceCheckpoint = 0
               shard.scope = Scope.makeUnsafe()
+              shard.firing.clear()
+              shard.acked.clear()
+              shard.armed.clear()
+              shard.delivering.clear()
               shard.status = "open"
               Deferred.doneUnsafe(opened, Exit.void)
               for (const address of recovered.success.actors.keys())
@@ -360,7 +428,6 @@ const make = (catalog: Catalog, options: EngineOptions) =>
             shard.inFlight = entries
             const lease = shard.lease
             if (lease === undefined) return
-            const startedAt = yield* monotonicMillis
             const appended = yield* Effect.exit(
               store.append(
                 lease,
@@ -376,38 +443,36 @@ const make = (catalog: Catalog, options: EngineOptions) =>
               return
             }
             const offset = Number(appended.value)
-            shard.confirmedAt = startedAt
             shard.inFlight = []
             for (const pending of entries) publish(shard, pending, offset)
             yield* after(shard)
             shard.sinceCheckpoint++
             if (options.checkpointEvery > 0 && shard.sinceCheckpoint >= options.checkpointEvery) {
               shard.sinceCheckpoint = 0
-              yield* checkpoint(shard, lease)
+              yield* Effect.ignore(checkpoint(shard, lease))
             }
+            if (shard.batch.length === 0)
+              for (const flushed of shard.flushed.splice(0)) Deferred.doneUnsafe(flushed, Exit.void)
           }
         }
       })
 
     /**
      * Writes the shard's durable image as one page and records it as a checkpoint at its offset,
-     * with the earliest timer as the store's wake time. A failed checkpoint changes nothing: the log
-     * still holds every entry, and the next one tries again.
+     * with the earliest timer as the store's wake time. A failed periodic checkpoint changes
+     * nothing: the log still holds every entry, and the next one tries again.
      */
-    const checkpoint = (shard: Shard, lease: Lease): Effect.Effect<void> =>
+    const checkpoint = (shard: Shard, lease: Lease) =>
       Effect.gen(function* () {
         const image = shard.durable
-        let nextDue: number | undefined
-        for (const { timer } of image.timers.values())
-          if (nextDue === undefined || timer.at < nextDue) nextDue = timer.at
         const hash = yield* store.putPage(Checkpoints.encode(Checkpoints.capture(image)))
         yield* store.checkpoint(lease, {
           offset: BigInt(image.offset),
           statePages: [hash],
           indexPages: [],
-          nextDue,
+          nextDue: nextDueOf(image),
         })
-      }).pipe(Effect.ignore)
+      })
 
     /** Applies one durable entry: the shard image moves, the waiter gets its outcome, streams hear of it. */
     const publish = (shard: Shard, pending: Pending, offset: number): void => {
@@ -664,6 +729,12 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       return { kind: "wait", pending: staged }
     }
 
+    /** Why a shard that is not open refuses work: it moved (draining, fenced or not assigned here) or is unavailable. */
+    const refusal = (shard: Shard): ActorError =>
+      shard.status === "draining" || shard.status === "fenced" || !shard.assigned
+        ? moved()
+        : unavailable()
+
     const ready = (address: string): Effect.Effect<Shard, ActorError> =>
       Effect.suspend(() => {
         const shard = shardRuntime(shardOf(address))
@@ -673,17 +744,20 @@ const make = (catalog: Catalog, options: EngineOptions) =>
     /**
      * Runs a command on its owner and waits until its entry is durable. `replayed` is decided by
      * admission: true when this command found its id's stored outcome or joined its pending run.
+     * Admission answers some commands from memory (a duplicate id, a refused delivery), so it runs
+     * only on a lease the store holds fresh, verifying it first otherwise: an idle owner another
+     * one fenced must not refuse or answer from the state it had.
      */
     const admitted = (
       command: Command,
     ): Effect.Effect<{ readonly outcome: Outcome; readonly replayed: boolean }, ActorError> =>
       Effect.gen(function* () {
         const address = Durable.addressOf(command.actor.name, command.keyJson)
-        const shard = yield* ready(address)
+        const shard = yield* readable(shardRuntime(shardOf(address)))
         const now = yield* Clock.currentTimeMillis
         const pendingBefore = shard.pending.get(command.commandId)
         const admission = yield* Effect.sync(() =>
-          shard.status === "open" ? admit(shard, command, now) : refuse(unavailable()),
+          shard.status === "open" ? admit(shard, command, now) : refuse(refusal(shard)),
         )
         if (admission.kind === "refused") return yield* admission.error
         if (admission.kind === "done") return { outcome: admission.outcome, replayed: true }
@@ -712,7 +786,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
           Latch.openUnsafe(shard.wake)
           return staged
         })
-        if (pending === undefined) return yield* unavailable()
+        if (pending === undefined) return yield* refusal(shard)
         yield* Deferred.await(pending.done)
       })
 
@@ -746,36 +820,29 @@ const make = (catalog: Catalog, options: EngineOptions) =>
           Latch.openUnsafe(shard.wake)
           return staged
         })
-        if (pending === undefined) return yield* unavailable()
+        if (pending === undefined) return yield* refusal(shard)
         yield* Deferred.await(pending.done)
       })
 
     /**
-     * Opens the shard and, once it has gone `validFor` without an append or lease check, checks the
-     * lease in the store before a read is answered, so an owner fenced while idle stops answering
-     * from memory. Each confirmation counts from before its request was sent. A fenced shard
-     * closes; an unreachable store is unavailable.
+     * Opens the shard and answers from memory only while the store holds the lease fresh (within
+     * its `validFor` of the last append or check); otherwise the store re-checks the lease in the
+     * bucket first, so an owner fenced while idle stops answering from memory. A fenced shard
+     * closes and the read sees `ShardMoved`; an unreachable store is unavailable.
      */
     const readable = (shard: Shard): Effect.Effect<Shard, ActorError> =>
       Effect.gen(function* () {
         yield* open(shard)
         const lease = shard.lease
-        if (lease === undefined) return yield* unavailable()
-        const startedAt = yield* monotonicMillis
-        if (startedAt - shard.confirmedAt <= options.validFor) return shard
+        if (lease === undefined) return yield* refusal(shard)
+        if (yield* store.fresh(lease)) return shard
         const generation = shard.generation
         const verified = yield* Effect.exit(store.verify(lease))
-        if (Exit.isSuccess(verified)) {
-          if (shard.generation === generation)
-            shard.confirmedAt = Math.max(shard.confirmedAt, startedAt)
-          return shard
-        }
-        if (
-          shard.generation === generation &&
-          Exit.findErrorOption(verified).pipe(Option.exists(Schema.is(StaleEpoch)))
-        )
+        if (Exit.isSuccess(verified)) return shard
+        const fenced = Exit.findErrorOption(verified).pipe(Option.exists(Schema.is(StaleEpoch)))
+        if (shard.generation === generation && fenced)
           yield* Effect.forkIn(crash(shard, true), root)
-        return yield* unavailable()
+        return yield* fenced ? moved() : unavailable()
       })
 
     /** The durable record of an instance, opening its shard if needed; reads never see speculation. */
@@ -803,21 +870,19 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       )
 
     /**
-     * What some shard is still doing at `now`: opening, staged or in-flight entries, waiters,
-     * undelivered sends or due timers. A shard fenced by another owner while it still held sends
-     * or timers counts too, since nothing on this owner will finish them. `undefined` once every
-     * shard is quiet.
+     * What some shard is still doing at `now`: opening, draining, staged or in-flight entries,
+     * waiters, undelivered sends or due timers. A closed, fenced or refused shard is not busy here:
+     * whether another owner or a later assignment finishes its work is the runner layer's concern.
+     * `undefined` once every shard is quiet.
      */
     const busy = (now: number): string | undefined => {
       for (const shard of shards.values()) {
-        if (shard.status === "opening" || shard.status === "restarting")
-          return `shard ${shard.id} is ${shard.status}`
         if (
-          shard.status === "closed" &&
-          (Array.from(shard.durable.outbox.values()).some((queue) => queue.length > 0) ||
-            Array.from(shard.durable.timers.values()).some(({ timer }) => !timer.cron))
+          shard.status === "opening" ||
+          shard.status === "restarting" ||
+          shard.status === "draining"
         )
-          return `shard ${shard.id} is closed with sends or timers left`
+          return `shard ${shard.id} is ${shard.status}`
         if (shard.status !== "open") continue
         if (shard.batch.length > 0 || shard.inFlight.length > 0)
           return `shard ${shard.id} has ${shard.batch.length} staged groups and ${shard.inFlight.length} entries in flight`
@@ -833,13 +898,17 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       return undefined
     }
 
-    /** When the earliest armed one-shot timer is due on an open shard; cron ticks never end, so they do not count. */
-    const nextTimer = (): number | undefined => {
+    /**
+     * When the earliest timer is due on an open shard. Cron ticks count only when `cron` is set:
+     * they never end, so waiting for them would never let a run settle.
+     */
+    const nextTimer = (cron = false): number | undefined => {
       let earliest: number | undefined
       for (const shard of shards.values()) {
         if (shard.status !== "open") continue
         for (const { timer } of shard.durable.timers.values())
-          if (!timer.cron && (earliest === undefined || timer.at < earliest)) earliest = timer.at
+          if ((cron || !timer.cron) && (earliest === undefined || timer.at < earliest))
+            earliest = timer.at
       }
       return earliest
     }
@@ -847,13 +916,42 @@ const make = (catalog: Catalog, options: EngineOptions) =>
     const fork = (shard: Shard, effect: Effect.Effect<void>): Effect.Effect<void> =>
       Effect.asVoid(Effect.forkIn(effect, shard.scope))
 
-    /** Sleeps until a timer is due, then fires it as a `System` action with the timer's own id. */
+    /**
+     * Stages a `Skipped` entry for a cron tick that came due too late to run, unless the tick has
+     * fired, been skipped or is already firing.
+     */
+    const skip = (shard: Shard, commandId: string, now: number): void => {
+      if (shard.status !== "open") return
+      if (!shard.durable.timers.has(commandId) || shard.firing.has(commandId)) return
+      shard.firing.add(commandId)
+      const at = Math.max(now, shard.lastAt)
+      shard.lastAt = at
+      shard.batch.push([
+        {
+          entry: Entry.cases.Skipped.make({ commandId, at }),
+          after: undefined,
+          address: undefined,
+          done: Deferred.makeUnsafe(),
+        },
+      ])
+      Latch.openUnsafe(shard.wake)
+    }
+
+    /**
+     * Sleeps until a timer is due, then fires it as a `System` action with the timer's own id. A
+     * cron tick more than `cronSkipIfOlderThan` past due (the shard had no owner when it came due)
+     * is skipped instead, so after downtime a schedule fires its pending tick at most once and
+     * never replays missed ticks.
+     */
     const arm = (shard: Shard, record: TimerRecord): Effect.Effect<void> =>
       Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis
         if (record.timer.at > now) yield* Effect.sleep(Duration.millis(record.timer.at - now))
         const owner = shard.durable.actors.get(record.address)
         if (owner === undefined) return
+        const due = yield* Clock.currentTimeMillis
+        if (record.timer.cron && due - record.timer.at > options.cronSkipIfOlderThan)
+          return skip(shard, record.timer.commandId, due)
         yield* execute({
           origin: Origin.cases.Fired.make({}),
           commandId: record.timer.commandId,
@@ -936,9 +1034,122 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       return followUps(shard)
     }
 
+    /**
+     * The runner layer gives this owner the shards: each one closed, fenced or refused here is
+     * opened again, which fences whichever owner held it. Opening backs off while the log is
+     * unavailable. This is the only way a fenced shard reopens; a caller's call or read never does.
+     */
+    const assign = (ids: ReadonlyArray<number>): Effect.Effect<void> =>
+      Effect.forEach(
+        ids,
+        (id) =>
+          Effect.suspend(() => {
+            const shard = shardRuntime(id)
+            shard.assigned = true
+            if (shard.status === "fenced" || shard.status === "refused") shard.status = "closed"
+            if (shard.status !== "closed") return Effect.void
+            shard.status = "restarting"
+            return Effect.asVoid(Effect.forkIn(restart(shard), root))
+          }),
+        { discard: true },
+      )
+
+    /** Waits until nothing staged or in flight is left on the shard, or until the shard crashes. */
+    const flushed = (shard: Shard): Effect.Effect<void> =>
+      Effect.suspend(() => {
+        if (shard.batch.length === 0 && shard.inFlight.length === 0) return Effect.void
+        const done = Deferred.makeUnsafe<void>()
+        shard.flushed.push(done)
+        return Deferred.await(done)
+      })
+
+    const drained = (shard: Shard): DrainedShard => ({
+      shard: shard.id,
+      offset: shard.durable.offset,
+      nextDue: nextDueOf(shard.durable) ?? null,
+    })
+
+    /**
+     * Hands a shard back to the runner layer: it stops admitting (callers see `ShardMoved` and retry
+     * with the same id), waits until everything admitted is durable and published, writes a
+     * checkpoint at that offset, then appends one segment holding only `Released`, so the next owner
+     * opens with nothing of this owner's to replay. Timers, deliveries and jobs stop with the shard's
+     * scope and resume on the next owner from the log. True when the `Released` segment is durable;
+     * a shard that crashes or is fenced on the way closes without it. The checkpoint and the
+     * `Released` append run in the shard's scope, so a crash on the way stops them as it stops every
+     * other write of the shard, rather than leaving a dead owner still writing.
+     */
+    const release = (shard: Shard): Effect.Effect<boolean> =>
+      Effect.gen(function* () {
+        shard.assigned = false
+        if (shard.status === "opening") yield* Effect.exit(Deferred.await(shard.opened))
+        if (shard.status !== "open") return false
+        shard.status = "draining"
+        const generation = shard.generation
+        yield* flushed(shard)
+        const lease = shard.lease
+        if (shard.generation !== generation || lease === undefined) return false
+        const writing = yield* Effect.forkIn(
+          Effect.andThen(
+            checkpoint(shard, lease),
+            store.append(lease, [EntryCodec.encode(Entry.cases.Released.make({}))]),
+          ),
+          shard.scope,
+        )
+        const released = yield* Effect.exit(Fiber.join(writing))
+        if (shard.generation !== generation) return false
+        if (Exit.isFailure(released)) {
+          const fenced = Exit.findErrorOption(released).pipe(Option.exists(Schema.is(StaleEpoch)))
+          yield* crash(shard, fenced)
+          return false
+        }
+        shard.durable.offset = Number(released.value)
+        shard.status = "closed"
+        shard.generation++
+        shard.lease = undefined
+        yield* Scope.close(shard.scope, Exit.void)
+        return true
+      })
+
+    /**
+     * Drains the runner: every shard it owns is released at once, and the report lists each with
+     * the offset its log ends at and its earliest pending timer, so a host can wake a stopped store
+     * in time. Shards still releasing when `deadline` passes are closed without publishing whatever
+     * was not durable, and the drain reports `timedOut`.
+     */
+    const drain = (deadline: Duration.Input): Effect.Effect<DrainReport> =>
+      Effect.gen(function* () {
+        const owned = Array.from(shards.values()).filter(
+          (shard) =>
+            shard.assigned &&
+            (shard.status === "open" ||
+              shard.status === "opening" ||
+              shard.status === "restarting" ||
+              shard.status === "closed"),
+        )
+        for (const shard of shards.values()) shard.assigned = false
+        const clean = new Set<number>()
+        yield* Effect.forEach(
+          owned,
+          (shard) =>
+            Effect.map(release(shard), (released) => {
+              if (released) clean.add(shard.id)
+            }),
+          { concurrency: "unbounded", discard: true },
+        ).pipe(Effect.timeoutOption(deadline))
+        for (const shard of owned) if (!clean.has(shard.id)) yield* crash(shard, false)
+        return {
+          outcome: owned.every((shard) => clean.has(shard.id)) ? "clean" : "timedOut",
+          shards: owned.map(drained),
+        } satisfies DrainReport
+      })
+
     return {
       catalog,
       options,
+      assign,
+      release: (id: number) => release(shardRuntime(id)),
+      drain,
       execute,
       admitted,
       journal,
@@ -959,6 +1170,11 @@ const make = (catalog: Catalog, options: EngineOptions) =>
         const shard = shards.get(id)
         return shard?.status === "open" ? shard.durable : undefined
       },
+      status: (id: number) => {
+        const shard = shardRuntime(id)
+        return { status: shard.status, assigned: shard.assigned }
+      },
+      lease: (id: number): Lease | undefined => shards.get(id)?.lease,
       generation: (id: number): number => shardRuntime(id).generation,
       fork: (id: number, effect: Effect.Effect<void>) => fork(shardRuntime(id), effect),
     }

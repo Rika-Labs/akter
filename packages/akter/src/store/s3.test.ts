@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net"
 import { CreateBucketCommand, S3Client } from "@aws-sdk/client-s3"
 import { describe, expect, it } from "@effect/vitest"
 import { Config, Effect, Option, Predicate, Random } from "effect"
+import { engineConformance } from "../../../../tooling/conformance/src/conformance/engine.ts"
 import { storeConformance } from "../../../../tooling/conformance/src/conformance/store.ts"
 import { StorageUnavailable } from "./errors.ts"
 import { s3Bucket } from "./s3.ts"
@@ -60,6 +61,23 @@ storeConformance({
     ([options, high, low]) =>
       s3Bucket({ ...options, prefix: `conformance/${high.toString(16)}-${low.toString(16)}/` }),
   ),
+})
+
+engineConformance({
+  name: "an S3-compatible bucket (TEST_S3_URL)",
+  location: Effect.gen(function* () {
+    const options = yield* target
+    const high = yield* Random.nextIntBetween(0, 0xffff_ffff)
+    const low = yield* Random.nextIntBetween(0, 0xffff_ffff)
+    const prefix = `engine-conformance/${high.toString(16)}-${low.toString(16)}/`
+    return {
+      bucket: s3Bucket({ ...options, prefix }),
+      env: {
+        AKTER_CONFORMANCE_S3_URL: yield* Config.String("TEST_S3_URL"),
+        AKTER_CONFORMANCE_S3_PREFIX: prefix,
+      },
+    }
+  }),
 })
 
 /**

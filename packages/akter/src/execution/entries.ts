@@ -153,6 +153,21 @@ export const DoneEntry = Schema.TaggedStruct("Done", {
 /** A receiver dropped the call stream of a finished job. */
 export const RetiredEntry = Schema.TaggedStruct("Retired", { jobId: Schema.String })
 
+/**
+ * A cron tick found older than `cronSkipIfOlderThan` when it came due, at admission time `at`: it
+ * is dropped without running, and the entry's next tick is the first scheduled time after `at`.
+ */
+export const SkippedEntry = Schema.TaggedStruct("Skipped", {
+  commandId: Schema.String,
+  at: Schema.Finite,
+})
+
+/**
+ * A draining owner gave the shard up: the segment before it is covered by a checkpoint, so the
+ * next owner replays nothing this owner wrote. It is always alone in the shard's last segment.
+ */
+export const ReleasedEntry = Schema.TaggedStruct("Released", {})
+
 /** Every log entry. */
 export const Entry = Schema.Union([
   ActionEntry,
@@ -162,6 +177,8 @@ export const Entry = Schema.Union([
   StepEntry,
   DoneEntry,
   RetiredEntry,
+  SkippedEntry,
+  ReleasedEntry,
 ]).pipe(Schema.toTaggedUnion("_tag"))
 
 /** Every log entry. */

@@ -22,4 +22,10 @@ export const exemptions: ReadonlyArray<Exemption> = [
     reason:
       "The MinIO-backed half of check.test.ts: it needs TEST_S3_URL, so `test` excludes it and `test:integration` runs it.",
   },
+  {
+    path: "packages/akter/src/execution/ownership.test.ts",
+    rule: "tests-beside-sources",
+    reason:
+      "The E2 ownership and failure matrix exercises the shared engine implementation without a separate ownership module.",
+  },
 ]

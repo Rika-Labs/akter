@@ -310,6 +310,17 @@ const record = (
     Retired: ({ jobId }) => {
       image.calls.delete(jobId)
     },
+    Skipped: ({ commandId, at }) => {
+      const skipped = image.timers.get(commandId)
+      image.timers.delete(commandId)
+      image.lastAt = Math.max(image.lastAt, at)
+      if (skipped === undefined) return
+      const owner = image.actors.get(skipped.address)
+      const expression = owner?.actor.actions[skipped.timer.member]?.cron
+      if (expression !== undefined)
+        armCron(image, skipped.address, skipped.timer.member, expression, at)
+    },
+    Released: () => {},
   })
 
 /** A shard's durable state and how one entry changes it. */
