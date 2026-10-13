@@ -2,6 +2,8 @@ import { createServer } from "node:net"
 import {
   Clock,
   Context,
+  Deferred,
+  type Duration,
   Effect,
   Layer,
   Option,
@@ -12,7 +14,9 @@ import {
   Stream,
 } from "effect"
 import { describe, expect, it } from "vitest"
-import { Actor, user } from "../index.ts"
+import { Actor, isAuthenticated, isUser, user } from "../index.ts"
+import type { Caller } from "../contract/caller.ts"
+import type { AccessRequest } from "../contract/make.ts"
 import { CommandIds } from "../execution/command-ids.ts"
 import type { Catalog } from "../execution/durable.ts"
 import { Durable } from "../execution/durable.ts"
@@ -33,6 +37,10 @@ const Ledger = Actor.make("Ledger", {
     receive: Actor.action(Schema.Finite, { internal: true }),
     remind: Actor.action(Schema.Finite),
   },
+  access: (caller: Caller, request: AccessRequest) =>
+    request.kind === "action" && request.member === "add"
+      ? isUser(caller) && caller.subject === "ana"
+      : isAuthenticated(caller),
 })
 
 const LedgerLive = Ledger.toLayer({
@@ -65,62 +73,64 @@ const port = Effect.callback<number>((resume) => {
   })
 })
 
-const setup = Effect.gen(function* () {
-  const bucket = memoryBucket()
-  const authority = yield* RunnerAuthority.make()
-  const credentials = yield* authority.issue({ deployment: "store-cluster" })
-  const context = yield* Layer.build(LedgerLive)
-  const catalog: Catalog = {
-    actors: new Map([
-      [Ledger.name, { actor: Ledger, registered: Context.get(context, Ledger.implementation) }],
-    ]),
-    shards: 4,
-  }
-  const runners = []
-  for (let index = 0; index < 2; index++) {
-    const scope = yield* Scope.fork(yield* Effect.scope)
-    const store = yield* storeOf(bucket, { shards: 4, writer: `runner-${index}` })
-    const engine = yield* Engine.make(catalog, {
+const setup = (requestTimeout: Duration.Input = "10 seconds") =>
+  Effect.gen(function* () {
+    const bucket = { ...memoryBucket() }
+    const authority = yield* RunnerAuthority.make()
+    const credentials = yield* authority.issue({ deployment: "store-cluster" })
+    const context = yield* Layer.build(LedgerLive)
+    const catalog: Catalog = {
+      actors: new Map([
+        [Ledger.name, { actor: Ledger, registered: Context.get(context, Ledger.implementation) }],
+      ]),
       shards: 4,
-      policy: "matching",
-      maxBatch: 64,
-      checkpointEvery: 64,
-      cronSkipIfOlderThan: 3_600_000,
-      doubleRun: true,
-      observer: undefined,
-    }).pipe(Effect.provideService(Store, store), Effect.provideService(Scope.Scope, scope))
-    const routing = yield* Routing.make(engine, {
-      address: { host: "127.0.0.1", port: yield* port },
-      peering: { deployment: "store-cluster", credentials: Effect.succeed(credentials) },
-      shardLockExpiration: "3 seconds",
-      shardLockRefreshInterval: "1 second",
-      refreshAssignmentsInterval: "100 millis",
-    }).pipe(Effect.provideService(Store, store), Effect.provideService(Scope.Scope, scope))
-    runners.push({ engine, routing, scope })
-  }
-  for (let poll = 0; poll < 500; poll++) {
-    const counts = runners.map(
-      ({ engine }) =>
-        Array.from({ length: 4 }, (_, id) => engine.status(id).status === "open").filter(Boolean)
-          .length,
+    }
+    const runners = []
+    for (let index = 0; index < 2; index++) {
+      const scope = yield* Scope.fork(yield* Effect.scope)
+      const store = yield* storeOf(bucket, { shards: 4, writer: `runner-${index}` })
+      const engine = yield* Engine.make(catalog, {
+        shards: 4,
+        policy: "matching",
+        maxBatch: 64,
+        checkpointEvery: 64,
+        cronSkipIfOlderThan: 3_600_000,
+        doubleRun: true,
+        observer: undefined,
+      }).pipe(Effect.provideService(Store, store), Effect.provideService(Scope.Scope, scope))
+      const routing = yield* Routing.make(engine, {
+        address: { host: "127.0.0.1", port: yield* port },
+        peering: { deployment: "store-cluster", credentials: Effect.succeed(credentials) },
+        shardLockExpiration: "3 seconds",
+        shardLockRefreshInterval: "1 second",
+        refreshAssignmentsInterval: "100 millis",
+        requestTimeout,
+      }).pipe(Effect.provideService(Store, store), Effect.provideService(Scope.Scope, scope))
+      runners.push({ engine, routing, scope })
+    }
+    for (let poll = 0; poll < 500; poll++) {
+      const counts = runners.map(
+        ({ engine }) =>
+          Array.from({ length: 4 }, (_, id) => engine.status(id).status === "open").filter(Boolean)
+            .length,
+      )
+      if (counts.every((count) => count > 0) && counts.reduce((a, b) => a + b, 0) === 4)
+        return { runners, bucket }
+      yield* Effect.sleep("10 millis")
+    }
+    return yield* Effect.die(
+      new Error(
+        `cluster did not split: ${runners
+          .map(({ engine }) =>
+            engine
+              .shards()
+              .map(({ id, status }) => `${id}:${status}`)
+              .join(","),
+          )
+          .join(";")}`,
+      ),
     )
-    if (counts.every((count) => count > 0) && counts.reduce((a, b) => a + b, 0) === 4)
-      return { runners, bucket }
-    yield* Effect.sleep("10 millis")
-  }
-  return yield* Effect.die(
-    new Error(
-      `cluster did not split: ${runners
-        .map(({ engine }) =>
-          engine
-            .shards()
-            .map(({ id, status }) => `${id}:${status}`)
-            .join(","),
-        )
-        .join(";")}`,
-    ),
-  )
-})
+  })
 
 describe("bucket-backed Cluster routing", () => {
   it(
@@ -129,7 +139,7 @@ describe("bucket-backed Cluster routing", () => {
       Effect.runPromise(
         Effect.scoped(
           Effect.gen(function* () {
-            const { runners } = yield* setup
+          const { runners } = yield* setup()
             const gateway = runners[0]!
             const owner = runners[1]!
             let key = ""
@@ -147,6 +157,8 @@ describe("bucket-backed Cluster routing", () => {
               reply: { kind: "Success", value: 17 },
               replayed: false,
             })
+            const denied = yield* Effect.flip(gateway.routing.admitted(user("ben"), id, request))
+            expect(denied.reason).toHaveProperty("_tag", "Unauthorized")
             expect(yield* gateway.routing.admitted(user("ana"), id, request)).toEqual({
               reply: { kind: "Success", value: 17 },
               replayed: true,
@@ -170,7 +182,7 @@ describe("bucket-backed Cluster routing", () => {
       Effect.runPromise(
         Effect.scoped(
           Effect.gen(function* () {
-            const { runners } = yield* setup
+            const { runners, bucket } = yield* setup()
             const a = runners[0]!
             const b = runners[1]!
             const keys = runners.map(({ engine }, index) => {
@@ -193,6 +205,18 @@ describe("bucket-backed Cluster routing", () => {
             })
             const report = yield* a.routing.drain("5 seconds")
             expect(report.outcome).toBe("clean")
+            expect(yield* a.routing.readiness).toEqual({ ready: false, reason: "drained" })
+            const stopped = yield* Effect.flip(
+              a.routing.admitted(user("ana"), id, {
+                actor: Ledger,
+                id: keys[0]!,
+                member: "add",
+                payload: 3,
+              }),
+            )
+            expect(stopped.reason).toHaveProperty("_tag", "ShardMoved")
+            yield* Effect.sleep("200 millis")
+            expect(yield* bucket.leases.list("cluster/runners/")).toHaveLength(1)
             for (let poll = 0; poll < 500; poll++) {
               const result = yield* Effect.result(
                 Stream.runHead(b.routing.reads(user("ana")).state({ actor: Ledger, id: keys[1]! })),
@@ -210,6 +234,47 @@ describe("bucket-backed Cluster routing", () => {
               yield* Effect.sleep("10 millis")
             }
             return yield* Effect.die(new Error("send did not survive handoff"))
+          }),
+        ),
+      ),
+    15_000,
+  )
+
+  it(
+    "F16 rejects waiting without a bound on a partitioned owner or minting a fresh id after a lost reply",
+    () =>
+      Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const { runners, bucket } = yield* setup("50 millis")
+            const gateway = runners[0]!
+            const owner = runners[1]!
+            let key = ""
+            for (let candidate = 0; candidate < 100; candidate++) {
+              key = `timeout-${candidate}`
+              if (
+                owner.engine.status(Durable.shardOf(Durable.addressOf(Ledger.name, key), 4))
+                  .status === "open"
+              )
+                break
+            }
+            const gate = yield* Deferred.make<void>()
+            const create = bucket.create
+            bucket.create = (objectKey, bytes) =>
+              objectKey.includes("/log/")
+                ? Effect.andThen(Deferred.await(gate), create(objectKey, bytes))
+                : create(objectKey, bytes)
+            const id = yield* Effect.flatMap(Clock.currentTimeMillis, CommandIds.mint)
+            const request = { actor: Ledger, id: key, member: "add", payload: 37 }
+            const refused = yield* Effect.flip(gateway.routing.admitted(user("ana"), id, request))
+            expect(refused.reason).toHaveProperty("_tag", "ActorUnavailable")
+            expect((yield* owner.engine.durableRecord(Ledger, key)).image.state["total"]).toBe(0)
+            yield* Deferred.succeed(gate, undefined)
+            expect((yield* gateway.routing.admitted(user("ana"), id, request)).reply).toEqual({
+              kind: "Success",
+              value: 37,
+            })
+            expect((yield* gateway.routing.admitted(user("ana"), id, request)).replayed).toBe(true)
           }),
         ),
       ),

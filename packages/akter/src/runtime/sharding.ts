@@ -211,6 +211,7 @@ const clustered = (engine: Engine, options: RunnerOptions) =>
     let draining = false
     let registered = false
     let registration: Effect.Success<ReturnType<typeof raw.register>> | undefined
+    let self: Effect.Success<typeof raw.getRunners>[number][0] | undefined
     let storageHealthy = true
     let completed = false
     let drainReport: Deferred.Deferred<DrainReport> | undefined
@@ -230,9 +231,18 @@ const clustered = (engine: Engine, options: RunnerOptions) =>
           }),
         ),
       )
+    /** A drained runner keeps a disabled self only in its local membership view, preventing Cluster from hot-looping registration; it never renews its bucket row or heartbeat. */
     const storage = RunnerStorage.RunnerStorage.of({
       ...raw,
       getRunners: healthy(raw.getRunners).pipe(
+        Effect.map((runners) =>
+          draining && self !== undefined
+            ? [
+                ...runners.filter(([runner]) => !Equal.equals(runner.address, address)),
+                [self, false] as const,
+              ]
+            : runners,
+        ),
         Effect.tap((runners) =>
           Effect.sync(() => {
             const ring = HashRing.make<RunnerAddress.RunnerAddress>()
@@ -254,6 +264,7 @@ const clustered = (engine: Engine, options: RunnerOptions) =>
                 Effect.tap(() =>
                   Effect.sync(() => {
                     registered = true
+                    self = runner
                   }),
                 ),
                 Effect.tap((id) =>
@@ -447,15 +458,19 @@ const clustered = (engine: Engine, options: RunnerOptions) =>
     const refail = <A, E, R>(
       run: Effect.Effect<A, E | ActorError, R>,
     ): Effect.Effect<A, ActorError, R> =>
-      run.pipe(
+      Effect.suspend<A, E | ActorError, R>(() => (draining ? Effect.fail(moved()) : run)).pipe(
         Effect.mapError((error) => (Schema.is(ActorError)(error) ? error : unavailable())),
         Effect.timeoutOrElse({
           duration: options.requestTimeout ?? "10 seconds",
           orElse: () => Effect.fail(unavailable()),
         }),
       )
-    const streamRefail = <A, E>(run: Stream.Stream<A, E | ActorError>) =>
-      run.pipe(Stream.mapError((error) => (Schema.is(ActorError)(error) ? error : unavailable())))
+    const streamRefail = <A, E, R>(
+      run: Stream.Stream<A, E | ActorError, R>,
+    ): Stream.Stream<A, ActorError, R> =>
+      Stream.suspend<A, E | ActorError, R>(() => (draining ? Stream.fail(moved()) : run)).pipe(
+        Stream.mapError((error) => (Schema.is(ActorError)(error) ? error : unavailable())),
+      )
     const payloadOf = (command: Command) => ({
       ...command,
       actor: command.actor.name,

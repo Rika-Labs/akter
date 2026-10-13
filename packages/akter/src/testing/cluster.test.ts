@@ -91,6 +91,8 @@ const run = (seed: number) =>
   )
 
 describe("partitioned multi-runner simulator", () => {
+  it("F14 rejects interruption between marking a shard opening and forking its recovery; seed 1007681566 must not strand its timer", () =>
+    run(1_007_681_566))
   it("F14 rejects leaving a due timer armed forever when an expired lease's verification is temporarily unavailable", () =>
     Simulation.run(
       { actors: [Mail], seed: 14, shards: 4 },
