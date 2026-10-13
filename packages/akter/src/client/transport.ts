@@ -202,11 +202,7 @@ const makeTransport = (options: ClientOptions, connection: Connection) =>
             ),
           )
         }),
-      state: (target) =>
-        Stream.map(
-          unrepeated(streamed<StateFrame>(Tags.state(target.actor.name), { id: target.id })),
-          ({ frame }) => frame,
-        ),
+      state: (target) => streamed<StateFrame>(Tags.state(target.actor.name), { id: target.id }),
       view: (request) =>
         unframed(
           streamed<Frame>(Tags.view(request.actor.name, request.member), {

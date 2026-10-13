@@ -18,6 +18,7 @@ import {
 import { describe, expect, it } from "@effect/vitest"
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http"
 import type { Socket } from "node:net"
+import { arch, hostname, platform } from "node:os"
 import { fileURLToPath } from "node:url"
 import {
   Autumn,
@@ -387,6 +388,96 @@ const split = (runners: ReadonlyArray<Runner>) =>
 
 describe("real MinIO multi-process Cluster", () => {
   it.live(
+    "F17′/F27 jobs reject duplicate cross-owner calls before reply journaling, lost sleep deadlines and owner-local retirement",
+    () =>
+      withCluster((group) =>
+        Effect.gen(function* () {
+          const origin = yield* group.start("job-origin")
+          const receiver = yield* group.start("job-receiver")
+          const info = yield* split([origin, receiver])
+          const from = keyOn(info[0]!)
+          const to = keyOn(info[1]!)
+          const fromShard = Durable.shardOf(Durable.addressOf(Ledger.name, from), SHARDS)
+          yield* request(
+            origin,
+            Request.cases.HoldJobReply.make({}),
+            Schema.Struct({ held: Schema.Boolean }),
+          )
+          yield* call(origin, yield* mint(origin), from, "submit", {
+            to,
+            amount: 37,
+            delay: 60_000,
+          })
+          yield* until(
+            () => state(receiver, to),
+            (value) => value["total"] === 37,
+            "remote job call durable before its reply journal",
+          )
+          yield* origin.stop()
+          const sleeping = yield* until(
+            () => status(receiver),
+            (value) => opened(value).length === SHARDS && value.shards[fromShard]?.nextDue !== null,
+            "job replay keeps receiver outcome and persists its workflow deadline",
+          )
+          const due = sleeping.shards[fromShard]!.nextDue!
+          const report = yield* drain(receiver)
+          expect(report.shards.find((shard) => shard.shard === fromShard)?.nextDue).toBe(due)
+          yield* receiver.stop()
+          const successor = yield* group.start("job-successor", { at: due + 1_000 })
+          yield* until(
+            () => state(successor, from),
+            (value) => value["total"] === 11,
+            "overdue workflow completes on the next owner",
+          )
+          yield* until(
+            () => group.logs(),
+            (logs) => logs.some((segment) => segment.entries.some(Entry.guards.JobRetired)),
+            "receiver stream retirement is durable before job cleanup",
+          )
+          expect(yield* state(successor, to)).toEqual({ total: 37, deliveries: 0 })
+          const entries = (yield* group.logs()).flatMap((segment) => segment.entries)
+          const remote = entries.filter(
+            (entry) =>
+              Entry.guards.Action(entry) && Origin.guards.JobCall(entry.origin) && entry.key === to,
+          )
+          expect(remote).toHaveLength(1)
+          const done = entries.filter(Entry.guards.Done)
+          expect(done).toHaveLength(1)
+          const retired = entries.filter(Entry.guards.Retired)
+          expect(retired.filter((entry) => entry.jobId === done[0]!.jobId)).toHaveLength(2)
+          expect(entries.filter(Entry.guards.JobRetired).map((entry) => entry.jobId)).toEqual([
+            done[0]!.jobId,
+          ])
+          const peer = yield* group.start("job-peer", { at: due + 1_000 })
+          const moved = yield* split([successor, peer])
+          const nextFrom = keyOn(moved[0]!)
+          const nextTo = keyOn(moved[1]!)
+          const before = yield* state(peer, nextTo)
+          yield* call(successor, yield* mint(successor), nextFrom, "submit", {
+            to: nextTo,
+            amount: 43,
+            delay: 100,
+          })
+          const completed = yield* until(
+            () => group.logs(),
+            (logs) =>
+              logs.flatMap((segment) => segment.entries).filter(Entry.guards.JobRetired).length ===
+              2,
+            "completion retires the stream on the other live peer before dropping its job",
+          )
+          expect((yield* state(peer, nextTo))["total"]).toBe(Number(before["total"]) + 43)
+          const all = completed.flatMap((segment) => segment.entries)
+          const nextJob = all
+            .filter(Entry.guards.Done)
+            .find((entry) => entry.jobId !== done[0]!.jobId)!
+          expect(
+            all.filter(Entry.guards.Retired).filter((entry) => entry.jobId === nextJob.jobId),
+          ).toHaveLength(2)
+        }),
+      ),
+    60_000,
+  )
+  it.live(
     "F16 rejects gateway-local execution and repeated application after a lost durable reply and peer partition",
     () =>
       withCluster((group) =>
@@ -740,7 +831,9 @@ describe("real MinIO multi-process Cluster", () => {
           expect(yield* state(replacement, key)).toEqual({ total: 100_000, deliveries: 0 })
           yield* Console.log({
             benchmark: "T6",
-            host: "dallens-mbp.lan MacBook Pro arm64",
+            host: hostname(),
+            platform: platform(),
+            arch: arch(),
             runtime: globalThis.Bun === undefined ? "node" : "bun",
             version: globalThis.Bun === undefined ? process.version : Bun.version,
             timing: "defaults: expiration 30s, assignment refresh 15s",

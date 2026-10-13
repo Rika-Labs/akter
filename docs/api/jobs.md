@@ -38,4 +38,6 @@ When retries are spent, `onFailure` receives `{ job, declaration, key?, payload,
 
 `DurableClock.sleep({ name, duration })` journals the deadline for short and long waits, preserves it across restart/owner movement and contributes to drain-time `nextDue`. `Effect.sleep` is a local wait and restarts with the body. Progress events publish immediately and can repeat on a mid-stream retry; they are not durable facts or subscriber history. Save final text through an actor call as shown above.
 
+With `Akter.serve({ runner })`, job actor calls use the receiver's shard owner over mTLS, preserving their derived command ids and original caller attribution. Job completion remains pending until every receiver's per-job call stream is durably retired; owner movement resumes that cleanup rather than rerunning completed steps.
+
 The [background-work contract](../contracts/08-background-work.md) owns the guarantees; [E5 verification](../verification/e5-jobs.md) names the failure scenarios and provider limits. Cluster delivery and the operator inspection surface are separate milestones.

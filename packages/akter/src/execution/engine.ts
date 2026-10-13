@@ -1195,6 +1195,13 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       seed,
       durableRecord,
       instances,
+      /** Receiver retirement inspects a recovered, valid owner image, never an unopened shard. */
+      retireJobCalls: (id: number, jobId: string): Effect.Effect<void, ActorError> =>
+        Effect.flatMap(readable(shardRuntime(id)), (shard) =>
+          shard.durable.calls.has(jobId)
+            ? journal(id, Entry.cases.Retired.make({ jobId }))
+            : Effect.void,
+        ),
       busy,
       nextTimer,
       channel,

@@ -6,6 +6,7 @@ import {
   type Duration,
   Effect,
   Exit,
+  Fiber,
   Layer,
   Option,
   Predicate,
@@ -16,9 +17,13 @@ import {
 } from "effect"
 import { describe, expect, it } from "vitest"
 import { Actor, isAuthenticated, isUser, user } from "../index.ts"
+import { Akter, App, Auth, RuntimeControl } from "../server.ts"
+import { AkterClient } from "../client/index.ts"
+import { HttpServer } from "effect/http"
 import type { Caller } from "../contract/caller.ts"
 import type { AccessRequest } from "../contract/make.ts"
 import { CommandIds } from "../execution/command-ids.ts"
+import { Entry, EntryCodec } from "../execution/entries.ts"
 import type { Catalog } from "../execution/durable.ts"
 import { Durable } from "../execution/durable.ts"
 import { Engine } from "../execution/engine.ts"
@@ -134,6 +139,146 @@ const setup = (requestTimeout: Duration.Input = "10 seconds", count = 2) =>
   })
 
 describe("bucket-backed Cluster routing", () => {
+  it(
+    "F16 serves the real public HTTP/WebSocket client through a non-owner and resubscribes its live state after owner drain",
+    () =>
+      Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const bucket = memoryBucket()
+            const authority = yield* RunnerAuthority.make()
+            const app = App.make({ actors: [Ledger], layer: LedgerLive })
+            const auth = Auth.make(() => Effect.succeed({ caller: user("ana"), tenant: "default" }))
+            const servers = []
+            for (let index = 0; index < 2; index++) {
+              const advertised = { host: "127.0.0.1", port: yield* port }
+              const store = yield* storeOf(bucket, { shards: 4, writer: `served-${index}` })
+              const credentials = yield* authority.issue({ deployment: "served-store" })
+              const context = yield* Layer.build(
+                Akter.serve({
+                  app,
+                  auth,
+                  port: 0,
+                  hostname: "127.0.0.1",
+                  runner: {
+                    address: advertised,
+                    peering: {
+                      deployment: "served-store",
+                      credentials: Effect.succeed(credentials),
+                    },
+                    shardLockExpiration: "3 seconds",
+                    shardLockRefreshInterval: "1 second",
+                    refreshAssignmentsInterval: "100 millis",
+                  },
+                }).pipe(Layer.provide(Layer.succeed(Store, store))),
+              )
+              const address = yield* Schema.decodeUnknownEffect(
+                Schema.Struct({ port: Schema.Int }),
+              )(Context.get(context, HttpServer.HttpServer).address)
+              servers.push({
+                port: address.port,
+                control: Context.get(context, RuntimeControl),
+                advertised: `${advertised.host}:${advertised.port}`,
+              })
+            }
+            const gateway = servers[0]!
+            const owner = servers[1]!
+            const locks = new Map<number, string>()
+            for (let poll = 0; poll < 500; poll++) {
+              locks.clear()
+              for (let id = 0; id < 4; id++) {
+                const object = yield* bucket.leases.read(`cluster/locks/default%3A${id + 1}`)
+                if (Option.isNone(object)) continue
+                const lock = yield* Schema.decodeEffect(
+                  Schema.fromJsonString(Schema.Struct({ address: Schema.NullOr(Schema.String) })),
+                )(new TextDecoder().decode(object.value.body))
+                if (lock.address !== null) locks.set(id, lock.address)
+              }
+              if (
+                locks.size === 4 &&
+                Array.from(locks.values()).includes(owner.advertised) &&
+                (yield* gateway.control.readiness).ready &&
+                (yield* owner.control.readiness).ready
+              )
+                break
+              yield* Effect.sleep("10 millis")
+            }
+            const keyOn = (address: string) => {
+              for (let candidate = 0; candidate < 100; candidate++) {
+                const key = `served-${candidate}`
+                if (locks.get(Durable.shardOf(Durable.addressOf(Ledger.name, key), 4)) === address)
+                  return key
+              }
+              throw new Error("no assigned actor key")
+            }
+            const from = keyOn(gateway.advertised)
+            const target = keyOn(owner.advertised)
+            for (const [scheme, amount, expected] of [
+              ["http", 17, 24],
+              ["ws", 29, 60],
+            ] as const) {
+              const context = yield* Layer.build(
+                AkterClient.layer({
+                  url: `${scheme}://127.0.0.1:${gateway.port}/rpc`,
+                  actors: [Ledger],
+                }),
+              )
+              yield* Effect.gen(function* () {
+                const sender = yield* Ledger.client(from)
+                const receiver = yield* Ledger.client(target)
+                yield* receiver.add(amount)
+                yield* sender.send({ to: target, amount: 7 })
+                const value = yield* Stream.runHead(
+                  receiver.state.pipe(Stream.filter((state) => state.total === expected)),
+                )
+                expect(Option.getOrThrow(value).total).toBe(expected)
+              }).pipe(Effect.provideContext(context))
+            }
+            const context = yield* Layer.build(
+              AkterClient.layer({ url: `http://127.0.0.1:${gateway.port}/rpc`, actors: [Ledger] }),
+            )
+            yield* Effect.gen(function* () {
+              const receiver = yield* Ledger.client(target)
+              const subscribed = yield* Deferred.make<void>()
+              const observed: Array<number> = []
+              const changed = yield* receiver.state.pipe(
+                Stream.tap((state) =>
+                  Effect.andThen(
+                    Effect.sync(() => observed.push(state.total)),
+                    Deferred.succeed(subscribed, undefined),
+                  ),
+                ),
+                Stream.filter((state) => state.total === 71),
+                Stream.runHead,
+                Effect.forkScoped,
+              )
+              yield* Deferred.await(subscribed)
+              expect((yield* owner.control.drain({ deadline: "5 seconds" })).outcome).toBe("clean")
+              expect(yield* receiver.add(11)).toBe(71)
+              expect(Option.getOrThrow(yield* Fiber.join(changed))).toEqual({
+                total: 71,
+                deliveries: 2,
+              })
+              expect(observed).toEqual([60, 71])
+            }).pipe(Effect.provideContext(context))
+            const store = yield* storeOf(bucket, { shards: 4 })
+            const segments = yield* Stream.runCollect(
+              store.read(Durable.shardOf(Durable.addressOf(Ledger.name, target), 4), 0n),
+            )
+            const adds = Array.from(segments)
+              .flatMap((segment) =>
+                segment.entries.map((bytes) => ({
+                  writer: segment.writer,
+                  entry: Result.getOrThrow(EntryCodec.decode(bytes)),
+                })),
+              )
+              .filter(({ entry }) => Entry.guards.Action(entry) && entry.member === "add")
+            expect(adds.map(({ writer }) => writer)).toEqual(["served-1", "served-1", "served-0"])
+          }),
+        ),
+      ),
+    20_000,
+  )
   it(
     "F24 rejects hanging shutdown on a shard refused because its actionable tail belongs to another build",
     () =>

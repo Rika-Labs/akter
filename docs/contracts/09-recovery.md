@@ -1,6 +1,6 @@
 # Failure and recovery
 
-Status: partially normative (0.2), owned by ADR 0126. E2b promotes checkpoint-plus-tail recovery, unknown-outcome resolution, engine drain/report, fenced-shard reassignment and actionable-tail build matching on the tested same-runtime paths in [E2 recovery](../verification/e2-recovery.md). All other clauses, including cross-runtime recovery, lazy actor paging, jobs, connection cleanup, clock discontinuities, restore, startup/runners and release rollout/readiness, remain proposal for their later milestones.
+Status: partially normative (0.2), owned by ADR 0126. E2b promotes checkpoint-plus-tail recovery, unknown outcomes, engine drain/report, fenced reassignment and same-runtime build matching in [E2 recovery](../verification/e2-recovery.md). [E3 cluster evidence](../verification/e3-cluster.md) adds assignment, routed ownership, readiness and host drain. The store-scoped peering amendment needs captain confirmation; cross-runtime recovery, lazy paging, jobs, connection cleanup, clock discontinuities, restore and Cloud rollout orchestration remain proposal.
 
 **Responsibility:** define how shards open and recover, how unknown outcomes resolve, how runners drain and hand off, which build replays a tail, and how a store is restored.  
 **Authority:** normative target on `rewrite/0.2`.  
@@ -31,10 +31,11 @@ Actors are rebuilt lazily from their manifest plus their tail entries when first
 ## Drain and release handoff
 
 - For each owned shard, engine drain MUST stop admission (callers get `ShardMoved` with `retryAfter`), flush the committer, write a checkpoint, and append a final segment holding one `Released` entry. Drain MUST finish within its configured bound and report `{ outcome: "clean" | "timedOut", shards: [{ shard, offset, nextDue }] }`. `offset` is the final durable offset; `nextDue` is the earliest pending timer or cron tick in epoch milliseconds, or `null` when none remains. If release cannot complete within the bound, drain MUST close the shard without publishing undurable work and report `timedOut`.
-- The runner integration MUST make the runner unready before engine drain stops admission. A self-hosted runner MUST print `DRAINED` followed by the JSON report. These host-integration clauses remain proposal for E3.
+- The runner integration MUST make the runner unready before engine drain stops admission. A self-hosted runner MUST print `DRAINED` followed by the JSON report, then close its runtime scope. `RuntimeControl.waitForSignal` waits for SIGTERM or SIGINT without prematurely interrupting the engine; the self-host recipe uses it on Bun and Node.
 - Closing the runtime MAY cut off admitted actions; a cut-off action, or one sent during or after shutdown, MUST fail with a retryable reason within a bound and MUST NOT wait without end.
 - A runner of another release MUST NOT open a shard whose last segment is not `Released` unless the owning runner's lease object has expired; the create-once fence decides between racers.
 - A new release MUST start in standby and open shards only through the rule above.
+- An orderly assignment change MUST write the shard's `Released` record before releasing its advisory lock. A failed release MUST NOT hand that live runner's lock to another release. A drained runner MUST NOT re-register or renew its heartbeat; unregistration and advisory cleanup use only the remaining drain budget.
 - A shard fenced by a newer epoch MUST remain closed on the old runner. Only the runner layer's `engine.assign` may make that runner try to reopen it; callers and autonomous engine restart MUST NOT do so. `ShardMoved` is the caller-visible result while it is fenced.
 
 ## Build-matched replay
@@ -62,4 +63,4 @@ Owner validity uses elapsed time on the owner's own clock ([actor authority](01-
 
 ## Verification
 
-I3, I6; F5, F6, F6′, F7, F8, F9, F10, F11 (drain under load), F12 and F12′ (tail from another build or engine), F24 (no open before release), F26 (interrupted store retirement, Cloud), T6 (a shard moves in at most 5 s and replays a 10,000-entry tail in at most 1 s). [E2 recovery](../verification/e2-recovery.md) maps F6–F12 to simulator and real-store scenarios, including filesystem runs under Bun and Node; F24, readiness, real cluster routing and self-host `DRAINED` output remain E3 or host work.
+I3, I6; F5, F6, F6′, F7, F8, F9, F10, F11 (drain under load), F12 and F12′ (tail from another build or engine), F24 (no open before release), F26 (interrupted store retirement, Cloud), T6 (a shard moves in at most 5 s and replays a 10,000-entry tail in at most 1 s). [E3 cluster evidence](../verification/e3-cluster.md) records the routing and host scenarios and the measured T6 result; retaining 30-second liveness expiration does not establish a five-second crash-failover bound.

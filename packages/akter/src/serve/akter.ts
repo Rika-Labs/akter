@@ -13,7 +13,6 @@ import { RpcSerialization, RpcServer } from "effect/rpc"
 import { ActorError, Unauthorized } from "../contract/errors.ts"
 import { Engine } from "../execution/engine.ts"
 import type { Bound, Catalog } from "../execution/durable.ts"
-import { Jobs } from "../execution/jobs.ts"
 import { groupOf, SPAN_PREFIX } from "../rpc/group.ts"
 import type { App } from "../runtime/app.ts"
 import { RuntimeControl } from "../runtime/drain.ts"
@@ -104,7 +103,6 @@ const engineOf = (app: App) =>
       doubleRun: false,
       observer: undefined,
     })
-    Jobs.install(engine)
     return engine
   })
 

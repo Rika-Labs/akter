@@ -60,7 +60,7 @@ E4 added one seam to the engine: `Engine.admitted(command)` returns `{ outcome, 
 
 ## Open
 
-- **Owner moves** (`SessionEnded { cause: "OwnerMoved" }`), routing to another runner and readiness reasons other than `draining` need more than one runner and wait for E3.
+- **Owner moves.** [E3 cluster evidence](e3-cluster.md) adds real public HTTP/WebSocket clients through a non-owner, state resubscription after drain and a lower-version full baseline from the new owner. This does not establish slow-consumer or owner-crash presence behavior.
 - **Slow consumers.** State, list and view streams keep the newest values in a sliding buffer of 64 and diff from the last value sent; event streams end with `SessionEnded { cause: "SlowConsumer", resync: true }` when their dropping buffer of 64 fills. No scenario forces a consumer to lag yet.
 - **Owner crash and presence.** Exactly one `disconnect` per durable `connect` after the owner crashes is the next owner's recovery and has no E4 scenario.
 - **Hosted ingress end to end.** Assertion verification has unit tests (`serve/assertion/`); the gate's binding check on `/rpc` and the key refresh push are not exercised end to end until the edge (C2).

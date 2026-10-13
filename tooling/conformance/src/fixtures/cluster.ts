@@ -1,5 +1,8 @@
 import { Effect, Schema } from "effect"
-import { Actor } from "../../../../packages/akter/src/index.ts"
+import { Actor, JobFailure } from "../../../../packages/akter/src/index.ts"
+import { DurableClock } from "../../../../packages/akter/src/server.ts"
+
+const Work = Schema.Struct({ to: Schema.String, amount: Schema.Int, delay: Schema.Int })
 
 /** Asymmetric totals expose duplicate delivery, timer loss and replay from default state. */
 export const Ledger = Actor.make("ProcessLedger", {
@@ -12,7 +15,10 @@ export const Ledger = Actor.make("ProcessLedger", {
     send: Actor.action(Schema.Struct({ to: Schema.String, amount: Schema.Finite })),
     receive: Actor.action(Schema.Finite, { internal: true }),
     remind: Actor.action(Schema.Struct({ at: Schema.Finite, amount: Schema.Finite })),
+    submit: Actor.action(Work),
+    rejected: Actor.action(JobFailure, { internal: true }),
   },
+  jobs: { work: Actor.job({ payload: Work, onFailure: "rejected" }) },
 })
 
 export const LedgerLive = Ledger.toLayer({
@@ -30,6 +36,17 @@ export const LedgerLive = Ledger.toLayer({
   remind: (_, { at, amount }, { schedule }) => {
     schedule({ at }).receive(amount)
   },
+  submit: (_, work, { start }) => {
+    start.work(work)
+  },
+  rejected: () => {},
+  work: ({ to, amount, delay }, { self, step }) =>
+    Effect.gen(function* () {
+      const receiver = yield* Ledger.client(to)
+      yield* step("credit", receiver.add(amount))
+      yield* DurableClock.sleep({ name: "pause", duration: delay })
+      yield* self.add(11)
+    }).pipe(Effect.scoped),
 })
 
 /** Each transition has an independently named actor and one persisted pending cron tick. */
@@ -78,6 +95,7 @@ export const Request = Schema.Union([
   Schema.TaggedStruct("State", { actor: Schema.String, key: Schema.String }),
   Schema.TaggedStruct("Drain", {}),
   Schema.TaggedStruct("Clock", { at: Schema.Finite }),
+  Schema.TaggedStruct("HoldJobReply", {}),
   Schema.TaggedStruct("Bulk", { key: Schema.String, count: Schema.Int }),
 ]).pipe(Schema.toTaggedUnion("_tag"))
 

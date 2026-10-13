@@ -30,6 +30,7 @@ D14 fixes one RPC group served over WebSocket and HTTP at `/rpc`, JSON on the wi
 - Reads are served by the shard owner from memory, after the `T_valid` check of [ADR 0126](0126-shard-ownership-on-the-bucket-log.md); a client whose action completed reads its effect (read-your-writes) on every later read of that actor.
 - A stream whose consumer falls behind its bounded buffer MUST either replace the queued patches with one new full frame or end with `SessionEnded { cause: "SlowConsumer", resync: true }`; it never skips a patch silently.
 - When the actor's shard moves, its streams end with `SessionEnded { cause: "OwnerMoved", resync: true }`; the client resubscribes and receives a full frame.
+- A full frame resets the client baseline regardless of its owner-local version. Patch ordering is checked within that baseline; comparing versions across owners would discard a new owner's valid state. Equal decoded values are suppressed using schema equivalence after decoding, including equal resubscription baselines.
 
 ### 3. Presence
 
@@ -94,7 +95,7 @@ D14 fixes one RPC group served over WebSocket and HTTP at `/rpc`, JSON on the wi
 | E4        | Client conformance on both runtimes: full frame then patches, read-your-writes, slow consumer, owner move, reauthorization at the bound and on revocation, origin refusal, per-call callers over HTTP, session caller over WebSocket; I2 for every streamed value |
 | E4        | Presence: crash of the gateway and of the owner both yield exactly one `disconnect` per durable `connect`                                                                                                                                                         |
 
-E4's results, and the cases still open (owner move, slow consumer, owner crash with presence), are in [E4 RPC and serving](../verification/e4-rpc-serve.md).
+E4's results, and the cases still open (slow consumer and owner crash with presence), are in [E4 RPC and serving](../verification/e4-rpc-serve.md). [E3 cluster evidence](../verification/e3-cluster.md) adds public HTTP/WebSocket state resubscription through a non-owner after owner drain.
 
 ## Revisit when
 

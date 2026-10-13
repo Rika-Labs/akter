@@ -248,7 +248,27 @@ const layer = <const Actors extends ReadonlyArray<AnyActor>>(
       bucket.arm((runner, shard) =>
         Effect.asVoid(Effect.forkIn(runners[runner]?.engine.crash(shard) ?? Effect.void, root)),
       )
-      const jobs = runners.map((runner) => Jobs.install(runner.engine))
+      const jobs = runners.map((runner) =>
+        Jobs.install(runner.engine, {
+          execute: (command) =>
+            Effect.suspend(
+              () =>
+                engineFor(command.actor, command.keyJson)?.execute(command) ??
+                Effect.fail(noOwner()),
+            ),
+          retire: (jobId) =>
+            Effect.forEach(
+              every,
+              (shard) =>
+                Effect.suspend(() => {
+                  const engine = ownerEngine(shard)
+                  if (engine === undefined) return Effect.fail(noOwner())
+                  return engine.retireJobCalls(shard, jobId)
+                }),
+              { discard: true },
+            ),
+        }),
+      )
       let waiting = 0
       const counted = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
         Effect.acquireUseRelease(

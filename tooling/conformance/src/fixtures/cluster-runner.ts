@@ -18,6 +18,8 @@ import { RuntimeControl } from "../../../../packages/akter/src/server.ts"
 import { CommandIds } from "../../../../packages/akter/src/execution/command-ids.ts"
 import type { Catalog } from "../../../../packages/akter/src/execution/durable.ts"
 import { Engine } from "../../../../packages/akter/src/execution/engine.ts"
+import { Entry } from "../../../../packages/akter/src/execution/entries.ts"
+import { pendingClocks } from "../../../../packages/akter/src/execution/workflow.ts"
 import { Routing } from "../../../../packages/akter/src/runtime/sharding.ts"
 import { s3Bucket } from "../../../../packages/akter/src/store/s3.ts"
 import { Store, storeOf } from "../../../../packages/akter/src/store/service.ts"
@@ -35,10 +37,13 @@ import {
 
 const nextDue = (image: {
   readonly timers: ReadonlyMap<string, { readonly timer: { readonly at: number } }>
+  readonly jobs: ReadonlyMap<string, { readonly workflow: ReadonlyArray<Schema.Json> }>
 }) => {
   let due: number | undefined
   for (const { timer } of image.timers.values())
     if (due === undefined || timer.at < due) due = timer.at
+  for (const job of image.jobs.values())
+    for (const at of pendingClocks(job.workflow)) if (due === undefined || at < due) due = at
   return due ?? null
 }
 
@@ -133,6 +138,20 @@ const program = Effect.gen(function* () {
     doubleRun: false,
     observer: undefined,
   }).pipe(Effect.provideService(Store, store), useClock)
+  let holdJobReply = false
+  const journal = engine.journal
+  engine.journal = (shard, entry) =>
+    Effect.suspend(() => {
+      if (
+        holdJobReply &&
+        Entry.guards.Step(entry) &&
+        entry.name.startsWith("\u0000call\u0000credit")
+      ) {
+        holdJobReply = false
+        return Effect.never
+      }
+      return journal(shard, entry)
+    })
   const routing = yield* Routing.make(engine, {
     address: { host: "127.0.0.1", port: options.advertised },
     listenAddress: { host: "127.0.0.1", port: options.listen },
@@ -208,6 +227,11 @@ const program = Effect.gen(function* () {
             Option.isSome(frame) && frame.value.kind === "Frame" ? frame.value.value : {},
         ),
       Drain: () => drainNow,
+      HoldJobReply: () =>
+        Effect.sync(() => {
+          holdJobReply = true
+          return { held: true }
+        }),
       Clock: ({ at }) =>
         Effect.sync(() => {
           offset = at - real.currentTimeMillisUnsafe()

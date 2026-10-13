@@ -1,6 +1,6 @@
 # Actor identity and authority
 
-Status: partially normative (0.2), owned by ADR 0126. Only the create-once epoch fence, discard on loss, runner-only reassignment and Store-owned freshness clauses below are promoted by [E2 recovery](../verification/e2-recovery.md). All remaining clauses, including address/tenancy and clock discontinuities, remain proposal.
+Status: partially normative (0.2), owned by ADR 0126. [E2 recovery](../verification/e2-recovery.md) promotes the create-once epoch fence, discard on loss, runner-only reassignment and Store-owned freshness; [E3 cluster evidence](../verification/e3-cluster.md) adds bucket-backed assignment and routed ownership for the `default` tenant. General address/tenancy and clock-discontinuity clauses remain proposal.
 
 **Responsibility:** define what an actor is, where it lives, and what may change it.  
 **Authority:** normative target on `rewrite/0.2`.  
@@ -33,4 +33,4 @@ An actor exists once it has a durable action. An action on an id with no history
 
 ## Verification
 
-I1 (one epoch appends), I2 (only the durable prefix is visible) and I8b (no action, read, send, `find` or fork crosses tenants); failures F7 (stale append after a move) and F8 (two runners believe they own a shard). E2b covers the fenced-shard rule with the ownership scenarios in [E2 recovery](../verification/e2-recovery.md); cluster routing and readiness remain E3 concerns.
+I1 (one epoch appends), I2 (only the durable prefix is visible) and I8b (no action, read, send, `find` or fork crosses tenants); failures F7 (stale append after a move) and F8 (two runners believe they own a shard). [E3 cluster evidence](../verification/e3-cluster.md) complements E2b's fenced-shard scenarios with real ownership routing and readiness. This does not promote multi-tenant addressing beyond the currently served `default` tenant.

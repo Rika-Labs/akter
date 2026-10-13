@@ -5,6 +5,7 @@ import { Actor, user } from "../index.ts"
 import { Durable } from "../execution/durable.ts"
 import { Entry, EntryCodec, Origin } from "../execution/entries.ts"
 import { Simulation, SimulationService } from "./simulation.ts"
+import { Ledger, LedgerLive } from "../../../../tooling/conformance/src/fixtures/cluster.ts"
 
 const Mail = Actor.make("Mail", {
   state: Schema.Struct({
@@ -91,6 +92,54 @@ const run = (seed: number) =>
   )
 
 describe("partitioned multi-runner simulator", () => {
+  it("F17′ rejects resending completed cross-owner job calls or retiring only the job owner's receiver streams after both shards move", () => {
+    const key = (shard: number) => {
+      for (let index = 0; ; index++) {
+        const id = `job-${index}`
+        if (Durable.shardOf(Durable.addressOf(Ledger.name, id), 4) === shard) return id
+      }
+    }
+    return Simulation.run(
+      { actors: [Ledger], seed: 1713, shards: 4, runners: [{}, {}], assignments: [0, 1, 0, 1] },
+      Effect.scoped(
+        Effect.gen(function* () {
+          const simulation = yield* SimulationService
+          const original = simulation.engine
+          const journal = original.journal
+          let received = false
+          original.journal = (shard, entry) =>
+            Effect.suspend(() => {
+              if (Entry.guards.Step(entry) && entry.name.startsWith("\u0000call\u0000credit")) {
+                received = true
+                return Effect.never
+              }
+              return journal(shard, entry)
+            })
+          const worker = yield* Ledger.client(key(0))
+          yield* worker.submit({ to: key(1), amount: 37, delay: 100 })
+          while (!received) yield* Effect.sleep("1 millis")
+          yield* Simulation.assignShards(1, [0])
+          yield* Simulation.assignShards(0, [1])
+          yield* Simulation.settle
+          expect(yield* Simulation.state(Ledger, key(1))).toEqual({ total: 37, deliveries: 0 })
+          expect(yield* Simulation.state(Ledger, key(0))).toEqual({ total: 11, deliveries: 0 })
+          const entries = (yield* simulation.logs).flatMap((log) =>
+            log.segments.flatMap((segment) =>
+              segment.entries.map((bytes) => Result.getOrThrow(EntryCodec.decode(bytes))),
+            ),
+          )
+          const calls = entries.filter(
+            (entry) => Entry.guards.Action(entry) && Origin.guards.JobCall(entry.origin),
+          )
+          expect(calls).toHaveLength(2)
+          expect(entries.filter(Entry.guards.Done)).toHaveLength(1)
+          expect(entries.filter(Entry.guards.Retired)).toHaveLength(2)
+          expect(entries.filter(Entry.guards.JobRetired)).toHaveLength(1)
+        }),
+      ),
+      LedgerLive,
+    )
+  })
   it("F14 rejects interruption between marking a shard opening and forking its recovery; seed 1007681566 must not strand its timer", () =>
     run(1_007_681_566))
   it("F14 rejects leaving a due timer armed forever when an expired lease's verification is temporarily unavailable", () =>

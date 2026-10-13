@@ -28,12 +28,19 @@ import {
 import { Headers } from "effect/http"
 import { Rpc, RpcSerialization } from "effect/rpc"
 import { Caller } from "../contract/caller.ts"
-import { ActorError, ActorUnavailable, ShardMoved, Unauthorized } from "../contract/errors.ts"
+import {
+  ActorError,
+  ActorUnavailable,
+  SessionEnded,
+  ShardMoved,
+  Unauthorized,
+} from "../contract/errors.ts"
 import type { CallRequest, Transport } from "../contract/handle.ts"
 import type { AnyActor } from "../contract/make.ts"
 import { Durable } from "../execution/durable.ts"
 import type { Command, DrainReport, Engine } from "../execution/engine.ts"
 import { Origin, Outcome } from "../execution/entries.ts"
+import { Jobs } from "../execution/jobs.ts"
 import { Transports } from "../execution/transport.ts"
 import { ErrorEnvelope, FindCodec, FindPayload, Frame, RangePayload } from "../rpc/group.ts"
 import { runnerDefaults, runnerStorage } from "../store/runners.ts"
@@ -73,6 +80,11 @@ const Rows = Schema.Array(Schema.Struct({ id: Schema.Json, order: Schema.Json })
 const entity = Entity.make("AkterShard", [
   Rpc.make("Admit", { payload: CommandPayload, success: Admission, error: ErrorEnvelope }),
   Rpc.make("Execute", { payload: CommandPayload, success: Outcome, error: ErrorEnvelope }),
+  Rpc.make("Retire", {
+    payload: Schema.Struct({ jobId: Schema.String }),
+    success: Schema.Void,
+    error: ErrorEnvelope,
+  }),
   Rpc.make("State", { payload: Target, success: Frame, error: ErrorEnvelope, stream: true }),
   Rpc.make("View", { payload: Member, success: Schema.Json, error: ErrorEnvelope, stream: true }),
   Rpc.make("Event", { payload: Member, success: Schema.Json, error: ErrorEnvelope, stream: true }),
@@ -120,6 +132,7 @@ export class Sharding extends Context.Service<
       request: CallRequest,
     ) => Effect.Effect<{ readonly reply: AwaitedReply; readonly replayed: boolean }, ActorError>
     readonly execute: (command: Command) => Effect.Effect<Outcome, ActorError>
+    readonly retire: (jobId: string) => Effect.Effect<void, ActorError>
     readonly readiness: Effect.Effect<Readiness>
     readonly drain: (deadline: Duration.Input) => Effect.Effect<DrainReport>
   }
@@ -157,6 +170,12 @@ const local = (engine: Engine) =>
       reads: (caller) => Transports.reads(engine, caller),
       admitted: (caller, id, request) => Transports.admitted(engine, caller, id, request),
       execute: engine.execute,
+      retire: (jobId) =>
+        Effect.forEach(
+          Array.from({ length: engine.catalog.shards }, (_, id) => id),
+          (shard) => engine.retireJobCalls(shard, jobId),
+          { discard: true },
+        ),
       readiness: Effect.suspend(() =>
         draining
           ? Effect.succeed<Readiness>({ ready: false, reason: completed ? "drained" : "draining" })
@@ -404,6 +423,18 @@ const clustered = (engine: Engine, options: RunnerOptions) =>
                 engine.execute(commandOf(payload, caller)),
               ),
             ),
+          Retire: ({ payload, headers }) =>
+            guard(
+              Effect.flatMap(callerOf(headers), (caller) =>
+                Caller.guards.System(caller) &&
+                caller.source === "job" &&
+                caller.subject === `job:${payload.jobId}`
+                  ? engine.retireJobCalls(shard, payload.jobId)
+                  : Effect.fail(
+                      ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) }),
+                    ),
+              ),
+            ),
           State: ({ payload, headers }) =>
             Stream.unwrap(
               guard(Effect.map(read(headers), (reads) => reads.state(target(payload)))),
@@ -477,7 +508,18 @@ const clustered = (engine: Engine, options: RunnerOptions) =>
       run: Stream.Stream<A, E | ActorError, R>,
     ): Stream.Stream<A, ActorError, R> =>
       Stream.suspend<A, E | ActorError, R>(() => (draining ? Stream.fail(moved()) : run)).pipe(
-        Stream.mapError((error) => (Schema.is(ActorError)(error) ? error : unavailable())),
+        Stream.mapError((failure) => {
+          const error = Schema.is(ActorError)(failure) ? failure : unavailable()
+          if (Schema.is(ShardMoved)(error.reason))
+            return ActorError.make({
+              reason: SessionEnded.make({ cause: "OwnerMoved", resync: true }),
+            })
+          if (Schema.is(ActorUnavailable)(error.reason))
+            return ActorError.make({
+              reason: SessionEnded.make({ cause: "ActorUnavailable", resync: true }),
+            })
+          return error
+        }),
       )
     const payloadOf = (command: Command) => ({
       ...command,
@@ -492,6 +534,18 @@ const clustered = (engine: Engine, options: RunnerOptions) =>
         ),
       )
     engine.route(execute)
+    const retire = (jobId: string) =>
+      Effect.forEach(
+        keys,
+        (key) =>
+          refail(
+            clients(key).Retire(
+              { jobId },
+              header(Caller.cases.System.make({ source: "job", subject: `job:${jobId}` })),
+            ),
+          ),
+        { discard: true, concurrency: "unbounded" },
+      )
     const reads = (caller: Caller): Omit<Transport, "call"> => ({
       state: (request) =>
         streamRefail(
@@ -582,6 +636,7 @@ const clustered = (engine: Engine, options: RunnerOptions) =>
     })
     return Sharding.of({
       execute,
+      retire,
       reads,
       admitted: (caller, commandId, request) =>
         Effect.gen(function* () {
@@ -650,5 +705,16 @@ const clustered = (engine: Engine, options: RunnerOptions) =>
 /** Builds local routing or the bucket-backed socket cluster for one engine. */
 export const Routing = {
   make: (engine: Engine, options?: RunnerOptions) =>
-    options === undefined ? local(engine) : clustered(engine, options),
+    Effect.gen(function* () {
+      const ready = yield* Deferred.make<Sharding["Service"]>()
+      Jobs.install(engine, {
+        execute: (command) =>
+          Effect.flatMap(Deferred.await(ready), (routing) => routing.execute(command)),
+        retire: (jobId) =>
+          Effect.flatMap(Deferred.await(ready), (routing) => routing.retire(jobId)),
+      })
+      const routing = yield* options === undefined ? local(engine) : clustered(engine, options)
+      yield* Deferred.succeed(ready, routing)
+      return routing
+    }),
 }

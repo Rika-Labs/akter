@@ -204,7 +204,7 @@ export const clientStateSchema = (actor: AnyActor): MemberSchema => {
   return schema
 }
 
-/** Derives one handle; `self` includes internal actions, as a job's `self` does. */
+/** Derives one handle; `self` includes internal actions. A new owner's full state frame resets its version clock before schema-equivalent values are suppressed. */
 const derive = <H>(target: Target & { readonly self: boolean }, transport: Transport): H => {
   const { actor, id } = target
   const handle = new Map<
@@ -277,12 +277,13 @@ const derive = <H>(target: Target & { readonly self: boolean }, transport: Trans
       let current: Schema.Json = null
       let version = -1
       return transport.state({ actor, id }).pipe(
-        Stream.filter((frame) => frame.version > version),
+        Stream.filter((frame) => frame.kind === "Frame" || frame.version > version),
         Stream.mapEffect((frame) => {
           version = frame.version
           current = frame.kind === "Frame" ? frame.value : JsonPatch.apply(frame.ops, current)
           return decodeState(current)
         }),
+        Stream.changesWith(Schema.toEquivalence(clientStateSchema(actor))),
       )
     }),
   )
