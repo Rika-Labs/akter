@@ -4,6 +4,7 @@ import { jobConformance } from "../../../../tooling/conformance/src/conformance/
 import { pageConformance } from "../../../../tooling/conformance/src/conformance/pages.ts"
 import { storeConformance } from "../../../../tooling/conformance/src/conformance/store.ts"
 import { operatorConformance } from "../../../../tooling/conformance/src/conformance/operators.ts"
+import { retentionConformance } from "../../../../tooling/conformance/src/conformance/retention.ts"
 import { fileSystemBucket } from "./file-system.ts"
 
 const platform =
@@ -42,3 +43,8 @@ engineConformance(engineBackend)
 jobConformance(engineBackend)
 operatorConformance(engineBackend)
 pageConformance(engineBackend)
+
+retentionConformance({
+  name: "the file system",
+  namespace: Effect.map(engineBackend.location, ({ bucket }) => bucket),
+})

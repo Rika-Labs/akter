@@ -27,10 +27,12 @@ An operator is not a `Caller`. Operator calls accept only an operator credential
 | `delete`        | deleting an actor for erasure ([ADR 0127](0127-snapshots-pages-lists-history-gc.md))                                              |
 | `export`        | a seed of an actor's current state and pending work, carrying no tenant, caller or credential                                     |
 | `audit.read`    | the audit records                                                                                                                 |
+| `retention.set` | store-wide effective retention; requires `tenant: "*"` with no actor or command restriction                                       |
 
 ### 2. Every operator operation is audited
 
 - A mutation (`fork`, `replay`, `delete`) writes an `Audit` entry in the same segment as its effect, so both become durable together or neither does.
+- The store-scoped retention mutation instead writes its audit and effective value together in the CAS record `meta/retention`. Previous mutation audits are archived before replacing that record, and the current embedded audit is included in audit reads. [ADR 0127](0127-snapshots-pages-lists-history-gc.md) defines the atomic record, range and conflict behavior; [E8e evidence](../verification/e8e-retention.md) covers it. `akter retention <duration>` uses the existing operator authentication over `POST /operator`, not an application caller or RPC.
 - A read (`inspect`, `outcomes.read`, `log.read`, `snapshot.read`, `export`, `audit.read`) writes an audit record (`audit/<date>/<id>`, created once) before it answers; a read whose record cannot be written is refused. A refusal by scope is audited as denied.
 - An audit record holds the operator, action, capability, target, reason and outcome, never credentials or payload values.
 

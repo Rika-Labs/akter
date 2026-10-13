@@ -18,17 +18,27 @@ import type { OperatorAction, OperatorGrant, Resource } from "./grants.ts"
 const Target = Schema.Union([
   Schema.Struct({ actorType: Schema.NonEmptyString, actorId: Schema.Json }),
   Schema.Struct({ shard: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)) }),
+  Schema.Struct({ store: Schema.Literal(true) }),
 ])
 
 /** Operator requests are independent of the application caller and RPC group. */
 export const OperatorRequest = Schema.Struct({
-  operation: Schema.Literals(["inspect", "log", "snapshot", "replay", "outcomes", "audit"]),
+  operation: Schema.Literals([
+    "inspect",
+    "log",
+    "snapshot",
+    "replay",
+    "outcomes",
+    "audit",
+    "retention",
+  ]),
   target: Target,
   tenant: Schema.NonEmptyString,
   reason: Schema.String,
   from: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
   replay: Schema.optionalKey(Schema.Literals(["matching", "current"])),
   commandId: Schema.optionalKey(Schema.String),
+  retentionMillis: Schema.optionalKey(Schema.Finite),
 })
 export type OperatorRequest = typeof OperatorRequest.Type
 
@@ -41,6 +51,8 @@ export class OperatorRefused extends Schema.TaggedError<OperatorRefused>()("Oper
     "recovery",
     "not_refused",
     "invalid_target",
+    "range",
+    "conflict",
   ]),
 }) {}
 
@@ -51,6 +63,7 @@ const actions: Record<OperatorRequest["operation"], OperatorAction> = {
   replay: "replay",
   outcomes: "outcomes.read",
   audit: "audit.read",
+  retention: "retention.set",
 }
 
 const decodeJson = Schema.decodeResult(Schema.fromJsonString(Schema.Json))
@@ -82,6 +95,29 @@ const make = (engine: Engine) => {
   ): Effect.Effect<Schema.Json, OperatorRefused> =>
     Effect.gen(function* () {
       const target = request.target
+      if (request.operation === "retention") {
+        if (!("store" in target) || request.tenant !== "*")
+          return yield* OperatorRefused.make({ reason: "invalid_target" })
+        const result = yield* store
+          .setRetention(request.retentionMillis ?? Number.NaN, {
+            grant,
+            reason: request.reason,
+          })
+          .pipe(
+            Effect.catchTags({
+              RetentionRefused: (error) =>
+                Effect.fail(OperatorRefused.make({ reason: error.reason })),
+              RetentionConflict: () => Effect.fail(OperatorRefused.make({ reason: "conflict" })),
+            }),
+            Effect.mapError((error) =>
+              Schema.is(OperatorRefused)(error)
+                ? error
+                : OperatorRefused.make({ reason: "unavailable" }),
+            ),
+          )
+        return json({ retentionMillis: result.retentionMillis, revision: result.revision })
+      }
+      if ("store" in target) return yield* OperatorRefused.make({ reason: "invalid_target" })
       const actorTarget = "actorType" in target ? target : undefined
       const resource: Writable<Resource> = { tenant: request.tenant }
       if (request.commandId !== undefined) resource.commandId = request.commandId
@@ -230,7 +266,9 @@ const make = (engine: Engine) => {
             )
           if (request.operation === "log") {
             const { checkpoint } = yield* store.recoveryPoint(shard)
-            const segments = yield* Stream.runCollect(store.read(shard, BigInt(request.from ?? 0)))
+            const segments = yield* Stream.runCollect(
+              store.history.read(shard, BigInt(request.from ?? 0)),
+            )
             const entries = segments
               .flatMap((segment) =>
                 segment.entries.map((bytes) => ({

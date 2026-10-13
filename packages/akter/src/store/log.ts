@@ -21,6 +21,7 @@ import {
 } from "./keys.ts"
 import { Metrics, count, record } from "../runtime/telemetry/metrics.ts"
 import { historyWindow } from "./history.ts"
+import { HistoryExpired } from "./retention.ts"
 
 /** How many times `open` re-lists after another opener took the next offset before giving up. */
 const OPEN_ATTEMPTS = 5
@@ -40,8 +41,8 @@ export interface Settings extends RetriedBucket {
   readonly validFor: number
   /** Milliseconds a checkpoint must have been known before trim deletes what it covers. */
   readonly trimAfter: number
-  /** Milliseconds of history retained by the store descriptor. */
-  readonly retentionMillis: number
+  /** Effective retention is read for every history or trimming request. */
+  readonly retention: Effect.Effect<number, StorageUnavailable | CorruptSegment>
 }
 
 /**
@@ -373,7 +374,7 @@ export const bucketLog = (settings: Settings) => {
 
   const checkpoints = (shard: number) =>
     Effect.gen(function* () {
-      const cutoff = (yield* Clock.currentTimeMillis) - settings.retentionMillis
+      const cutoff = (yield* Clock.currentTimeMillis) - (yield* settings.retention)
       const retained: Array<HistoryCheckpoint> = []
       const window = yield* retrying(historyWindow(bucket, shard, cutoff))
       for (const [index, { key, offset, modified }] of window.checkpoints.entries()) {
@@ -422,7 +423,7 @@ export const bucketLog = (settings: Settings) => {
             covered = known.offset
         let bound = through < covered ? through : covered
         if (bound < 1n) return 0n
-        const cutoff = (yield* Clock.currentTimeMillis) - settings.retentionMillis
+        const cutoff = (yield* Clock.currentTimeMillis) - (yield* settings.retention)
         const window = yield* retrying(historyWindow(bucket, lease.shard, cutoff))
         if (window.first !== undefined) {
           const anchor = window.anchor?.offset ?? 0n
@@ -456,6 +457,29 @@ export const bucketLog = (settings: Settings) => {
       )
     })
 
+  const historyRead = (shard: number, from: bigint, through?: bigint) =>
+    Stream.unwrap(
+      Effect.gen(function* () {
+        if (through !== undefined && through < from)
+          return yield* Effect.die(
+            new RangeError("History upper offset must not precede its lower offset"),
+          )
+        const cutoff = (yield* Clock.currentTimeMillis) - (yield* settings.retention)
+        const window = yield* retrying(historyWindow(bucket, shard, cutoff))
+        const requested = window.segments.find(({ offset }) => offset > from)
+        if (
+          from > 0n &&
+          ((requested !== undefined && requested.modified < cutoff) ||
+            (window.first !== undefined && from + 1n < window.first))
+        )
+          return yield* HistoryExpired.make({ shard, offset: from + 1n })
+        if (window.first === undefined || (through !== undefined && through < window.first))
+          return Stream.empty
+        const start = from < window.first ? window.first - 1n : from
+        return read(shard, start, through)
+      }),
+    ).pipe(Stream.catchTag("StorageUnavailable", (error) => Stream.fail(unavailable(error))))
+
   return {
     open,
     append,
@@ -465,6 +489,6 @@ export const bucketLog = (settings: Settings) => {
     verify,
     fresh,
     recoveryPoint,
-    history: { checkpoints, read },
+    history: { checkpoints, read: historyRead },
   }
 }

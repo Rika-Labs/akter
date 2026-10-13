@@ -43,7 +43,7 @@ export const Manifest = Schema.Struct({
 export type Manifest = typeof Manifest.Type
 
 /**
- * `meta/store`: the store's id, shard count and history retention, fixed when
+ * `meta/store`: the store's id, shard count and initial history retention, fixed when
  * the store is created, and when that was. It records nothing about builds;
  * each segment carries its own.
  */

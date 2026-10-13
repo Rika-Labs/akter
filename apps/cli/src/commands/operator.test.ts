@@ -56,6 +56,13 @@ const fixture = Effect.gen(function* () {
   })
   const operatorAuth = OperatorAuth.tokens([
     {
+      token: Redacted.make("test-retention"),
+      grant: {
+        operator: "retention-cli",
+        capabilities: [{ action: "retention.set", tenant: "*" }],
+      },
+    },
+    {
       token: Redacted.make("test-operator"),
       grant: {
         operator: "cli",
@@ -90,6 +97,52 @@ const fixture = Effect.gen(function* () {
 layer(BunServices.layer, { excludeTestServices: true })(
   "audited operator CLI over real HTTP",
   (it) => {
+    it.effect(
+      "changes retention through real HTTP with a store-wide grant and audits each success/denial (rejects a parsed-only command or tenant privilege escalation)",
+      () =>
+        Effect.gen(function* () {
+          const { call, store } = yield* fixture
+          for (const [duration, millis] of [
+            ["30 days", 30 * 86_400_000],
+            ["7 days", 7 * 86_400_000],
+          ] as const) {
+            const result = yield* call("test-retention", [
+              "retention",
+              duration,
+              "--reason",
+              "plan changed",
+            ])
+            expect(result.exitCode).toBe(0)
+            expect(
+              yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Json))(result.stdout),
+            ).toMatchObject({ retentionMillis: millis })
+            expect(yield* store.retention).toBe(millis)
+          }
+          expect(yield* call("test-operator", ["retention", "30 days"])).toMatchObject({
+            exitCode: 1,
+            reason: "OperatorRefused",
+          })
+          expect(
+            yield* call("", ["retention", "30 days"], { AKTER_TOKEN: "test-retention" }),
+          ).toMatchObject({ exitCode: 2, reason: "OperatorRefused" })
+          expect(yield* call("test-application", ["retention", "30 days"])).toMatchObject({
+            exitCode: 1,
+            reason: "OperatorRefused",
+          })
+          for (const duration of ["23 hours", "366 days", "invalid"])
+            expect(yield* call("test-retention", ["retention", duration])).toMatchObject({
+              exitCode: 2,
+              reason: "OperatorRefused",
+            })
+          expect(
+            (yield* store.audits)
+              .filter(({ action }) => action === "retention.set")
+              .map(({ outcome }) => outcome)
+              .sort(),
+          ).toEqual(["allowed", "allowed", "denied"])
+          expect(yield* store.retention).toBe(7 * 86_400_000)
+        }),
+    )
     it.effect(
       "executes every command, defaults to build matching, emits NDJSON and refuses missing, application-only and out-of-scope credentials",
       () =>

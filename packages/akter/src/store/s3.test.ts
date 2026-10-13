@@ -8,6 +8,7 @@ import { jobConformance } from "../../../../tooling/conformance/src/conformance/
 import { pageConformance } from "../../../../tooling/conformance/src/conformance/pages.ts"
 import { storeConformance } from "../../../../tooling/conformance/src/conformance/store.ts"
 import { operatorConformance } from "../../../../tooling/conformance/src/conformance/operators.ts"
+import { retentionConformance } from "../../../../tooling/conformance/src/conformance/retention.ts"
 import { StorageUnavailable } from "./errors.ts"
 import { s3Bucket } from "./s3.ts"
 
@@ -87,6 +88,11 @@ engineConformance(engineBackend)
 jobConformance(engineBackend)
 operatorConformance(engineBackend)
 pageConformance(engineBackend)
+
+retentionConformance({
+  name: "an S3-compatible bucket (TEST_S3_URL)",
+  namespace: Effect.map(engineBackend.location, ({ bucket }) => bucket),
+})
 
 /**
  * An S3 stand-in that answers a conditional create with 412 and then drops the

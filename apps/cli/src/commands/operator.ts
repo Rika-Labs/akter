@@ -1,4 +1,4 @@
-import { Config, Console, Effect, Option, Redacted, Schema } from "effect"
+import { Config, Console, Duration, Effect, Option, Redacted, Schema } from "effect"
 import { Argument, Command, Flag } from "effect/cli"
 import { HttpClient, HttpClientRequest } from "effect/http"
 import type { OperatorRequest } from "@rikalabs/akter/server"
@@ -75,6 +75,42 @@ const output = (options: Options, body: Omit<OperatorRequest, "tenant" | "reason
       Effect.flatMap(Console.log),
     ),
   )
+
+/** Changes store-wide history retention through the runner's audited operator boundary. */
+export const retentionCommand = Command.make(
+  "retention",
+  {
+    url: common.url,
+    reason: common.reason,
+    tokenEnv: common.tokenEnv,
+    duration: Argument.String("duration"),
+  },
+  ({ duration, ...options }) =>
+    Effect.gen(function* () {
+      const retentionMillis = yield* Effect.try(() =>
+        Duration.toMillis(Duration.fromInputUnsafe(duration as Duration.Input)),
+      ).pipe(
+        Effect.catch(() =>
+          fail({ reason: "OperatorRefused", message: "Invalid retention duration." }),
+        ),
+      )
+      if (
+        !Number.isSafeInteger(retentionMillis) ||
+        retentionMillis < 86_400_000 ||
+        retentionMillis > 365 * 86_400_000
+      )
+        return yield* fail({
+          reason: "OperatorRefused",
+          message: "Retention must be between 1 and 365 days.",
+        })
+      return yield* output(
+        { ...options, tenant: "*" },
+        { operation: "retention", target: { store: true }, retentionMillis },
+      )
+    }),
+).pipe(
+  Command.withDescription("Set store history retention (1–365 days) with an operator credential"),
+)
 
 const shardTarget = Argument.Int("shard").pipe(
   Argument.withSchema(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),

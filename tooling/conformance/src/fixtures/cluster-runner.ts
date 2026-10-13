@@ -198,16 +198,18 @@ const program = Effect.gen(function* () {
     if (actor === undefined) throw new Error("Unknown fixture actor")
     return actor
   }
-  const drainNow = Effect.gen(function* () {
-    explicitDrain = true
-    const report = yield* routing.drain("15 seconds")
-    return { ...report, checkpointReady }
-  })
+  const drainNow = (deadline: Duration.Input) =>
+    Effect.gen(function* () {
+      explicitDrain = true
+      const report = yield* routing.drain(deadline)
+      return { ...report, checkpointReady }
+    })
   yield* Effect.forkScoped(
     RuntimeControl.waitForSignal({ deadline: "15 seconds" }).pipe(
       Effect.provideService(RuntimeControl, {
         readiness: routing.readiness,
-        drain: () => drainNow,
+        usage: engine.usage,
+        drain: ({ deadline }) => drainNow(deadline),
       }),
       useClock,
     ),
@@ -245,7 +247,7 @@ const program = Effect.gen(function* () {
           (frame) =>
             Option.isSome(frame) && frame.value.kind === "Frame" ? frame.value.value : {},
         ),
-      Drain: () => drainNow,
+      Drain: () => drainNow("15 seconds"),
       HoldJobReply: () =>
         Effect.sync(() => {
           holdJobReply = true

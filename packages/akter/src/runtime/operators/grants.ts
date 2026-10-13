@@ -11,6 +11,7 @@ export const OperatorAction = Schema.Literals([
   "replay",
   "delete",
   "audit.read",
+  "retention.set",
 ])
 
 /** One grantable operator action. */

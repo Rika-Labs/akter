@@ -1,6 +1,6 @@
 # ADR 0132: Forks and retained history
 
-Status: partially implemented, amended 2026-10-13 (rewrite/0.2). E6 operator evidence and remaining limits are in [E6 pages and history](../verification/e6-pages-history.md).
+Status: partially implemented, amended 2026-10-13 (rewrite/0.2). E6 operator evidence and remaining limits are in [E6 pages and history](../verification/e6-pages-history.md). Request-time effective-retention admission is established by [E8e retention evidence](../verification/e8e-retention.md).
 
 **Responsibility:** decide how long a store keeps history, how an actor is forked from it, who may fork, and what a fork copies.
 
@@ -14,7 +14,7 @@ D8 ships forks and history in 0.2.0. D15 makes fork a CLI and operator operation
 
 ### 1. Retained history
 
-A store keeps its segments and checkpoints for its retention period (default 7 days; Akter Cloud: 7 days Free, 30 days paid; one value per store in 0.2.0). Trim and GC respect it ([ADR 0126](0126-shard-ownership-on-the-bucket-log.md), [ADR 0127](0127-snapshots-pages-lists-history-gc.md)).
+A store keeps its segments and checkpoints for its effective retention period (default 7 days; Akter Cloud: 7 days Free, 30 days paid; one changeable value per store). The creation value remains in `meta/store`; `meta/retention` overrides it through the audited CAS operation in [ADR 0127](0127-snapshots-pages-lists-history-gc.md). Trim and GC respect the effective value ([ADR 0126](0126-shard-ownership-on-the-bucket-log.md)).
 
 The history catalogue includes the older checkpoint anchor and its complete following chain from ADR 0127, so an in-window position can be reconstructed after its older prefix is trimmed. Loading that anchor does not authorize a requested position older than retention.
 
@@ -32,7 +32,7 @@ An actor's **version** is the count of actions applied to it. A fork position is
 4. Pending timers and jobs are not copied unless `--with-work` is given; with it, timers are copied and open jobs start again under new ids from their journaled steps.
 5. A fork of a fork works the same way; its history starts at its `Forked` entry.
 
-A position older than retention, or a source actor with no history at the position, is refused.
+A position older than effective retention at request time, or a source actor with no history at the position, is refused. A wider value allows still-stored positions in the wider window, not positions whose reconstruction data was already trimmed. Public history/log reads expose in-window segments; recovery and fork reconstruction may read the expired anchor chain internally, but that never authorizes an expired fork position. A history/log request with an explicit expired starting position is refused; a catalogue read from zero returns only in-window segments.
 
 The local operator command also accepts `--offset` together with `--index`, never a bare segment offset, and can target another directory or bucket prefix. Ids use the actor's key codec; `--json-ids` disambiguates JSON ids from literal strings. A cross-store fork copies verified page bytes, refreshing every referenced hash under the target publication barrier before its `Forked` entry is durable. The local command requires the application's separate `authorizeOperator(token)` Effect; application callers do not become operator grants. Nondefault tenants remain refused until the engine has tenant-qualified actor addresses. Whole-shard forks are not specified or implemented by this actor-fork decision.
 

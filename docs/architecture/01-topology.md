@@ -1,6 +1,6 @@
 # System topology
 
-One environment has one store: a bucket or a scoped bucket prefix. Its descriptor fixes the store id, format, shard count, and retention. Every durable byte belongs to that store, including log segments, checkpoints, pages, index pages, leases, and audits.
+One environment has one store: a bucket or a scoped bucket prefix. Its descriptor fixes the store id, format, shard count, and initial retention; `meta/retention` holds the mutable effective policy. Every durable byte belongs to that store, including log segments, checkpoints, pages, index pages, leases, and audits.
 
 An actor's address maps to a shard. Effect Cluster membership and `HashRing` assignment choose which runner tries to own each shard. Bucket-backed registrations, heartbeats, and locks are advisory. Only a create-once open segment establishes a new epoch and fences prior writers. There is no assignments object and no SQL authority.
 
