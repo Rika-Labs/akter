@@ -5,7 +5,7 @@ description: "Inspect durable actors and shards with audited grants and bounded 
 
 # Observability
 
-Inspect durable state, checkpoints, and the segment log rather than speculative memory. The implemented operator surface is `inspect actor`, `inspect shard`, `log tail`, `log export`, `snapshot`, and `replay` through separate `POST /operator`; `fork` is an E6 target, not yet merged.
+Inspect durable state, checkpoints, and the segment log rather than speculative memory. The implemented operator surface is `inspect actor`, `inspect shard`, `log tail`, `log export`, `snapshot`, and `replay` through separate `POST /operator`. [Actor forks](../api/forks.md) use a separately granted server/CLI interface directly over a store, not that HTTP endpoint.
 
 ## Grants and audit
 

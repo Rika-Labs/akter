@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest"
+import { TestClock } from "effect/testing"
 import { Cause, Effect, Exit, Option, Result, Schema } from "effect"
 import { Library, LibraryLive } from "../../../../tooling/conformance/src/conformance/pages.ts"
 import { Simulation, SimulationService } from "../testing/index.ts"
@@ -7,7 +8,10 @@ import { PageDocuments } from "../handlers/page-tree.ts"
 import { Entry, EntryCodec } from "../execution/entries.ts"
 import { Checkpoints } from "./checkpoint.ts"
 import { PageCorrupt } from "../store/errors.ts"
-import { pageKey } from "../store/keys.ts"
+import { checkpointKey, pageKey } from "../store/keys.ts"
+import { Store } from "../store/service.ts"
+import { collect } from "../store/layer.ts"
+import { ForkRefused } from "./forks.ts"
 
 const grant = {
   operator: "operator:seed",
@@ -75,6 +79,94 @@ const scenario = Effect.gen(function* () {
 }).pipe(Effect.scoped)
 
 describe("E6 seeded page and history evidence", () => {
+  it("seed 900: retains an expired checkpoint and its complete boundary tail for an in-window fork, then releases the old anchor", async () => {
+    await Simulation.run(
+      { actors: [Library], seed: 900, shards: 1, checkpointEvery: 0, runners: [{}, {}] },
+      Effect.gen(function* () {
+        const client = yield* Library.client("source")
+        const simulator = yield* SimulationService
+        yield* client.fill(90)
+        yield* Simulation.drain()
+        const store = simulator.engine.store
+        const old = (yield* store.history.checkpoints(0)).at(-1)!
+        yield* Simulation.assign(0)
+        yield* (yield* Library.client("other")).fill(7)
+        yield* Simulation.crash()
+        yield* Simulation.advance("8 days")
+        yield* Simulation.assign(0)
+        yield* client.change(17)
+        yield* client.change(29)
+        yield* Simulation.settle
+        yield* Simulation.drain()
+        const lease = yield* store.open(0)
+        yield* TestClock.adjust("11 minutes")
+        expect(yield* store.trim(lease, lease.head)).toBe(old.offset)
+        expect(
+          (yield* store.history.checkpoints(0)).some(
+            (checkpoint) => checkpoint.offset === old.offset,
+          ),
+        ).toBe(true)
+        expect((yield* collect().pipe(Effect.provideService(Store, store))).outcome).toBe(
+          "collected",
+        )
+        yield* Simulation.assign(1)
+        yield* simulator.waiting(
+          Forks.fork(simulator.engine, {
+            actor: Library,
+            from: "source",
+            to: "recent",
+            at: { version: 2 },
+            grant,
+          }),
+        )
+        const branch = yield* Simulation.state(Library, "recent")
+        expect(branch.count).toBe(91)
+        expect((yield* Simulation.state(Library, "other")).count).toBe(7)
+        expect(branch.items.map((item) => item.id).sort((a, b) => a - b)).toEqual(
+          Array.from({ length: 90 }, (_, id) => id),
+        )
+        expect(branch.items.find((item) => item.id === 17)).toEqual({
+          id: 17,
+          at: -7,
+          text: "changed",
+        })
+        expect(branch.items.find((item) => item.id === 29)).toEqual({
+          id: 29,
+          at: 61,
+          text: "29:" + "x".repeat(1100),
+        })
+        const expired = yield* simulator.waiting(
+          Forks.fork(simulator.engine, {
+            actor: Library,
+            from: "source",
+            to: "expired",
+            at: { version: 1 },
+            grant,
+          }).pipe(Effect.result),
+        )
+        expect(
+          Result.isFailure(expired) &&
+            Schema.is(ForkRefused)(expired.failure) &&
+            expired.failure.reason,
+        ).toBe("retention")
+        yield* Simulation.drain()
+        yield* TestClock.adjust("8 days")
+        expect(
+          (yield* collect().pipe(Effect.provideService(Store, simulator.engine.store))).outcome,
+        ).toBe("collected")
+        expect(
+          Option.isNone(yield* simulator.bucket.inspect.get(checkpointKey(0, old.offset))),
+        ).toBe(true)
+        expect(
+          Option.isNone(yield* simulator.bucket.inspect.get(pageKey(old.statePages[0]!))),
+        ).toBe(true)
+        yield* Simulation.assign(1)
+        expect((yield* Simulation.state(Library, "recent")).items).toEqual(branch.items)
+      }).pipe(Effect.scoped),
+      LibraryLive,
+    )
+  }, 120_000)
+
   it("F20/F21 and I6/I7: rejects forks of current state, incorrect lineage, and a sweep of reachable list pages across 40 seeds", async () => {
     for (let seed = 100; seed < 140; seed++)
       await Simulation.run(

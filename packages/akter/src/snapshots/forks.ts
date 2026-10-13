@@ -72,7 +72,6 @@ const forkOnce = (target: Engine, options: ForkOptions, source: Store["Service"]
     const available = yield* source.history.checkpoints(shard)
     let base: ReturnType<typeof Checkpoints.capture> | undefined
     for (const retained of available) {
-      if (retained.modified < cutoff) continue
       const decoded = Result.getOrThrow(
         Checkpoints.decode(yield* PagedCheckpoints.read(retained.statePages[0]!, source)),
       )
@@ -84,7 +83,7 @@ const forkOnce = (target: Engine, options: ForkOptions, source: Store["Service"]
           ? decoded.offset < at.offset
           : "before" in at
             ? decoded.lastAt < at.before
-            : (snapshot?.version ?? 0) < at.version
+            : snapshot === undefined || (snapshot.version ?? 0) <= at.version
       if (suitable && (base === undefined || decoded.offset > base.offset)) base = decoded
     }
     const image =
@@ -101,7 +100,10 @@ const forkOnce = (target: Engine, options: ForkOptions, source: Store["Service"]
             version: initial.version,
           }
     let admittedAt = initial?.position?.at ?? 0
-    const segments = yield* Stream.runCollect(source.history.read(shard, BigInt(start)))
+    const segments =
+      "version" in at && position?.version === at.version
+        ? []
+        : yield* Stream.runCollect(source.history.read(shard, BigInt(start)))
     entries: for (const segment of segments) {
       for (const [index, bytes] of segment.entries.entries()) {
         const entry = Result.getOrThrow(EntryCodec.decode(bytes))

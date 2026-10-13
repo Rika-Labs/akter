@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Cause, Clock, Effect, Exit, Fiber, Option, Result, Schema, Stream } from "effect"
+import { Cause, Clock, Effect, Exit, Fiber, Option, Result, Schema, Scope, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { Durable } from "../../../../packages/akter/src/execution/durable.ts"
 import { PageDocuments } from "../../../../packages/akter/src/handlers/page-tree.ts"
@@ -14,12 +14,193 @@ import { PageCorrupt } from "../../../../packages/akter/src/store/errors.ts"
 import type { EngineBackend } from "./engine.ts"
 import { Entry, EntryCodec } from "../../../../packages/akter/src/execution/entries.ts"
 import { jobIO, jobRunner, jobState, jobUntil, submit, Worker } from "./job-runner.ts"
+import { collect } from "../../../../packages/akter/src/store/layer.ts"
+import { Store } from "../../../../packages/akter/src/store/service.ts"
+import { checkpointKey } from "../../../../packages/akter/src/store/keys.ts"
+import { Operators } from "../../../../packages/akter/src/runtime/operators/service.ts"
 
 export { Library, LibraryLive, pageRunner } from "./page-runner.ts"
 import { Library, pageRunner } from "./page-runner.ts"
 /** The same page-miss, fork and corruption scenarios run on filesystem and a real S3 bucket. */
 export const pageConformance = <E, E2>(backend: EngineBackend<E, E2>) => {
   describe(`Pages, history and forks on ${backend.name}`, () => {
+    it.live(
+      "seed 900 history pattern: a recent version survives expired baseline trim and GC, while an older position is refused and its old anchor later expires",
+      () =>
+        Effect.gen(function* () {
+          const bucket = yield* (yield* backend.location).bucket
+          const options = {
+            retention: "3 seconds",
+            validFor: "100 millis",
+            trimAfter: "300 millis",
+            checkpointEvery: 0,
+          } as const
+          const first = yield* pageRunner(bucket, { ...options, writer: "retention-first" })
+          yield* first.call("source", "fill", 90)
+          expect((yield* first.engine.drain("10 seconds")).outcome).toBe("clean")
+          const old = (yield* first.store.history.checkpoints(0)).at(-1)!
+          const scope = yield* Scope.make()
+          const boundary = yield* Scope.provide(scope)(
+            pageRunner(bucket, { ...options, writer: "retention-boundary" }),
+          )
+          yield* boundary.call("other", "fill", 7)
+          yield* Scope.close(scope, Exit.void)
+          yield* Effect.sleep("4 seconds")
+          const recent = yield* pageRunner(bucket, { ...options, writer: "retention-recent" })
+          yield* recent.call("source", "change", 17)
+          yield* recent.call("source", "change", 29)
+          expect((yield* recent.engine.drain("10 seconds")).outcome).toBe("clean")
+          const lease = yield* recent.store.open(0)
+          yield* Effect.sleep("400 millis")
+          expect(yield* recent.store.trim(lease, lease.head)).toBe(old.offset)
+          const gc = { checkpointInterval: "10 millis", gracePeriod: "1 second" } as const
+          expect(
+            (yield* collect(gc).pipe(Effect.provideService(Store, recent.store))).outcome,
+          ).toBe("collected")
+          expect(Option.isSome(yield* bucket.get(checkpointKey(0, old.offset)))).toBe(true)
+          const target = yield* pageRunner(bucket, { ...options, writer: "retention-fork" })
+          const grant = {
+            operator: "operator:retention",
+            capabilities: [{ action: "fork" as const, tenant: "default" }],
+          }
+          yield* Forks.fork(target.engine, {
+            actor: Library,
+            from: "source",
+            to: "recent",
+            at: { version: 2 },
+            grant,
+          })
+          expect((yield* target.engine.durableRecord(Library, "recent")).image.state.count).toBe(91)
+          const items = yield* target.range("recent")
+          expect(
+            items
+              .map(
+                (item) =>
+                  Result.getOrThrow(
+                    Schema.decodeUnknownResult(Schema.Struct({ id: Schema.Int }))(item),
+                  ).id,
+              )
+              .sort((a, b) => a - b),
+          ).toEqual(Array.from({ length: 90 }, (_, id) => id))
+          expect(items.find(Schema.is(Schema.Struct({ id: Schema.Literal(17) })))).toEqual({
+            id: 17,
+            at: -7,
+            text: "changed",
+          })
+          expect(items.find(Schema.is(Schema.Struct({ id: Schema.Literal(29) })))).toEqual({
+            id: 29,
+            at: 61,
+            text: "29:" + "x".repeat(1100),
+          })
+          expect((yield* target.engine.durableRecord(Library, "other")).image.state.count).toBe(7)
+          const expired = yield* Forks.fork(target.engine, {
+            actor: Library,
+            from: "source",
+            to: "expired",
+            at: { version: 1 },
+            grant,
+          }).pipe(Effect.result)
+          expect(
+            Result.isFailure(expired) &&
+              Schema.is(ForkRefused)(expired.failure) &&
+              expired.failure.reason,
+          ).toBe("retention")
+          expect((yield* target.engine.drain("10 seconds")).outcome).toBe("clean")
+          yield* Effect.sleep("4 seconds")
+          expect(
+            (yield* collect(gc).pipe(Effect.provideService(Store, target.store))).outcome,
+          ).toBe("collected")
+          expect(Option.isNone(yield* bucket.get(checkpointKey(0, old.offset)))).toBe(true)
+          expect(Option.isNone(yield* bucket.get(pageKey(old.statePages[0]!)))).toBe(true)
+          const reopened = yield* pageRunner(bucket, { ...options, writer: "retention-restored" })
+          expect(yield* reopened.range("recent")).toEqual(items)
+        }).pipe(Effect.scoped),
+      30_000,
+    )
+
+    it.live(
+      "page-backed replay: the rebuilt state/index image and audit share one segment, and its page graph survives GC without a checkpoint",
+      () =>
+        Effect.gen(function* () {
+          const bucket = yield* (yield* backend.location).bucket
+          const options = {
+            validFor: "100 millis",
+            trimAfter: "300 millis",
+            checkpointEvery: 0,
+          } as const
+          const scope = yield* Scope.make()
+          const old = yield* Scope.provide(scope)(
+            pageRunner(bucket, {
+              ...options,
+              writer: "replay-old",
+              build: { bundle: "old-pages", framework: "0.2-pages" },
+            }),
+          )
+          yield* old.call("source", "fill", 90)
+          yield* Scope.close(scope, Exit.void)
+          const current = yield* pageRunner(bucket, {
+            ...options,
+            writer: "replay-current",
+            build: { bundle: "current-pages", framework: "0.2-pages" },
+          })
+          yield* jobUntil(
+            "new build refused the old page tail",
+            () => current.engine.status(0).status === "refused",
+          )
+          expect(current.engine.status(0).status).toBe("refused")
+          yield* Operators.make(current.engine).run(
+            {
+              operator: "operator:replay",
+              capabilities: [{ action: "replay", tenant: "default" }],
+            },
+            {
+              operation: "replay",
+              target: { shard: 0 },
+              tenant: "default",
+              reason: "verified list replay",
+              replay: "current",
+            },
+          )
+          const entries = (yield* Stream.runCollect(current.store.read(0, 0n))).flatMap((segment) =>
+            segment.entries.map((bytes) => Result.getOrThrow(EntryCodec.decode(bytes))),
+          )
+          const replayed = entries.find(Entry.guards.Replayed)!
+          expect(replayed.page).toBeDefined()
+          const segments = yield* Stream.runCollect(current.store.read(0, 0n))
+          expect(
+            segments
+              .find((segment) =>
+                segment.entries.some((bytes) =>
+                  Entry.guards.Replayed(Result.getOrThrow(EntryCodec.decode(bytes))),
+                ),
+              )!
+              .entries.map((bytes) => Result.getOrThrow(EntryCodec.decode(bytes))._tag),
+          ).toEqual(["Replayed", "Audit"])
+          const checkpoint = (yield* current.store.history.checkpoints(0)).at(-1)!
+          expect(checkpoint.statePages).toEqual(checkpoint.indexPages)
+          yield* bucket.delete(yield* bucket.list(checkpointPrefix(0)))
+          yield* Effect.sleep("1100 millis")
+          expect(
+            (yield* collect({ checkpointInterval: "10 millis", gracePeriod: "1 second" }).pipe(
+              Effect.provideService(Store, current.store),
+            )).outcome,
+          ).toBe("collected")
+          expect(Option.isSome(yield* bucket.get(pageKey(replayed.page!)))).toBe(true)
+          const restored = yield* pageRunner(bucket, {
+            ...options,
+            writer: "replay-restored",
+            build: { bundle: "current-pages", framework: "0.2-pages" },
+          })
+          expect((yield* restored.engine.durableRecord(Library, "source")).image.state.count).toBe(
+            90,
+          )
+          expect(yield* restored.range("source", 61, 62, 1)).toEqual([
+            { id: 29, at: 61, text: "29:" + "x".repeat(1100) },
+          ])
+        }).pipe(Effect.scoped),
+      30_000,
+    )
+
     it.effect(
       "F20: rejects current-state forks, copied work by default, repeated PageMiss staging and a fork-of-fork lineage error",
       () =>

@@ -105,7 +105,7 @@ export class Store extends Context.Service<
     readonly trim: (
       lease: Lease,
       through: bigint,
-    ) => Effect.Effect<bigint, StaleEpoch | LogUnavailable>
+    ) => Effect.Effect<bigint, StaleEpoch | LogUnavailable | CorruptSegment>
     /** Succeeds while the lease is current: at once within `validFor` of its last append or check, otherwise after re-checking the bucket. */
     readonly verify: (lease: Lease) => Effect.Effect<void, StaleEpoch | LogUnavailable>
     /**

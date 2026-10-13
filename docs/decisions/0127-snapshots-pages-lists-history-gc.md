@@ -1,6 +1,6 @@
 # ADR 0127: Snapshots, the page tree, lists, history and garbage collection in the store bucket
 
-Status: partially implemented, 2026-10-12 (rewrite/0.2). E6 protocol evidence and limits are in [E6 pages and history](../verification/e6-pages-history.md).
+Status: partially implemented, amended 2026-10-13 (rewrite/0.2). E6 protocol evidence and limits are in [E6 pages and history](../verification/e6-pages-history.md).
 
 **Responsibility:** decide how actor state and lists are stored as immutable pages, how checkpoints reference them, how long history is kept, and how unreachable objects are deleted without ever deleting a reachable one.
 
@@ -38,12 +38,12 @@ gc/<epoch>        garbage-collection lease, created once
 ### 3. Retained history
 
 - History is the shard's segments plus its checkpoints, kept for the store's retention period: 7 days by default; Akter Cloud sets 7 days on Free plans and 30 days on paid plans. Retention is one value per store in 0.2.0.
-- Trim deletes segments older than retention and covered by a checkpoint older than `T_trim` ([ADR 0126](0126-shard-ownership-on-the-bucket-log.md)). Checkpoints older than retention are deleted except the newest one per shard. There is no separate archive copy: segments are the archive, so "archive before trim" holds by construction.
+- **Retention anchor amendment, 2026-10-13.** Keep the newest checkpoint at or before the first in-window segment's starting position, plus the complete chain after it. A checkpoint covers its whole segment, so one at the same offset is after that segment's first entry and cannot replace the preceding anchor. History exposes this anchor even when its timestamp is older than retention. Trim deletes only expired segments covered by a checkpoint older than `T_trim` and stops at the anchor offset ([ADR 0126](0126-shard-ownership-on-the-bucket-log.md)). Other expired checkpoints can be deleted except the newest per shard. When no segment is in-window, the newest checkpoint is the only required expired checkpoint. This replaces the earlier pruning clause that protected only the newest expired checkpoint. There is no separate archive copy: segments are the archive.
 - History serves forks ([ADR 0132](0132-forks-and-retained-history.md)), log inspection ([ADR 0137](0137-inspection-audited-operations-telemetry.md)) and replay; it is not served to application clients.
 
 ### 4. Garbage collection
 
-- **Roots** are every checkpoint manifest still within retention, plus the newest checkpoint of each shard and retained `Forked` manifests. A `Forked` entry beyond the newest checkpoint stays a root even after its retention expires: recovery still needs it until a newer checkpoint covers it. Everything reachable from a root (actor manifests, list pages, index pages) is live.
+- **Roots** are every checkpoint manifest still within retention, each shard's newest checkpoint and retention anchor, and the `Forked`/page-backed `Replayed` images in the complete chain after that anchor. An uncovered recovery-tail image remains a root even after its retention expires. The old anchor and chain can be released when the window advances to a newer anchor. Everything reachable from a root (actor manifests, list pages, index pages) is live.
 - **Lease.** A collector creates `gc/<n+1>` with `If-None-Match: *` after listing the newest `gc/<n>`; holding the newest key is the lease. Before each delete batch the collector checks that no newer `gc/` key exists, under the same `T_valid` rule as a shard owner. Two releases of one store therefore never sweep at once; no Cluster `Singleton` is used.
 - **Publication exclusion.** A timestamp HEAD followed by an unconditional DELETE can race a deduplicating PUT. Checkpoints and forks therefore hold an immutable `publishing` epoch across uploads and their durable reference; each delete batch holds `deleting`. Neither phase is taken over after an unknown outcome. Only `marking` expires; successful work advances to immutable `idle`. A confirmed shard fence also ends publication once its sequential protected work has stopped; unknown errors, defects and interruptions do not. This deliberately favors safety over automatic recovery of a stranded publisher or delete request.
 - **Mark and sweep.** The collector marks from the roots, then deletes only unmarked objects under `pages/` whose last-modified time is older than the grace period (default 24 hours, and always longer than twice the longest checkpoint interval plus `T_trim`).

@@ -3,14 +3,8 @@ import { SchemaBinary } from "effect/encoding"
 import { type RetriedBucket, retryUnavailable } from "./bucket.ts"
 import { decodeManifest, decodePage, decodeSegment, FORMAT, PageHash } from "./codec.ts"
 import { CorruptSegment, PageCorrupt, StaleEpoch, StorageUnavailable } from "./errors.ts"
-import {
-  checkpointOffset,
-  checkpointPrefix,
-  logPrefix,
-  pageKey,
-  PAGES_PREFIX,
-  segmentOffset,
-} from "./keys.ts"
+import { pageKey, PAGES_PREFIX } from "./keys.ts"
+import { historyWindow } from "./history.ts"
 
 const PREFIX = "gc/"
 
@@ -256,38 +250,28 @@ export const bucketGc = (settings: GcSettings) => {
         const candidates: Array<Candidate> = []
         const retentionCutoff = at - settings.retentionMillis
         for (let shard = 0; shard < settings.shards; shard++) {
-          let newest = true
+          const window = yield* retrying(historyWindow(bucket, shard, retentionCutoff))
           let covered = 0n
-          for (const key of yield* retrying(bucket.list(checkpointPrefix(shard)))) {
-            const offset = checkpointOffset(shard, key)
-            if (Option.isNone(offset)) continue
-            const modified = yield* retrying(bucket.modified(key))
-            if (!newest && Option.exists(modified, (time) => time < retentionCutoff)) {
+          for (const [index, { key, offset, modified }] of window.checkpoints.entries()) {
+            if (index > 0 && modified < retentionCutoff && key !== window.anchor?.key) {
               candidates.push({ key, cutoff: retentionCutoff, page: false })
               continue
             }
-            newest = false
             const bytes = yield* retrying(bucket.get(key))
             if (Option.isNone(bytes))
               return yield* CorruptSegment.make({ key, reason: "retained checkpoint is missing" })
             const manifest = yield* decodeManifest(key)(bytes.value)
             if (manifest.offset > covered) covered = manifest.offset
-            if (manifest.offset !== offset.value)
+            if (manifest.offset !== offset)
               return yield* CorruptSegment.make({
                 key,
                 reason: "checkpoint offset differs from its key",
               })
             roots.push(...manifest.statePages, ...manifest.indexPages)
           }
-          for (const key of yield* retrying(bucket.list(logPrefix(shard)))) {
-            const offset = segmentOffset(shard, key)
-            if (Option.isNone(offset)) continue
-            const modified = yield* retrying(bucket.modified(key))
-            if (
-              offset.value <= covered &&
-              Option.exists(modified, (time) => time < retentionCutoff)
-            )
-              continue
+          const after = window.first === undefined ? covered : (window.anchor?.offset ?? 0n)
+          for (const { key, offset } of window.segments) {
+            if (offset <= after) continue
             const bytes = yield* retrying(bucket.get(key))
             if (Option.isNone(bytes))
               return yield* CorruptSegment.make({ key, reason: "retained segment is missing" })

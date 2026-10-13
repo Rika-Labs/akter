@@ -1,6 +1,6 @@
 # ADR 0132: Forks and retained history
 
-Status: partially implemented, 2026-10-12 (rewrite/0.2). E6 operator evidence and remaining limits are in [E6 pages and history](../verification/e6-pages-history.md).
+Status: partially implemented, amended 2026-10-13 (rewrite/0.2). E6 operator evidence and remaining limits are in [E6 pages and history](../verification/e6-pages-history.md).
 
 **Responsibility:** decide how long a store keeps history, how an actor is forked from it, who may fork, and what a fork copies.
 
@@ -16,6 +16,8 @@ D8 ships forks and history in 0.2.0. D15 makes fork a CLI and operator operation
 
 A store keeps its segments and checkpoints for its retention period (default 7 days; Akter Cloud: 7 days Free, 30 days paid; one value per store in 0.2.0). Trim and GC respect it ([ADR 0126](0126-shard-ownership-on-the-bucket-log.md), [ADR 0127](0127-snapshots-pages-lists-history-gc.md)).
 
+The history catalogue includes the older checkpoint anchor and its complete following chain from ADR 0127, so an in-window position can be reconstructed after its older prefix is trimmed. Loading that anchor does not authorize a requested position older than retention.
+
 ### 2. Positions
 
 An actor's **version** is the count of actions applied to it. A fork position is a version (`--at <version>`) or an instant (`--before <time>`, the newest version admitted before it). Internally a version resolves to a qualified history position `(shard, offset, entry index)`; a bare offset is never a position, because one segment holds many entries.
@@ -24,7 +26,7 @@ An actor's **version** is the count of actions applied to it. A fork position is
 
 `akter fork <Type> <id> (--at <version> | --before <time>) [--to <id>] [--with-work]`, or the equivalent operator call, requires the `fork` capability for the tenant ([ADR 0137](0137-inspection-audited-operations-telemetry.md)).
 
-1. Find the newest checkpoint at or before the position within retention, load the actor's manifest, and replay the actor's entries up to the position.
+1. Find the newest checkpoint at or before the position, including the retained anchor, load the actor's manifest, and replay the actor's entries up to the requested in-window position.
 2. Write a new actor manifest sharing every unchanged page, and append a `Forked { from, at, to, manifest }` entry, plus an `Audit` entry, in the target actor's shard.
 3. The fork gets a new id (`--to`, or one derived from the source and the position), in the same tenant and type. Forking across tenants or types is refused.
 4. Pending timers and jobs are not copied unless `--with-work` is given; with it, timers are copied and open jobs start again under new ids from their journaled steps.

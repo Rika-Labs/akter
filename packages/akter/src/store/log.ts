@@ -9,7 +9,7 @@ import {
   type Manifest,
   type Segment,
 } from "./codec.ts"
-import { CorruptSegment, LogUnavailable, StaleEpoch, type StorageUnavailable } from "./errors.ts"
+import { CorruptSegment, LogUnavailable, StaleEpoch, StorageUnavailable } from "./errors.ts"
 import {
   checkpointKey,
   checkpointOffset,
@@ -20,6 +20,7 @@ import {
   segmentOffset,
 } from "./keys.ts"
 import { Metrics, count, record } from "../runtime/telemetry/metrics.ts"
+import { historyWindow } from "./history.ts"
 
 /** How many times `open` re-lists after another opener took the next offset before giving up. */
 const OPEN_ATTEMPTS = 5
@@ -194,10 +195,10 @@ export const bucketLog = (settings: Settings) => {
     })
 
   /** Runs `body` alone on the lease, after re-checking a lease idle longer than `validFor`. */
-  const guarded = <A>(
+  const guarded = <A, E>(
     lease: Lease,
-    body: (holding: Holding) => Effect.Effect<A, StaleEpoch | StorageUnavailable>,
-  ): Effect.Effect<A, StaleEpoch | LogUnavailable> =>
+    body: (holding: Holding) => Effect.Effect<A, E>,
+  ): Effect.Effect<A, E | StaleEpoch | StorageUnavailable> =>
     Effect.suspend(() => {
       const holding = holdings.get(lease)
       if (holding === undefined)
@@ -210,7 +211,7 @@ export const bucketLog = (settings: Settings) => {
           return yield* body(holding)
         }),
       )
-    }).pipe(Effect.catchTag("StorageUnavailable", (error) => Effect.fail(unavailable(error))))
+    })
 
   /** The newest intact checkpoint, with the newer ones skipped on the way. */
   const recoveryPoint = (shard: number) =>
@@ -325,7 +326,7 @@ export const bucketLog = (settings: Settings) => {
         yield* record(Metrics.batchEntries, {}, batch.length)
         return offset
       }),
-    )
+    ).pipe(Effect.catchTag("StorageUnavailable", (error) => Effect.fail(unavailable(error))))
 
   const read = (
     shard: number,
@@ -374,28 +375,19 @@ export const bucketLog = (settings: Settings) => {
     Effect.gen(function* () {
       const cutoff = (yield* Clock.currentTimeMillis) - settings.retentionMillis
       const retained: Array<HistoryCheckpoint> = []
-      let newest = true
-      for (const key of yield* retrying(bucket.list(checkpointPrefix(shard)))) {
-        const offset = checkpointOffset(shard, key)
-        if (Option.isNone(offset)) continue
-        const modified = yield* retrying(bucket.modified(key))
-        if (Option.isNone(modified))
-          return yield* CorruptSegment.make({
-            key,
-            reason: "listed checkpoint has no last-modified time",
-          })
-        if (!newest && modified.value < cutoff) continue
-        newest = false
+      const window = yield* retrying(historyWindow(bucket, shard, cutoff))
+      for (const [index, { key, offset, modified }] of window.checkpoints.entries()) {
+        if (index > 0 && modified < cutoff && key !== window.anchor?.key) continue
         const bytes = yield* retrying(bucket.get(key))
         if (Option.isNone(bytes))
           return yield* CorruptSegment.make({ key, reason: "retained checkpoint is missing" })
         const manifest = yield* decodeManifest(key)(bytes.value)
-        if (manifest.offset !== offset.value)
+        if (manifest.offset !== offset)
           return yield* CorruptSegment.make({
             key,
             reason: "checkpoint offset differs from its key",
           })
-        retained.push({ ...manifest, modified: modified.value })
+        retained.push({ ...manifest, modified })
       }
       return retained.reverse()
     }).pipe(Effect.catchTag("StorageUnavailable", (error) => Effect.fail(unavailable(error))))
@@ -418,7 +410,7 @@ export const bucketLog = (settings: Settings) => {
         )
         holding.checkpoints.push({ offset: manifest.offset, seenAt: start })
       }),
-    )
+    ).pipe(Effect.catchTag("StorageUnavailable", (error) => Effect.fail(unavailable(error))))
 
   const trim = (lease: Lease, through: bigint) =>
     guarded(lease, (holding) =>
@@ -428,25 +420,32 @@ export const bucketLog = (settings: Settings) => {
         for (const known of holding.checkpoints)
           if (current - known.seenAt >= settings.trimAfter && known.offset > covered)
             covered = known.offset
-        const bound = through < covered ? through : covered
+        let bound = through < covered ? through : covered
         if (bound < 1n) return 0n
         const cutoff = (yield* Clock.currentTimeMillis) - settings.retentionMillis
+        const window = yield* retrying(historyWindow(bucket, lease.shard, cutoff))
+        if (window.first !== undefined) {
+          const anchor = window.anchor?.offset ?? 0n
+          if (bound > anchor) bound = anchor
+        }
+        if (bound < 1n) return 0n
         const doomed: Array<string> = []
         let deletedThrough = 0n
-        for (const key of yield* retrying(bucket.list(logPrefix(lease.shard)))) {
-          const offset = segmentOffset(lease.shard, key)
-          if (Option.isNone(offset) || offset.value > bound) continue
-          const modified = yield* retrying(bucket.modified(key))
-          if (Option.isNone(modified) || modified.value >= cutoff) break
+        for (const { key, offset, modified } of window.segments) {
+          if (offset > bound) continue
+          if (modified >= cutoff) break
           doomed.push(key)
-          deletedThrough = offset.value
+          deletedThrough = offset
         }
         if (doomed.length > 0) yield* retrying(bucket.delete(doomed))
         return deletedThrough
       }),
-    )
+    ).pipe(Effect.catchTag("StorageUnavailable", (error) => Effect.fail(unavailable(error))))
 
-  const verify = (lease: Lease) => guarded(lease, () => Effect.void)
+  const verify = (lease: Lease) =>
+    guarded(lease, () => Effect.void).pipe(
+      Effect.catchTag("StorageUnavailable", (error) => Effect.fail(unavailable(error))),
+    )
 
   /** Whether `verify` would succeed without asking the bucket: the lease is open and within `validFor` of its last confirmation. */
   const fresh = (lease: Lease) =>
