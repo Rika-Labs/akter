@@ -99,6 +99,12 @@
       }
     },
     {
+      "files": ["packages/akter/src/store/codec.ts"],
+      "rules": {
+        "effecttsgo/node-builtin-import": "off"
+      }
+    },
+    {
       "files": ["packages/akter/src/runtime/peering/*.ts"],
       "rules": {
         "effecttsgo/node-builtin-import": "off"

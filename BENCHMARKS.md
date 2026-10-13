@@ -1,5 +1,70 @@
 # Akter benchmarks
 
+## 0.2 bucket-log engine: T1/T2 diagnostic (2026-10-12)
+
+The runnable harness is `tooling/conformance/src/conformance/engine-benchmark.ts`.
+It measures the engine through the same admission adapter used by `/rpc`, without
+HTTP or WebSocket, on a real MinIO bucket. It does not establish a served-client
+SLO, a four-vCPU T2 result, or R2/Tigris behavior. The historical 0.1 measurements
+below use different hardware allocations and persistence paths and are not a
+matched before/after comparison.
+
+### Method and reproduction
+
+An Apple M5 Max Mac (18 logical CPUs, 128 GiB RAM), running Bun 1.4.2 or Node
+26.7.0 with Effect 4.0.3, reaches loopback MinIO in Docker. The image is
+`cgr.dev/chainguard/minio@sha256:4b862594d23cb20ae0fbeb93311ed312a5b566ecba2293220b204c89ef3c1fe2`.
+The Mac runs other workloads; neither its CPUs nor Docker storage are isolated.
+Each invocation uses fresh prefixes. The serial baseline warms 32 requests and
+measures conditional PUTs of 64 KiB objects. T1 warms 256 zero-increment actions
+on one key; T2 pre-creates 10,000 keys. Each uses 64 closed-loop callers, four
+shards, batches of at most 64 entries, and periodic checkpoints every 64 segments.
+Three invocations per runtime measure each case for five seconds, include calls
+still in flight at the deadline, and report per-invocation percentiles.
+
+Every acknowledged increment is counted independently by key. After measurement,
+the owner drains, another owner reopens, and every key's recovered total must
+equal that count. Refusals are counted as failures, not retried or hidden. Timing
+includes engine admission through durable reply, but excludes client-id minting,
+warm-up, drain and the recovery check. PUT and action p99s are separate samples,
+not a paired per-action decomposition of latency.
+
+```sh
+docker compose -p akter-e2b -f packages/akter/compose.yaml up -d --wait
+TEST_S3_URL=http://project:project-minio@127.0.0.1:9000/akter-store \
+  bun run --cwd packages/akter test:integration
+TEST_S3_URL=http://project:project-minio@127.0.0.1:9000/akter-store \
+  BENCH_DURATION_MS=5000 BENCH_CONCURRENCY=64 \
+  bun run --cwd tooling/conformance bench:engine
+TEST_S3_URL=http://project:project-minio@127.0.0.1:9000/akter-store \
+  BENCH_DURATION_MS=5000 BENCH_CONCURRENCY=64 \
+  bun run --cwd tooling/conformance bench:engine:node
+docker compose -p akter-e2b -f packages/akter/compose.yaml down -v
+```
+
+The integration command creates the bucket. For another provider, create a
+disposable bucket and set `BENCH_PROVIDER` as well as `TEST_S3_URL`; credentials
+and the endpoint are never printed by the harness.
+
+### Results
+
+| Runtime / run | PUT p50 / p99 ms | T1 actions/s | T1 p50 / p99 ms | T2 actions/s |  T2 p50 / p99 ms | Failures |
+| ------------- | ---------------: | -----------: | --------------: | -----------: | ---------------: | -------: |
+| Bun / 1       |    4.726 / 9.039 |        8,391 |  6.396 / 62.212 |        6,105 |   8.976 / 42.125 |        0 |
+| Bun / 2       |   5.946 / 45.322 |        5,988 |  7.684 / 63.585 |        3,139 | 12.714 / 176.351 |        0 |
+| Bun / 3       |   7.265 / 88.791 |        6,879 |  7.769 / 67.942 |        4,694 |  10.503 / 58.952 |        0 |
+| Node / 1      |   5.057 / 13.954 |        7,166 |  7.430 / 62.922 |        4,513 |  11.095 / 77.245 |        0 |
+| Node / 2      |   5.572 / 62.527 |        7,536 |  6.852 / 61.513 |        4,279 |  11.823 / 68.477 |        0 |
+| Node / 3      |    4.200 / 9.917 |        7,874 |  6.763 / 52.894 |        5,985 |   8.740 / 49.305 |        0 |
+
+T1's revised target is at least 10,000 durable actions/s with p99 at most the
+named provider's PUT p99 + 5 ms. No invocation reaches its throughput target;
+four of six also exceed the latency bound. T2's target remains 50,000 actions/s
+over 10,000 actors on one four-vCPU runner; this uncontrolled Mac diagnostic is
+below that rate and does not prove the CPU-qualified target. These are measured
+shortfalls, not release-performance support. R2 and Tigris rows remain unmeasured
+here and belong to the provider probe; MinIO results must not fill them in.
+
 ## Served command CPU and receipt-history probes (2026-10-11)
 
 ### Method

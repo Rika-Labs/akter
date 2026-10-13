@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto"
 import { Effect, Schema } from "effect"
-import { Hex, SchemaBinary } from "effect/encoding"
+import { SchemaBinary } from "effect/encoding"
 import { Build } from "./build.ts"
 import { CorruptSegment, PageCorrupt } from "./errors.ts"
 
@@ -146,16 +147,17 @@ export const decodeMeta = (key: string) => (bytes: Uint8Array) =>
 /** A page's stored bytes: the header, then the caller's bytes unchanged. */
 export const encodePage = (payload: Uint8Array) => wrap(Kind.page, payload)
 
-/** Lowercase hex SHA-256 of `bytes`. */
-export const sha256 = (bytes: Uint8Array<ArrayBuffer>) =>
-  Effect.promise(() => crypto.subtle.digest("SHA-256", bytes)).pipe(
-    Effect.map((digest) => Hex.encode(new Uint8Array(digest))),
-  )
+/**
+ * Lowercase hex SHA-256 of `bytes`, computed synchronously: a host promise here would let the
+ * host's timing decide when the fiber that hashed resumes, which a seeded run cannot replay.
+ */
+export const sha256 = (bytes: Uint8Array): string =>
+  createHash("sha256").update(bytes).digest("hex")
 
 /** Reads a page stored under `hash`; bytes that do not hash to it or do not decode are the `PageCorrupt` defect. */
 export const decodePage = (hash: string) => (bytes: Uint8Array<ArrayBuffer>) =>
   Effect.gen(function* () {
-    const actual = yield* sha256(bytes)
+    const actual = sha256(bytes)
     if (actual !== hash)
       return yield* Effect.die(
         PageCorrupt.make({ hash, reason: `holds bytes that hash to ${actual}` }),

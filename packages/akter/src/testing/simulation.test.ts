@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Cause, Context, Effect, Exit, Fiber, Layer, Schema, Stream } from "effect"
+import { Cause, Context, Effect, Exit, Fiber, Layer, Random, Schema, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { Actor, ActorError, JobFailure, Unauthorized, anonymous, isUser, user } from "../index.ts"
 import { InvariantViolation, SIMULATION_SEED_BASE, Simulation, SimulationService } from "./index.ts"
@@ -697,27 +697,54 @@ interface LedgerRun {
   readonly crashes: number
   readonly lostResponses: number
   readonly outages: number
+  readonly partitioned: number
+  readonly paused: number
   readonly log: ReadonlyArray<string>
 }
 
 const text = new TextDecoder()
 
 /**
- * Twelve concurrent transfers among five accounts under crashes, lost responses, a slow log and an
- * operator crash of every shard partway through. Some transfers ask for more than the balance and
- * are refused, discarding their draft. Money moves only by exactly-once sends and every committed
- * transfer arms one timer, so a lost, duplicated or replayed effect shows in the totals, and
- * `settle` checks I1–I9 on top.
+ * The runner layer moving a two-runner store under load, at seeded points: it assigns every shard
+ * to the other runner (fencing the one that held them), drains the owner and assigns the store to
+ * the other, or pauses or cuts off the owner's bucket calls for a while.
  */
-const ledgerRun = (run: number): Promise<LedgerRun> =>
+const moves = Effect.gen(function* () {
+  const simulator = yield* SimulationService
+  for (let step = 0; step < 4; step++) {
+    yield* Effect.repeat(Effect.yieldNow, { times: yield* Random.nextIntBetween(0, 40) })
+    const owner = simulator.owner ?? 0
+    const other = 1 - owner
+    const seconds = `${yield* Random.nextIntBetween(1, 20)} seconds` as const
+    const move = yield* Random.nextIntBetween(0, 4)
+    if (move === 0) yield* Simulation.assign(other)
+    else if (move === 1) yield* Effect.andThen(Simulation.drain(), Simulation.assign(other))
+    else if (move === 2) yield* Simulation.pause(owner, seconds)
+    else yield* Simulation.partition(owner, seconds)
+  }
+})
+
+/**
+ * Twelve concurrent transfers among five accounts under crashes, lost responses, a slow log and an
+ * operator crash of every shard partway through; with `moving`, over two runners while the runner
+ * layer moves the store between them. A moved run reads every account once `validFor` after it
+ * settles, as the next request would: an idle owner whose shard a late open fenced learns of it only
+ * then, and the runner layer opens the shard again with the timers and sends the log owes. Some transfers ask for more than the balance and are refused,
+ * discarding their draft. Money moves only by exactly-once sends and every committed transfer arms
+ * one timer, so a lost, duplicated or replayed effect shows in the totals, and `settle` checks
+ * I1–I9 on top.
+ */
+const ledgerRun = (run: number, moving = false): Promise<LedgerRun> =>
   Simulation.run(
     {
       actors: [Ledger],
       seed: SIMULATION_SEED_BASE + run,
       faults: ["crash", "lostResponse", "unavailable", "slowLog"],
+      runners: moving ? [{}, {}] : [{}],
     },
     Effect.gen(function* () {
       yield* Effect.forEach(holders, (id) => Simulation.seed(Ledger, id, { balance: 100 }))
+      const moved = moving ? yield* Effect.forkChild(moves) : undefined
       const crashed = yield* Effect.forkChild(Effect.andThen(Effect.yieldNow, Simulation.crash()))
       const outcomes = yield* Effect.forEach(
         Array.from({ length: 12 }, (_, index) => index),
@@ -730,13 +757,19 @@ const ledgerRun = (run: number): Promise<LedgerRun> =>
         { concurrency: "unbounded" },
       )
       yield* Fiber.join(crashed)
+      if (moved !== undefined) yield* Fiber.join(moved)
       yield* Simulation.settle
+      if (moving) {
+        yield* Simulation.advance("11 seconds")
+        yield* Effect.forEach(holders, (id) => Simulation.state(Ledger, id))
+        yield* Simulation.settle
+      }
       const states = yield* Effect.forEach(holders, (id) => Simulation.state(Ledger, id))
       const failures = outcomes.flatMap((outcome) =>
         Exit.isFailure(outcome) ? [Cause.pretty(outcome.cause)] : [],
       )
       const simulator = yield* SimulationService
-      const { crashes, lostResponses, outages } = simulator.bucket.counts()
+      const { crashes, lostResponses, outages, partitioned, paused } = simulator.bucket.counts()
       const logs = yield* simulator.logs
       return {
         log: logs.flatMap((log) => [
@@ -752,6 +785,8 @@ const ledgerRun = (run: number): Promise<LedgerRun> =>
         crashes,
         lostResponses,
         outages,
+        partitioned,
+        paused,
         money: states.reduce((sum, state) => sum + state.balance, 0),
         sent: states.reduce((sum, state) => sum + state.sent, 0),
         received: states.reduce((sum, state) => sum + state.received, 0),
@@ -766,44 +801,70 @@ const ledgerRun = (run: number): Promise<LedgerRun> =>
 
 const seedRuns = 1_000
 
+const movingRuns = 200
+
 interface FaultsSeen {
   readonly refused: number
   readonly crashes: number
   readonly lostResponses: number
   readonly outages: number
+  readonly partitioned: number
+  readonly paused: number
 }
+
+/** Runs `runs` seeds in order, checks each one's totals, and sums the faults they saw. */
+const matrix = (runs: number, moving: boolean): Promise<FaultsSeen> =>
+  Array.from({ length: runs }, (_, run) => run).reduce<Promise<FaultsSeen>>(
+    (previous, run) =>
+      previous.then((seen) =>
+        ledgerRun(run, moving).then((totals) => {
+          const seed = `Simulation seed ${SIMULATION_SEED_BASE + run} (run ${run})`
+          expect(totals.money, seed).toBe(500)
+          expect(totals.received, seed).toBe(totals.sent)
+          expect(totals.audits, seed).toBe(totals.sent)
+          expect(totals.sent, seed).toBeGreaterThanOrEqual(totals.succeeded)
+          expect(totals.sent, seed).toBeLessThanOrEqual(totals.succeeded + totals.unknown)
+          return {
+            refused: seen.refused + totals.refused,
+            crashes: seen.crashes + totals.crashes,
+            lostResponses: seen.lostResponses + totals.lostResponses,
+            outages: seen.outages + totals.outages,
+            partitioned: seen.partitioned + totals.partitioned,
+            paused: seen.paused + totals.paused,
+          }
+        }),
+      ),
+    Promise.resolve({
+      refused: 0,
+      crashes: 0,
+      lostResponses: 0,
+      outages: 0,
+      partitioned: 0,
+      paused: 0,
+    }),
+  )
 
 describe("seed matrix", () => {
   it(
     `conserves money and delivers every send and timer exactly once across ${seedRuns} faulted seeds`,
     () =>
-      Array.from({ length: seedRuns }, (_, run) => run)
-        .reduce<Promise<FaultsSeen>>(
-          (previous, run) =>
-            previous.then((seen) =>
-              ledgerRun(run).then((totals) => {
-                const seed = `Simulation seed ${SIMULATION_SEED_BASE + run} (run ${run})`
-                expect(totals.money, seed).toBe(500)
-                expect(totals.received, seed).toBe(totals.sent)
-                expect(totals.audits, seed).toBe(totals.sent)
-                expect(totals.sent, seed).toBeGreaterThanOrEqual(totals.succeeded)
-                expect(totals.sent, seed).toBeLessThanOrEqual(totals.succeeded + totals.unknown)
-                return {
-                  refused: seen.refused + totals.refused,
-                  crashes: seen.crashes + totals.crashes,
-                  lostResponses: seen.lostResponses + totals.lostResponses,
-                  outages: seen.outages + totals.outages,
-                }
-              }),
-            ),
-          Promise.resolve({ refused: 0, crashes: 0, lostResponses: 0, outages: 0 }),
-        )
-        .then((seen) => {
-          expect(seen.refused).toBeGreaterThan(0)
-          expect(seen.crashes).toBeGreaterThan(0)
-          expect(seen.lostResponses).toBeGreaterThan(0)
-          expect(seen.outages).toBeGreaterThan(0)
-        }),
+      matrix(seedRuns, false).then((seen) => {
+        expect(seen.refused).toBeGreaterThan(0)
+        expect(seen.crashes).toBeGreaterThan(0)
+        expect(seen.lostResponses).toBeGreaterThan(0)
+        expect(seen.outages).toBeGreaterThan(0)
+      }),
+    300_000,
+  )
+
+  it(
+    `keeps the same totals across ${movingRuns} faulted seeds while the runner layer moves, drains, pauses and cuts off the owner`,
+    () =>
+      matrix(movingRuns, true).then((seen) => {
+        expect(seen.crashes).toBeGreaterThan(0)
+        expect(seen.partitioned).toBeGreaterThan(0)
+        expect(seen.paused).toBeGreaterThan(0)
+      }),
     300_000,
   )
 
@@ -815,6 +876,26 @@ describe("seed matrix", () => {
           previous.then(() =>
             ledgerRun(run).then((first) =>
               ledgerRun(run).then((second) => {
+                expect(
+                  second,
+                  `Simulation seed ${SIMULATION_SEED_BASE + run} (run ${run})`,
+                ).toEqual(first)
+              }),
+            ),
+          ),
+        Promise.resolve(),
+      ),
+    120_000,
+  )
+
+  it(
+    "replays a moving seed exactly: two runs over two runners write the same log and checkpoints",
+    () =>
+      Array.from({ length: 20 }, (_, run) => run).reduce<Promise<void>>(
+        (previous, run) =>
+          previous.then(() =>
+            ledgerRun(run, true).then((first) =>
+              ledgerRun(run, true).then((second) => {
                 expect(
                   second,
                   `Simulation seed ${SIMULATION_SEED_BASE + run} (run ${run})`,

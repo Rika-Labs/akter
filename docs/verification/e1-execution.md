@@ -5,7 +5,7 @@
 **Owner role:** runtime and reliability.  
 **Change policy:** a new durable transition needs a scenario that names the wrong implementation it rejects, and the seed matrix must stay green on Bun and Node.
 
-The engine lives in `packages/akter/src/` under `contract/`, `handlers/`, `execution/`, `snapshots/` and `testing/`. It runs on the [Store](store-protocol.md) from `src/store/`: every append, read, checkpoint and lease check goes through `Store.Store`, and nothing else is durable. The root entry exports the contract and the client (`Actor`, callers, errors); `./server` exports the store; `./testing` exports `Simulation`. The normative targets are the [actions](../contracts/02-actions.md), [durability](../contracts/03-durability.md), [messaging](../contracts/05-messaging.md), [background work](../contracts/08-background-work.md) and [recovery](../contracts/09-recovery.md) contracts and [ADR 0128](../decisions/0128-constrained-actor-api.md). Everything here runs in one process against the store's memory bucket, so none of it is a provider or real-bucket result.
+The engine lives in `packages/akter/src/` under `contract/`, `handlers/`, `execution/`, `snapshots/` and `testing/`. It runs on the [Store](store-protocol.md) from `src/store/`: every append, read, checkpoint and lease check goes through `Store.Store`, and nothing else is durable. The root entry exports the contract and the client (`Actor`, callers, errors); `./server` exports the store; `./testing` exports `Simulation`. The normative targets are the [actions](../contracts/02-actions.md), [durability](../contracts/03-durability.md), [messaging](../contracts/05-messaging.md), [background work](../contracts/08-background-work.md) and [recovery](../contracts/09-recovery.md) contracts and [ADR 0128](../decisions/0128-constrained-actor-api.md). Everything here runs in one process against the store's memory bucket, so none of it is a provider or real-bucket result. [E2 recovery](e2-recovery.md) extends this evidence with multiple engine instances, ownership moves, drain, cron catch-up and real-store recovery.
 
 ## Commands
 
@@ -16,15 +16,16 @@ bun --bun node_modules/vitest/vitest.mjs run packages/akter/src/{contract,handle
 node node_modules/vitest/vitest.mjs run packages/akter/src/{contract,handlers,execution,snapshots,testing}
 ```
 
-`packages/akter` `test` runs the same files with the store's suites. On 2026-10-12, with Bun 1.4.2 and Node 26.7.0 on macOS arm64, the six files passed 41 of 41 tests on both runtimes. The 1,000-seed matrix took 22 s on Bun and 33 s on Node; the seed replay test took 2 s and 4 s. `bun run pack:smoke` (and `SMOKE_RUNTIME=node`) installs the packed tarball into a clean project and runs an actor through `Simulation` from `@rikalabs/akter/testing`; [`pack.test.ts`](../../.github/src/pack.test.ts) builds a consumer of the root entry for Bun and Node and finds no AWS/Smithy module and no module from `execution/`, `snapshots/`, `store/` or `testing/`.
+`packages/akter` `test` runs the same files with the store's suites. The original E1 run on 2026-10-12, with Bun 1.4.2 and Node 26.7.0 on macOS arm64, passed 41 of 41 tests in six files on both runtimes. Its 1,000-seed matrix took 22 s on Bun and 33 s on Node; its seed replay test took 2 s and 4 s. These are the dated E1 results, not timings or counts for E2b's expanded suite. `bun run pack:smoke` (and `SMOKE_RUNTIME=node`) installs the packed tarball into a clean project and runs an actor through `Simulation` from `@rikalabs/akter/testing`; [`pack.test.ts`](../../.github/src/pack.test.ts) builds a consumer of the root entry for Bun and Node and finds no AWS/Smithy module and no module from `execution/`, `snapshots/`, `store/` or `testing/`.
 
 ## The simulator
 
-`Simulation.run(options, program, implementations)` builds one engine over `Store.Store` on a memory bucket and runs the program on a seeded fiber scheduler with `TestClock`. A run is a function of its seed:
+`Simulation.run(options, program, implementations)` builds one or more runner engines over `Store.Store` on a shared memory bucket and runs the program on a seeded fiber scheduler with `TestClock`. A run is a function of its seed:
 
-- The scheduler picks among runnable fibers with a seeded generator. While a host promise is pending (the store hashes pages with `crypto.subtle.digest`, which the run routes through the scheduler) no fiber runs, so the host's timing cannot reorder them.
+- The scheduler picks among runnable fibers with a seeded generator. Store page hashing is synchronous SHA-256; there is no global `crypto.subtle.digest` monkeypatch or hashing host promise that can reorder fibers.
 - The clock driver wakes only when no fiber can run. It moves `TestClock` in growing steps while work sleeps (store retries, delivery and restart backoff, jobs, client retries) and straight to the next one-shot timer when nothing else is left, rounding up so a fractional jittered time cannot stall it.
 - `Math.random` is replaced by a seeded generator for the run, and every action runs twice on cloned state (I9).
+- `TestClock` uses `warningDelay: Duration.infinity`. Its host-clock warning fiber is disabled because a host-timed warning would enter the seeded queue at a host-dependent point.
 - Faults sit between the store and the bucket, off until the engine is built: a crash before or after a log segment is written (the owner's shard crashes and the call fails, as a dying owner would see it), a lost response after a write lands, an outage that fails the striking call and up to seven more (some outlast the store's six attempts), and slow calls that yield fewer than 20 scheduler turns.
 
 `Simulation.settle` waits until nothing is staged, in flight, opening, restarting, delivering, due or running and no client call waits, then checks the invariants against the bucket itself and fails with `InvariantViolation`, whose message names the seed:
@@ -62,6 +63,7 @@ Run `n` of a matrix uses seed `SIMULATION_SEED_BASE + n` (`0x5eed0000 + n`), and
 | A closure counter and `Math.random` in a handler fail I9 naming the seed; the context's `random` passes                                                                           | `testing/simulation.test.ts`  | A simulator that cannot see nondeterministic handlers                                                                    |
 | 1,000 seeds of twelve concurrent transfers among five accounts, with an operator crash of every shard mid-run, under all four faults                                              | `testing/simulation.test.ts`  | Lost, duplicated or replayed effects: money must total 500, received must equal sent, one audit timer per transfer       |
 | Two runs of each of 50 seeds write the same log and checkpoints byte for byte                                                                                                     | `testing/simulation.test.ts`  | A simulator whose interleavings depend on host timing, so a failing seed does not reproduce                              |
+| 200 seeds over two runners move, drain, pause and partition the owner under the same faulted transfers; two runs of each of 20 moving seeds agree                                 | `testing/simulation.test.ts`  | Lost sends or timers during ownership changes, autonomous reopening of fenced shards, or host-dependent replay ordering  |
 
 The matrix also asserts that, across its 1,000 runs, transfers were refused for insufficient funds and crashes, lost responses and outages each struck, so a fault plan that silently stops firing fails it.
 
@@ -73,13 +75,11 @@ Each of these failed the matrix, or the seed replay test, before its fix; the fi
 - A crashed shard stayed closed until a caller touched it, so its timers never fired (six of eight audits). The engine now reopens a shard after its own append failure or crash, with backoff, unless another owner fenced it.
 - An open abandoned by a crash landed after the restart's open and fenced the owner's own new lease, which closed the shard for good with money in flight. Opens of one shard now run one after another, and an open runs in the engine's scope, so a caller that gives up never leaves a shard half open.
 - A jittered store retry made the test clock fractional, and the driver advanced by less than a millisecond forever. It now rounds up.
-- Host digests resolved at host-dependent times, so 11 of 30 seeds wrote different logs on a second run. The scheduler now holds while a digest is pending, and the clock driver wakes only on idleness.
+- Host digests resolved at host-dependent times, so 11 of 30 E1 seeds wrote different logs on a second run. E1 held the scheduler while a digest was pending; E2b removes that global crypto patch by making Store hashing synchronous. The clock driver still wakes only on idleness, and the host-clock `TestClock` warning is disabled.
 
 ## Left to later milestones
 
 - `PageMiss` and its rerun (F1's third case) need the page tree of E6; the engine keeps whole shard images in memory.
-- Two owners of one shard, partitions and stale-epoch appends after a move (F6 to F8, F13, F14) need more than one engine on one bucket; the simulator has one owner, and a fenced shard stays closed because no lease layer decides who owns it.
-- Trim and garbage collection (I7), tenancy (I8), drain and `Released` (F11), and `disconnect` for connections a previous owner recorded are not exercised.
-- `cronSkipIfOlderThan` is not implemented or tested: a pending cron tick fires once on recovery however old it is, then the next tick is the first scheduled time after it.
-- The engine's `validFor` is an engine option that must not exceed the store's; nothing checks that.
-- Nothing here ran against the file-system or S3 adapters, MinIO or a provider; the recovery contract's real-bucket crash-point evidence belongs to E2.
+- E2b now exercises two owners, stale epochs, partitions, engine drain/`Released`, Store-owned freshness and persisted cron skips. The simulator's assignment operations model the runner layer; they are not real Cluster routing, membership, mTLS or rollout evidence (E3).
+- Retention-aware trim and garbage collection (I7), tenancy (I8), and `disconnect` for connections a previous owner recorded remain unestablished here.
+- Real-store recovery is recorded separately in [E2 recovery](e2-recovery.md). Provider performance, production-bucket atomicity, real suspension/clock discontinuities and host wake-from-zero are not established by a memory-bucket run.

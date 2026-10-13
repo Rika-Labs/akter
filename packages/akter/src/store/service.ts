@@ -88,6 +88,12 @@ export class Store extends Context.Service<
     ) => Effect.Effect<bigint, StaleEpoch | LogUnavailable>
     /** Succeeds while the lease is current: at once within `validFor` of its last append or check, otherwise after re-checking the bucket. */
     readonly verify: (lease: Lease) => Effect.Effect<void, StaleEpoch | LogUnavailable>
+    /**
+     * True while `verify` would succeed without a bucket call: the lease is open and within
+     * `validFor` of its last append or check. An owner answers reads from memory only while this
+     * holds, so its read window is the store's own and the two can never disagree.
+     */
+    readonly fresh: (lease: Lease) => Effect.Effect<boolean>
     /** Stores a page and returns its hash. */
     readonly putPage: (bytes: Uint8Array) => Effect.Effect<string, StorageUnavailable>
     /** Loads a page by hash; concurrent loads are batched. A page that is absent or does not match its hash is the `PageCorrupt` defect. */

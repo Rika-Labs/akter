@@ -78,7 +78,11 @@ const platform = (port: number, hostname: string) =>
     }),
   )
 
-/** The engine over the provided store, with every actor of the app bound. */
+/**
+ * The engine over the provided store, with every actor of the app bound. One served process owns
+ * every shard of its store, so it assigns itself all of them; a cron tick more than an hour late
+ * after downtime is skipped.
+ */
 const engineOf = (app: App) =>
   Effect.gen(function* () {
     const store = yield* Store
@@ -88,14 +92,15 @@ const engineOf = (app: App) =>
     const catalog: Catalog = { actors, shards: store.meta.shards }
     const engine = yield* Engine.make(catalog, {
       shards: catalog.shards,
-      validFor: 10_000,
       policy: "matching",
       maxBatch: 64,
       checkpointEvery: 64,
+      cronSkipIfOlderThan: 3_600_000,
       doubleRun: false,
       observer: undefined,
     })
     Jobs.install(engine)
+    yield* engine.assign(Array.from({ length: catalog.shards }, (_, shard) => shard))
     return engine
   })
 

@@ -1,6 +1,6 @@
 # Jobs, timers and cron
 
-Status: proposal (0.2), owned by ADR 0129; promoted when E3 (timers and cron) and E5 (jobs) failure evidence lands, each section with its milestone.
+Status: partially normative (0.2), owned by ADR 0129. E2b promotes pending-timer recovery, drain-time `nextDue` and persisted cron catch-up at the inclusive threshold and one millisecond past it in [E2 recovery](../verification/e2-recovery.md). The other timer/cron clauses remain proposal for E3, and jobs/deploys for E5.
 
 **Responsibility:** define how I/O runs, how timers and recurring actions fire, and what survives crashes, owner changes, deploys and scale to zero.  
 **Authority:** normative target on `rewrite/0.2`.  
@@ -35,7 +35,7 @@ Status: proposal (0.2), owned by ADR 0129; promoted when E3 (timers and cron) an
 - A cron action MUST run on every actor of its type that has at least one durable action; the actor's first durable action schedules its first tick.
 - The schedule MUST be one of: a five- or six-field expression in UTC; `CRON_TZ=<IANA zone> <expression>`; or `@every <duration>` of at least one second, anchored to the Unix epoch. An unparsable schedule, an unknown zone or a fixed offset MUST be refused by `Actor.make`.
 - In a zone, a wall-clock time skipped by a transition MUST fire once at the first instant after the gap, and a repeated time MUST fire once at its first occurrence. The rule depends only on the instant.
-- Each cron entry MUST have at most one pending tick. After downtime the pending tick MUST fire once if it is no older than `cronSkipIfOlderThan` (default 1 hour) and be skipped otherwise; the next tick is the first scheduled time after now. Missed ticks MUST NOT be replayed one by one.
+- Each cron entry MUST have at most one pending tick. After downtime the pending tick MUST fire once if it is no older than `cronSkipIfOlderThan` (default 1 hour, inclusive at exactly one hour) and be skipped otherwise; the next tick is the first scheduled time after now. A skip MUST be durable as `Skipped`. Missed ticks MUST NOT be replayed one by one.
 
 ## Deploys
 
@@ -43,4 +43,4 @@ A shard whose open jobs name a declaration or step that the running build lacks 
 
 ## Verification
 
-F14 (timer due during failover), F15 (cron across a DST change), F17 (crash inside a step; after a step before its journal entry is durable), F17′ (crash after a job's call is durable, before it is journaled: one effect), F18 (retries exhausted reach `onFailure` with the right `ambiguous`), F19 (concurrency under load), F27 (timer due while the store is scaled to zero).
+F14 (timer due during failover), F15 (cron across a DST change), F17 (crash inside a step; after a step before its journal entry is durable), F17′ (crash after a job's call is durable, before it is journaled: one effect), F18 (retries exhausted reach `onFailure` with the right `ambiguous`), F19 (concurrency under load), F27 (timer due while the store is scaled to zero). E2b verifies recovery of a pending timer and the cron skip boundary; runner-layer failover, DST, and scaled-to-zero routing remain E3.

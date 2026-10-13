@@ -1,6 +1,6 @@
 # Durability, identity and outcomes
 
-Status: proposal (0.2), owned by ADR 0124; promoted when E2 failure evidence lands.
+Status: partially normative (0.2), owned by ADR 0124. E2b promotes the append-before-reply/publication gate on the tested engine paths, ambiguous-append resolution and synchronous Store hashing in [E2 recovery](../verification/e2-recovery.md). Index, job and wire publication guarantees and the remaining identity, authorization, page-layout, revocation and deadline clauses retain their proposal status until their own evidence lands.
 
 **Responsibility:** define when an action is durable, what may be observed before that, how command identity deduplicates retries, and who may read a stored outcome.  
 **Authority:** normative target on `rewrite/0.2`.  
@@ -13,6 +13,7 @@ Status: proposal (0.2), owned by ADR 0124; promoted when E2 failure evidence lan
 - Replies, events, state and list stream frames, view values, index contents, cross-shard deliveries and job starts MUST derive only from the durable prefix (I2). No reply MUST be sent and no event published before the segment holding the action's entry is durable.
 - An action's staged sends, timers and job starts are part of its entry; they MUST become durable with the action or not at all.
 - A runner MUST NOT acknowledge an action whose append outcome is unknown. An append that times out MUST be retried with the identical segment bytes; a create-once conflict on retry MUST be resolved by reading the existing segment's header: the owner's own `writer` and `open` mean success, anything else means the shard was lost. When retries are exhausted the owner MUST close the shard without publishing, and the next open MUST decide from the log whether the segment exists.
+- Store page hashes MUST be computed by a synchronous, deterministic SHA-256 function. The simulator MUST NOT patch a global asynchronous crypto API to make hashing schedulable; a host promise or global crypto monkeypatch MUST NOT influence seeded ordering.
 
 ## Command identity
 
@@ -47,4 +48,4 @@ A caller that stops waiting (`Timeout`) learns nothing about whether the action 
 
 ## Verification
 
-I2, I3 (replay from any checkpoint yields the same states and outcomes), I4; F4 (duplicate id during and after its lifetime, including conflict and wrong-caller cases), F6 (crash after append before reply), F6′ (append succeeded, response lost), F10 (bucket unavailable or slow).
+I2, I3 (replay from any checkpoint yields the same states and outcomes), I4; F4 (duplicate id during and after its lifetime, including conflict and wrong-caller cases), F6 (crash after append before reply), F6′ (append succeeded, response lost), F10 (bucket unavailable or slow). E2b evidence for the durable-prefix and unknown-outcome clauses is recorded in [E2 recovery](../verification/e2-recovery.md); provider performance is reserved for T5.

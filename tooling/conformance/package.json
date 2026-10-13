@@ -8,7 +8,9 @@
   "scripts": {
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
     "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
-    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. tooling/conformance/src"
+    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. tooling/conformance/src",
+    "bench:engine": "bun src/conformance/engine-benchmark.ts",
+    "bench:engine:node": "node src/conformance/engine-benchmark.ts"
   },
   "devDependencies": {
     "@effect/platform-bun": "catalog:",

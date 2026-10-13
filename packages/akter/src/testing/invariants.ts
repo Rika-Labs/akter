@@ -139,7 +139,9 @@ const once = (logs: ReadonlyArray<ShardLogContent>): Array<string> => {
 
 /**
  * I3 and I6 for one shard: replaying its log from nothing and from every checkpoint must reach the
- * live durable image exactly, with every replayed outcome equal to the recorded one.
+ * live durable image exactly, with every replayed outcome equal to the recorded one. Every build's
+ * segments are replayed, since a run can hold the segments of runners of several builds; which
+ * build may replay a tail is the recovery policy's question, not an invariant.
  */
 const replays = (
   catalog: Catalog,
@@ -156,7 +158,7 @@ const replays = (
       checkpoint?.bytes,
       log.segments,
       build,
-      "matching",
+      "current",
     )
     const from =
       checkpoint === undefined ? "the empty log" : `the checkpoint at ${checkpoint.offset}`

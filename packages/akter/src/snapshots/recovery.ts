@@ -79,8 +79,9 @@ const rerun = (catalog: Catalog, record: ActorRecord, entry: ActionEntry): Ran =
 /**
  * Replays segments onto a shard image in offset order. Each action runs again and its effects must
  * equal the recorded ones; a segment from another build is refused unless the policy is `current`.
- * An open segment carries no entries, so an earlier owner's build in one replays nothing and is
- * never refused.
+ * Only `Action` and `Seed` entries run application code (handlers and state schemas), so a segment
+ * without them replays the same on any build and is never refused: an open segment, which carries
+ * no entries, a drained owner's `Released` segment, and the engine's own bookkeeping.
  */
 const replay = (
   catalog: Catalog,
@@ -92,7 +93,17 @@ const replay = (
   for (const stored of segments) {
     const offset = Number(stored.offset)
     if (offset <= image.offset) continue
-    if (stored.entries.length > 0 && policy === "matching" && !Builds.same(stored.build, build))
+    const entries: Array<Entry> = []
+    for (const bytes of stored.entries) {
+      const decoded = EntryCodec.decode(bytes)
+      if (Result.isFailure(decoded))
+        return Result.fail(
+          CorruptLog.make({ shard: image.shard, offset, detail: decoded.failure.message }),
+        )
+      entries.push(decoded.success)
+    }
+    const runsCode = entries.some((entry) => Entry.guards.Action(entry) || Entry.guards.Seed(entry))
+    if (runsCode && policy === "matching" && !Builds.same(stored.build, build))
       return Result.fail(
         BuildMismatch.make({
           shard: image.shard,
@@ -101,13 +112,7 @@ const replay = (
           running: JSON.stringify(build),
         }),
       )
-    for (const bytes of stored.entries) {
-      const decoded = EntryCodec.decode(bytes)
-      if (Result.isFailure(decoded))
-        return Result.fail(
-          CorruptLog.make({ shard: image.shard, offset, detail: decoded.failure.message }),
-        )
-      const entry = decoded.success
+    for (const entry of entries) {
       if (!Entry.guards.Action(entry)) {
         Durable.record(image, catalog, entry, undefined)
         continue

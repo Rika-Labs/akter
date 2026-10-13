@@ -1,6 +1,6 @@
 # Actor identity and authority
 
-Status: proposal (0.2), owned by ADR 0126; promoted when E2 failure evidence lands.
+Status: partially normative (0.2), owned by ADR 0126. Only the create-once epoch fence, discard on loss, runner-only reassignment and Store-owned freshness clauses below are promoted by [E2 recovery](../verification/e2-recovery.md). All remaining clauses, including address/tenancy and clock discontinuities, remain proposal.
 
 **Responsibility:** define what an actor is, where it lives, and what may change it.  
 **Authority:** normative target on `rewrite/0.2`.  
@@ -20,7 +20,9 @@ An actor exists once it has a durable action. An action on an id with no history
 - At most one owner MAY append to a shard at a time (I1). Ownership is established only by creating the shard's next log segment with a create-once write; the open offset is the owner's epoch ([storage](06-storage.md), [recovery](09-recovery.md)).
 - A lease object, an Effect Cluster shard assignment, process memory, TypeScript types or routing ownership alone MUST NOT authorize an append, a reply or a publication.
 - An owner whose append finds the next segment written by another owner MUST stop: drop every activation of the shard, publish nothing pending, and answer waiting callers with retryable `ShardMoved`.
+- A fenced shard MUST remain closed to callers and autonomous restart. It MAY reopen on this runner only after the runner layer's `engine.assign` operation assigns the shard back; a caller touch, read, retry, or engine restart MUST NOT reopen it.
 - An owner that has neither appended successfully nor verified within `T_valid` (10 seconds of elapsed time on its own clock) MUST verify before it appends or answers a read. After a detected clock discontinuity it MUST verify every owned shard before serving.
+- Store MUST own the validity interval (`validFor`, default 10 seconds) and the lease's freshness. The engine MUST use Store freshness for reads and admission, including stored outcomes, and MUST verify an expired lease before using its cached state. It MUST NOT keep a second, independent validity interval.
 
 ## What may change an actor
 
@@ -31,4 +33,4 @@ An actor exists once it has a durable action. An action on an id with no history
 
 ## Verification
 
-I1 (one epoch appends), I2 (only the durable prefix is visible) and I8b (no action, read, send, `find` or fork crosses tenants); failures F7 (stale append after a move) and F8 (two runners believe they own a shard).
+I1 (one epoch appends), I2 (only the durable prefix is visible) and I8b (no action, read, send, `find` or fork crosses tenants); failures F7 (stale append after a move) and F8 (two runners believe they own a shard). E2b covers the fenced-shard rule with the ownership scenarios in [E2 recovery](../verification/e2-recovery.md); cluster routing and readiness remain E3 concerns.
