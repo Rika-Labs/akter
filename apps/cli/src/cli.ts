@@ -12,10 +12,14 @@ import { envCommand } from "./commands/cloud/env.ts"
 import { logsCommand } from "./commands/cloud/logs.ts"
 import { keysCommand } from "./commands/cloud/keys.ts"
 import { storageCommand } from "./commands/storage/check.ts"
+import { inspectCommand, logCommand, replayCommand, snapshotCommand } from "./commands/operator.ts"
+import { devCommand } from "./commands/dev.ts"
 
 /** The `akter` command tree. */
 export const akter = Command.make("akter").pipe(
-  Command.withDescription("Sign in to Akter Cloud, deploy, manage environments, and check storage"),
+  Command.withDescription(
+    "Run Akter locally, inspect durable state, operate logs, and manage Akter Cloud",
+  ),
   Command.withSubcommands([
     {
       group: "Akter Cloud",
@@ -30,6 +34,8 @@ export const akter = Command.make("akter").pipe(
       ],
     },
     { group: "Storage", commands: [storageCommand] },
+    { group: "Operators", commands: [inspectCommand, logCommand, snapshotCommand, replayCommand] },
+    { group: "Local", commands: [devCommand] },
   ]),
 )
 

@@ -1,7 +1,9 @@
 import { Context, DateTime, Duration, Effect, Option, Random, Schedule, type Stream } from "effect"
 import { dual } from "effect/Function"
 import { type Bucket, retryUnavailable } from "./bucket.ts"
-import { type Application, runtimeBuild } from "./build.ts"
+import { type Application, type Build, runtimeBuild } from "./build.ts"
+import { bucketAudit } from "./audit.ts"
+import type { AuditRecord } from "./audit.ts"
 import { type CheckOptions, type CheckReport, checkBucket } from "./check.ts"
 import { decodeMeta, encodeMeta, FORMAT, type Manifest, type StoreMeta } from "./codec.ts"
 import {
@@ -62,6 +64,17 @@ export class Store extends Context.Service<
   {
     /** The store's identity record, as created by its first runner. */
     readonly meta: StoreMeta
+    readonly build: Build
+    /** Reads the recovery point without opening, fencing or activating a shard. */
+    readonly recoveryPoint: (shard: number) => Effect.Effect<
+      {
+        readonly checkpoint: Option.Option<Manifest>
+        readonly damaged: ReadonlyArray<CorruptSegment>
+      },
+      StorageUnavailable | CorruptSegment
+    >
+    readonly audit: (record: AuditRecord) => Effect.Effect<void, StorageUnavailable>
+    readonly audits: Effect.Effect<ReadonlyArray<AuditRecord>, StorageUnavailable>
     /** Opens a shard from its newest intact checkpoint: fences every earlier owner and returns the new lease. */
     readonly open: (
       shard: number,
@@ -185,8 +198,10 @@ export const storeOf: {
     const build = yield* runtimeBuild(options.build ?? { bundle: "", framework: "" })
     return Store.of({
       meta,
+      build,
       ...bucketLog({ bucket, retry, writer, build, shards: meta.shards, validFor, trimAfter }),
       ...bucketPages({ bucket, retry }),
+      ...bucketAudit({ bucket, retry }),
       leases: bucketLeases({ bucket, retry }),
       check: checkBucket(bucket),
     })

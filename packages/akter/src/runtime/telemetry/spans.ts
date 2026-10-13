@@ -5,14 +5,14 @@
  * attributes.
  */
 export const SpanNames = {
-  /** One command's admission on the runner that received it, from the receipt probe to the reply. */
+  /** One command's admission on the gateway to the reply. */
   admission: "akter.admission",
   /** One command turn on the actor's owner. */
   turn: (actor: string, command: string) => `akter.${actor}/${command}`,
-  /** One turn batch on the actor's owner: the commands that were waiting, run in one transaction. */
-  batch: (actor: string) => `akter.${actor}/batch`,
-  /** The turn's commit group, from the first staged write to the `COMMIT` reply. */
+  /** One create-once segment append. */
   commit: "akter.commit",
   /** One executor attempt of a job. */
   job: (actor: string, job: string) => `akter.job/${actor}/${job}`,
+  /** One cross-shard send or timer firing. */
+  delivery: "akter.delivery",
 } as const

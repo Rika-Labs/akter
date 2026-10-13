@@ -1,17 +1,5 @@
-import {
-  Clock,
-  DateTime,
-  Duration,
-  Effect,
-  JsonPatch,
-  Predicate,
-  PubSub,
-  Result,
-  Schema,
-  Stream,
-} from "effect"
+import { Clock, Duration, Effect, JsonPatch, PubSub, Result, Schema, Stream } from "effect"
 import type { Caller } from "../contract/caller.ts"
-import type { Bounds } from "../contract/context.ts"
 import { ActionDefect, ActorError, InvalidInput, Unauthorized } from "../contract/errors.ts"
 import type { Reply, StateFrame, Target, Transport } from "../contract/handle.ts"
 import type { AccessRequest, AnyActor } from "../contract/make.ts"
@@ -24,6 +12,9 @@ import type { Engine } from "./engine.ts"
 import { Origin, Outcome } from "./entries.ts"
 import { Layouts } from "./layout.ts"
 import type { Decoded } from "./layout.ts"
+import { FindCodec } from "../rpc/group.ts"
+import { Metrics, count } from "../runtime/telemetry/metrics.ts"
+import { SpanNames } from "../runtime/telemetry/spans.ts"
 
 const denied = (): ActorError =>
   ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
@@ -110,7 +101,10 @@ const admitted = (
       connection: undefined,
     })
     return { reply: yield* reply(actor, member, outcome), replayed }
-  })
+  }).pipe(
+    Effect.withSpan(SpanNames.admission),
+    Effect.tapError((error) => count(Metrics.admissionRefused, { reason: error.reason._tag }, 1)),
+  )
 
 /** {@link admitted} without the `replayed` flag, for callers that only need the reply. */
 const admit = (...args: Parameters<typeof admitted>) =>
@@ -148,24 +142,6 @@ const changes = (
       )
     }),
   )
-
-const scalar = (value: Decoded): Decoded =>
-  DateTime.isDateTime(value) ? DateTime.toEpochMillis(value) : value
-
-const matches = (state: Decoded, where: Readonly<Record<string, Decoded>>): boolean => {
-  for (const [field, condition] of Object.entries(where)) {
-    const value = scalar(state[field])
-    if (Predicate.isObject(condition) && !DateTime.isDateTime(condition)) {
-      const bounds: Bounds<Decoded> = condition
-      if (bounds.gt !== undefined && !(value > scalar(bounds.gt))) return false
-      if (bounds.gte !== undefined && !(value >= scalar(bounds.gte))) return false
-      if (bounds.lt !== undefined && !(value < scalar(bounds.lt))) return false
-      if (bounds.lte !== undefined && !(value <= scalar(bounds.lte))) return false
-      if (bounds.in !== undefined && !bounds.in.map(scalar).includes(value)) return false
-    } else if (value !== scalar(condition)) return false
-  }
-  return true
-}
 
 /**
  * The read side every transport shares: `state` and lists from durable state only, views
@@ -320,24 +296,10 @@ const reads = (
     Effect.gen(function* () {
       const { actor, query } = request
       yield* allowed(actor, caller, { kind: "find", member: "find" })
-      const records = yield* engine.instances(actor, shards)
-      const where = query.where ?? {}
-      const selected = records.filter((record) => matches(record.image.state, where))
-      const order = query.orderBy
-      if (order !== undefined) {
-        const direction = order.direction === "desc" ? -1 : 1
-        selected.sort((left, right) => {
-          const a = scalar(left.image.state[order.field])
-          const b = scalar(right.image.state[order.field])
-          if (a === b) return 0
-          if (a === undefined) return 1
-          if (b === undefined) return -1
-          return (a < b ? -1 : 1) * direction
-        })
-      }
-      return selected
-        .slice(0, Math.min(query.limit ?? 1_000, 1_000))
-        .map((record) => record.keyJson)
+      yield* FindCodec.encode(actor, query).pipe(
+        Effect.flatMap((encoded) => FindCodec.decode(actor, encoded)),
+      )
+      return (yield* engine.find(actor, query, shards)).map((row) => row.id)
     }),
 })
 
@@ -370,4 +332,4 @@ const client = (engine: Engine, caller: Caller): Transport => {
 }
 
 /** Every transport that reaches the in-process engine. */
-export const Transports = { admit, admitted, client, reads, reply, retryWhileUnavailable }
+export const Transports = { admit, admitted, allowed, client, reads, reply, retryWhileUnavailable }

@@ -1,6 +1,6 @@
 # ADR 0137: Log and snapshot inspection, audited operator operations and stable telemetry
 
-Status: proposed, 2026-10-12 (rewrite/0.2).
+Status: partially accepted, 2026-10-12 (rewrite/0.2). E7 establishes default-tenant inspect/log/snapshot/replay, audit-before-answer and the telemetry exporter boundary; fork/delete/export and hosted/general-tenant operations retain their owning milestone's gate.
 
 **Responsibility:** decide how operators inspect actors, shards, the log and snapshots, which operator operations exist and how they are authorized and audited, and which telemetry names are stable.
 
@@ -66,6 +66,14 @@ Names use dots; Prometheus exposition replaces `.` with `_`. No metric carries a
 | `akter.gc.deleted`         | counter   | none                                      |
 
 `akter.activations` keeps its 0.1 name and meaning; receipt, outbox, relay, cold-tier, subscription, fleet and pool metrics are removed.
+
+## E7 implementation
+
+`Akter.serve({ operatorAuth })` serves separate `POST /operator` requests; it never asks application `auth` to convert a caller to a grant. Read-only inspection recovers a captured checkpoint-plus-tail position without opening or activating an actor. Scope denial creates a denied audit, and a held or failed create-once audit holds or refuses the answer. Actor inspection returns stored outcome tags and retained rejected-send metadata, not stored outcome values. The separately scoped outcome read honors `commandId`. Snapshot/log data may include state and payload values only under their independent capabilities; telemetry and audit records never carry those values.
+
+Replay appends `Replayed` and `Audit` together as [ADR 0133](0133-build-matched-replay.md) specifies. The CLI uses `effect/cli` and only `AKTER_OPERATOR_TOKEN` implicitly. It permits HTTPS or loopback HTTP, rejects credential-bearing URLs, and can select another credential variable explicitly.
+
+`Telemetry.layer` composes Effect OTLP metrics/traces and DevTools behind one redacting tracer; failed span causes, attributes, links and event data are removed before the exporters. No OTLP logs exporter is installed. Prometheus is opt-in on `Akter.serve`, while local dev enables it on loopback. Page-miss and GC instruments are declared for E6's transitions, not proof that those transitions have landed. [E7 evidence](../verification/e7-find-operators.md) covers real exporter delivery, stable names, redaction and each operator command's allowed/denied/missing-grant path.
 
 ## Supersedes and amends
 

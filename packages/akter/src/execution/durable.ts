@@ -11,6 +11,8 @@ import { Entry, Outcome } from "./entries.ts"
 import type { ActionEntry, Send, Timer } from "./entries.ts"
 import { Layouts } from "./layout.ts"
 import type { Decoded, Image } from "./layout.ts"
+import { Indexes } from "./indexes.ts"
+import type { OwnerIndex } from "./indexes.ts"
 
 /** An actor contract with its bound handlers. */
 export interface Bound {
@@ -94,6 +96,7 @@ export interface ShardImage {
   readonly outbox: Map<string, Array<PendingSend>>
   readonly sequences: Map<string, number>
   readonly jobs: Map<string, JobRecord>
+  index: OwnerIndex
 }
 
 /** Client ids are kept in pages by expiry, each this wide; a page drops once admission passes its end. */
@@ -111,6 +114,7 @@ const empty = (shard: number): ShardImage => ({
   outbox: new Map(),
   sequences: new Map(),
   jobs: new Map(),
+  index: Indexes.empty(),
 })
 
 const encodeCaller = Schema.encodeResult(Caller)
@@ -200,6 +204,7 @@ const recordAction = (
     record.created = true
     armCrons(image, record, entry.at)
   }
+  Indexes.update(image.index, record)
   Entry.cases.Action.fields.origin.match(entry.origin, {
     External: ({ expiresAt }) => {
       const bucket = bucketOf(expiresAt)
@@ -294,6 +299,8 @@ const record = (
   after: Image | undefined,
 ): void =>
   Entry.match(entry, {
+    Replayed: () => {},
+    Audit: () => {},
     Action: (action) => {
       const record = resident(image, catalog, action.actor, action.key)
       recordAction(image, catalog, action, after ?? record.image)
@@ -305,6 +312,7 @@ const record = (
         record.created = true
         armCrons(image, record, image.lastAt)
       }
+      Indexes.update(image.index, record)
     },
     Delivered: ({ stream, sequence }) => {
       const queue = image.outbox.get(stream)

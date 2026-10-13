@@ -19,6 +19,7 @@ import {
   segmentKey,
   segmentOffset,
 } from "./keys.ts"
+import { Metrics, count, record } from "../runtime/telemetry/metrics.ts"
 
 /** How many times `open` re-lists after another opener took the next offset before giving up. */
 const OPEN_ATTEMPTS = 5
@@ -153,7 +154,10 @@ export const bucketLog = (settings: Settings) => {
         const existing = yield* bucket.get(key)
         if (Option.isNone(existing)) return false
         return yield* decodeSegment(key)(existing.value).pipe(
-          Effect.map((segment) => segment.writer === settings.writer && segment.open === open),
+          Effect.flatMap((segment) => {
+            const own = segment.writer === settings.writer && segment.open === open
+            return Effect.as(count(Metrics.appendAmbiguous, {}, own ? 1 : 0), own)
+          }),
           Effect.catchTag("CorruptSegment", () => Effect.succeed(false)),
         )
       }),
@@ -310,6 +314,8 @@ export const bucketLog = (settings: Settings) => {
         if (!ours) return yield* fence(lease, holding)
         holding.head = offset
         holding.confirmedAt = start
+        yield* record(Metrics.appendDuration, {}, (yield* now) - start)
+        yield* record(Metrics.batchEntries, {}, batch.length)
         return offset
       }),
     )
@@ -396,5 +402,5 @@ export const bucketLog = (settings: Settings) => {
       )
     })
 
-  return { open, append, read, checkpoint, trim, verify, fresh }
+  return { open, append, read, checkpoint, trim, verify, fresh, recoveryPoint }
 }

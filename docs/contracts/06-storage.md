@@ -1,6 +1,6 @@
 # Storage
 
-Status: proposal (0.2), owned by ADR 0127; promoted when E2 (store, log and checkpoints) and E6 (lists, history and garbage collection) failure evidence lands, each section with its milestone.
+Status: partially normative (0.2), owned by ADR 0127. E7 establishes the shared checkpoint/index page and audit-before-answer boundaries in [its failure evidence](../verification/e7-find-operators.md). E2 store protocol evidence and E6 list/history/GC gates retain their stated scopes.
 
 **Responsibility:** define what a store holds, how objects are written and verified, how long history is kept, and how unreachable objects are deleted.  
 **Authority:** normative target on `rewrite/0.2`.  
@@ -29,6 +29,8 @@ Status: proposal (0.2), owned by ADR 0127; promoted when E2 (store, log and chec
 
 - Shard assignments MUST NOT be stored: each runner computes them from the runner leases with `HashRing`. The lease objects stay advisory; the log fence is the only authority.
 
+- Operator read records MUST be created once under `audit/` before answering, and a scope denial MUST write a denied record. An audit failure MUST refuse the read. E7's [operator evidence](../verification/e7-find-operators.md) establishes that boundary for the supported tenant. Mutation audit entries remain in the same segment as the effect.
+
 - `Store.fileSystem(dir)` MUST implement the same protocol on one host (`O_EXCL` create, atomic rename). `Store.memory()` is for tests and MUST NOT be presented as durable.
 
 ## Supported providers
@@ -41,6 +43,7 @@ A provider is supported only while `akter storage check` passes on it: atomic co
 
 - A segment MUST be created with `If-None-Match: *` and never overwritten. It holds `{ format, writer, open, build, entries }`.
 - A checkpoint manifest MUST be created with `If-None-Match: *` at the inverted offset it covers, only after every page it references is written. It MUST cover the shard's actor manifest pointers, timer wheel and `nextDue`, pending cross-shard sends, job table, deduplication state, open connections and index pages.
+- A checkpoint page MAY hold both durable state and its index rows; its hash MUST appear in both manifest page lists. Index rows MUST change only with the durable transition, and recovery MUST reproject decoded state so schema evolution cannot retain stale field values.
 - When a checkpoint's pages are missing or corrupt, recovery MAY start from an older checkpoint whose following segments are all retained, and MUST report the damaged one; otherwise it MUST refuse the shard. It MUST NOT fall back to default state ([recovery](09-recovery.md)).
 
 ## Pages

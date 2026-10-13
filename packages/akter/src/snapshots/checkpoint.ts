@@ -6,6 +6,7 @@ import type { Catalog, ClientRecord, ShardImage } from "../execution/durable.ts"
 import { JobFailedEntry, Outcome, Send, Timer, formatVersion } from "../execution/entries.ts"
 import { Layouts } from "../execution/layout.ts"
 import { Lists } from "../handlers/lists.ts"
+import { IndexSnapshot, Indexes } from "../execution/indexes.ts"
 
 const Snapshot = Schema.Struct({
   actor: Schema.String,
@@ -26,6 +27,7 @@ export const Checkpoint = Schema.Struct({
   offset: Schema.Int,
   lastAt: Schema.Finite,
   actors: Schema.Array(Snapshot),
+  index: Schema.optionalKey(IndexSnapshot),
   clients: Schema.Array(
     Schema.Struct({
       commandId: Schema.String,
@@ -94,6 +96,7 @@ const capture = (image: ShardImage): Checkpoint => ({
   shard: image.shard,
   offset: image.offset,
   lastAt: image.lastAt,
+  index: Indexes.capture(image.index),
   actors: Array.from(image.actors.values(), (record) => {
     const layout = Layouts.of(record.actor)
     return {
@@ -154,6 +157,7 @@ const restore = (catalog: Catalog, checkpoint: Checkpoint): ShardImage => {
   const image = Durable.empty(checkpoint.shard)
   image.offset = checkpoint.offset
   image.lastAt = checkpoint.lastAt
+  if (checkpoint.index !== undefined) image.index = Indexes.restore(checkpoint.index)
   for (const snapshot of checkpoint.actors) {
     const record = Durable.resident(image, catalog, snapshot.actor, snapshot.key)
     record.created = snapshot.created
@@ -164,7 +168,11 @@ const restore = (catalog: Catalog, checkpoint: Checkpoint): ShardImage => {
       [],
       snapshot.lists.map(({ field, items }) => ({ field, put: items, delete: [] })),
     )
+    Indexes.update(image.index, record)
   }
+  for (const address of image.index.rows.keys())
+    if (image.actors.get(address)?.created !== true)
+      throw new Error("Checkpoint index names an actor without durable state")
   for (const client of checkpoint.clients) {
     const bucket = Durable.bucketOf(client.expiresAt)
     const page = image.clients.get(bucket) ?? new Map<string, ClientRecord>()

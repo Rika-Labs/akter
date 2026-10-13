@@ -90,6 +90,50 @@ const replay = (
   build: Build,
   policy: ReplayPolicy,
 ): Result.Result<ShardImage, RecoveryError> => {
+  for (const segment of segments) {
+    if (Number(segment.offset) <= image.offset) continue
+    const entries = segment.entries.map((bytes) => EntryCodec.decode(bytes))
+    const approved = entries.some(
+      (entry) =>
+        Result.isSuccess(entry) &&
+        Entry.guards.Audit(entry.success) &&
+        entry.success.record.action === "replay" &&
+        entry.success.record.outcome === "allowed" &&
+        entry.success.record.target.shard === image.shard,
+    )
+    for (const entry of entries) {
+      if (Result.isFailure(entry) || !Entry.guards.Replayed(entry.success)) continue
+      if (!approved)
+        return Result.fail(
+          CorruptLog.make({
+            shard: image.shard,
+            offset: Number(segment.offset),
+            detail: "Replay image has no audit in its segment",
+          }),
+        )
+      const decoded = Checkpoints.decode(new TextEncoder().encode(entry.success.checkpoint))
+      if (Result.isFailure(decoded) || decoded.success.shard !== image.shard)
+        return Result.fail(
+          CorruptLog.make({
+            shard: image.shard,
+            offset: Number(segment.offset),
+            detail: "Replay image is invalid",
+          }),
+        )
+      try {
+        image = Checkpoints.restore(catalog, decoded.success)
+        image.offset = Number(segment.offset)
+      } catch {
+        return Result.fail(
+          CorruptLog.make({
+            shard: image.shard,
+            offset: Number(segment.offset),
+            detail: "Replay image cannot be decoded",
+          }),
+        )
+      }
+    }
+  }
   for (const stored of segments) {
     const offset = Number(stored.offset)
     if (offset <= image.offset) continue
@@ -187,6 +231,7 @@ const fingerprint = (image: ShardImage): string => {
   const checkpoint = Checkpoints.capture(image)
   return JSON.stringify({
     actors: byText(checkpoint.actors.filter((snapshot) => snapshot.created)),
+    index: byText(checkpoint.index ?? []),
     clients: byText(checkpoint.clients),
     received: byText(checkpoint.received),
     calls: byText(

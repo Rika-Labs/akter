@@ -1,6 +1,6 @@
 # ADR 0133: Build-matched replay, engine identity and deploy versioning
 
-Status: proposed, 2026-10-12 (rewrite/0.2).
+Status: partially accepted, 2026-10-12 (rewrite/0.2). E2/E7 establish same-runtime build checks and audited replay; cross-runtime and hosted orchestration gates remain open.
 
 **Responsibility:** decide which code replays a log tail, what a build id contains, how state and payload schemas evolve across builds, and what a host must keep to recover.
 
@@ -37,6 +37,12 @@ Build matching applies to segments that replay application code: currently `Acti
 A clean drain checkpoints through the last action, then writes `Released`. This leaves no actionable old-build tail, rather than literally no tail. A new build may decode that checkpoint and replay its bookkeeping. After a crash, an incompatible actionable tail is refused; assigning a runner of the old build lets it recover, drain and hand over. `replay: "current"` opts into current-code replay but never disables the recorded-effects comparison.
 
 [E2 recovery](../verification/e2-recovery.md) records the old-build refusal/replay/drain/new-build sequence on the simulator and real-store harness. Cross-engine identity matching is implemented, but an actual Node-to-Bun or Bun-to-Node recovery run (F12′), host replay-runner orchestration, image retention, readiness and inspection reporting are not established by that sequence.
+
+## E7 amendment: audited replay image
+
+The operator endpoint replays only a locally assigned refused shard. Its default policy is `matching`; `--current` explicitly selects current-code replay, while every recorded-effect comparison still runs. The validated rebuilt image is serialized into a `Replayed` entry and appended with its `Audit` entry in one segment. No rebuilt state is published before that append. Recovery accepts such an image only when the same segment contains an allowed replay audit for that shard. This image is an inline checkpoint, so interruption before a later checkpoint upload cannot strand an unaudited result or require old application code again. Subsequent actionable tail segments still obey build matching.
+
+The normal checkpoint and `Released` write are attempted after the atomic append. If their upload fails, the inline replay image and audit remain authoritative and the assigned engine reopens from them. The cost is one replay segment proportional to the rebuilt shard image; replay is an exceptional operator operation, not an action hot path. [E7 evidence](../verification/e7-find-operators.md) interrupts the append, refuses a mismatched build without opt-in, and fails the post-append page upload before restart.
 
 ## Supersedes and amends
 

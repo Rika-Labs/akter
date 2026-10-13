@@ -227,6 +227,7 @@ export type ScalarKeys<F extends Fields> = {
 
 /** A range condition on one scalar field. */
 export interface Bounds<T> {
+  readonly eq?: T
   readonly gt?: T
   readonly gte?: T
   readonly lt?: T

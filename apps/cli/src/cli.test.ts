@@ -21,10 +21,15 @@ describe("akter", () => {
         "keys",
         "logs",
         "storage",
+        "inspect",
+        "log",
+        "snapshot",
+        "replay",
+        "dev",
       ])
         expect(root.stdout).toMatch(new RegExp(`^  ${command} +\\S`, "m"))
 
-      expect(root.stdout).not.toMatch(/^  (tenants|billing|dev|inspect|operator) +\S/m)
+      expect(root.stdout).not.toMatch(/^  (tenants|billing|operator) +\S/m)
 
       const create = yield* runCli(["keys", "create", "--help"])
 
@@ -92,8 +97,7 @@ describe("akter", () => {
         [["billing", "setup"], "UnknownSubcommand", 'Unknown subcommand "billing"'],
         [["tenants", "create"], "UnknownSubcommand", 'Unknown subcommand "tenants"'],
         [["deploy"], "MissingOption", "Missing required flag: --project"],
-        [["dev"], "UnknownSubcommand", 'Unknown subcommand "dev"'],
-        [["inspect", "Room/r1"], "UnknownSubcommand", 'Unknown subcommand "inspect"'],
+        [["inspect", "Room/r1"], "UnknownSubcommand", 'Unknown subcommand "Room/r1"'],
         [["adopt", "plan"], "UnknownSubcommand", 'Unknown subcommand "adopt"'],
       ] as const) {
         const refused = yield* runCli(args)

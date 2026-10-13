@@ -62,7 +62,10 @@
       "rules": { "effecttsgo/any-unknown-in-error-context": "off" }
     },
     {
-      "files": ["packages/akter/src/serve/assertion/binding.test.ts"],
+      "files": [
+        "packages/akter/src/serve/assertion/binding.test.ts",
+        "packages/akter/src/runtime/telemetry/observability.test.ts"
+      ],
       "rules": { "effecttsgo/node-builtin-import": "off" }
     },
     {

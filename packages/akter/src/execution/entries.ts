@@ -1,6 +1,7 @@
 import { Result, Schema } from "effect"
 import { Caller } from "../contract/caller.ts"
 import { DefectKind } from "../contract/errors.ts"
+import { AuditRecord } from "../store/audit.ts"
 
 /** The format version of every checkpoint page this engine writes. */
 export const formatVersion = 1
@@ -189,6 +190,8 @@ export const ReleasedEntry = Schema.TaggedStruct("Released", {})
 
 /** Every log entry. */
 export const Entry = Schema.Union([
+  Schema.TaggedStruct("Replayed", { checkpoint: Schema.String }),
+  Schema.TaggedStruct("Audit", { record: AuditRecord }),
   ActionEntry,
   SeedEntry,
   DeliveredEntry,

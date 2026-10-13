@@ -4,11 +4,12 @@ import { Option, Schema } from "effect"
 export const OperatorAction = Schema.Literals([
   "inspect",
   "export",
-  "receipts.read",
-  "defects.read",
-  "dead-letters.retry",
-  "dead-letters.discard",
-  "subscriptions.skip",
+  "outcomes.read",
+  "log.read",
+  "snapshot.read",
+  "fork",
+  "replay",
+  "delete",
   "audit.read",
 ])
 
@@ -18,7 +19,7 @@ export type OperatorAction = typeof OperatorAction.Type
 /**
  * One action on one resource scope. `tenant` is a tenant id or `"*"` for
  * every tenant; an omitted field matches any value, and `commandId` narrows
- * `receipts.read` to one receipt.
+ * `outcomes.read` to one stored outcome.
  */
 export const Capability = Schema.Struct({
   action: OperatorAction,

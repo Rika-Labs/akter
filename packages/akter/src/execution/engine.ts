@@ -43,6 +43,12 @@ import type { Lease } from "../store/log.ts"
 import { Store } from "../store/service.ts"
 import { TimerWheels } from "./timer-wheel.ts"
 import type { TimerWheel } from "./timer-wheel.ts"
+import { Indexes } from "./indexes.ts"
+import type { Fields, FindQuery } from "../contract/context.ts"
+import type { FindRow } from "../contract/find.ts"
+import { Finds } from "../contract/find.ts"
+import { Metrics, count, record as metricRecord } from "../runtime/telemetry/metrics.ts"
+import { SpanNames } from "../runtime/telemetry/spans.ts"
 
 /** How an engine runs: its shards, replay policy, batch bound, cron catch-up and simulation hooks. */
 export interface EngineOptions {
@@ -329,6 +335,28 @@ const make = (catalog: Catalog, options: EngineOptions) =>
             new Error(`Shard ${id}'s open segment ${lease.open} is missing from its log`),
           )
         const recovered = Recovery.recover(catalog, id, checkpoint, tail, own.build, options.policy)
+        yield* count(
+          Metrics.shardOpens,
+          {
+            reason:
+              lease.open === 1n
+                ? "assigned"
+                : tail.some((segment) =>
+                      segment.entries.some((bytes) => {
+                        const entry = EntryCodec.decode(bytes)
+                        return Result.isSuccess(entry) && Entry.guards.Released(entry.success)
+                      }),
+                    )
+                  ? "handoff"
+                  : "crash",
+          },
+          1,
+        )
+        yield* metricRecord(
+          Metrics.replayEntries,
+          {},
+          tail.reduce((entries, segment) => entries + segment.entries.length, 0),
+        )
         return { lease, recovered }
       }).pipe(
         Effect.catchTag("CorruptSegment", (error) =>
@@ -454,10 +482,12 @@ const make = (catalog: Catalog, options: EngineOptions) =>
             const lease = shard.lease
             if (lease === undefined) return
             const appended = yield* Effect.exit(
-              store.append(
-                lease,
-                entries.map((pending) => EntryCodec.encode(pending.entry)),
-              ),
+              store
+                .append(
+                  lease,
+                  entries.map((pending) => EntryCodec.encode(pending.entry)),
+                )
+                .pipe(Effect.withSpan(SpanNames.commit)),
             )
             if (shard.generation !== generation) return
             if (Exit.isFailure(appended)) {
@@ -469,7 +499,33 @@ const make = (catalog: Catalog, options: EngineOptions) =>
             }
             const offset = Number(appended.value)
             shard.inFlight = []
-            for (const pending of entries) publish(shard, pending, offset)
+            for (const pending of entries) {
+              publish(shard, pending, offset)
+              if (Entry.guards.Action(pending.entry))
+                yield* count(
+                  Metrics.actions,
+                  {
+                    actor_type: pending.entry.actor,
+                    outcome: pending.entry.effects.outcome._tag.toLowerCase(),
+                  },
+                  1,
+                )
+            }
+            for (const name of catalog.actors.keys())
+              yield* metricRecord(
+                Metrics.activations,
+                { actor_type: name },
+                Array.from(shards.values()).reduce(
+                  (total, current) =>
+                    total +
+                    (current.status === "open"
+                      ? Array.from(current.durable.actors.values()).filter(
+                          (actor) => actor.created && actor.actor.name === name,
+                        ).length
+                      : 0),
+                  0,
+                ),
+              )
             yield* after(shard)
             shard.sinceCheckpoint++
             if (options.checkpointEvery > 0 && shard.sinceCheckpoint >= options.checkpointEvery) {
@@ -494,7 +550,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
         yield* store.checkpoint(lease, {
           offset: BigInt(image.offset),
           statePages: [hash],
-          indexPages: [],
+          indexPages: [hash],
           nextDue: nextDueOf(image),
         })
       })
@@ -777,6 +833,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       command: Command,
     ): Effect.Effect<{ readonly outcome: Outcome; readonly replayed: boolean }, ActorError> =>
       Effect.gen(function* () {
+        const started = yield* Clock.monotonicTimeNanos
         const address = Durable.addressOf(command.actor.name, command.keyJson)
         const shard = yield* readable(shardRuntime(shardOf(address)))
         const now = yield* Clock.currentTimeMillis
@@ -787,8 +844,15 @@ const make = (catalog: Catalog, options: EngineOptions) =>
         if (admission.kind === "refused") return yield* admission.error
         if (admission.kind === "done") return { outcome: admission.outcome, replayed: true }
         const replayed = pendingBefore !== undefined && admission.pending === pendingBefore
-        return { outcome: yield* Deferred.await(admission.pending.done), replayed }
-      })
+        const outcome = yield* Deferred.await(admission.pending.done)
+        if (!replayed)
+          yield* metricRecord(
+            Metrics.actionDuration,
+            { actor_type: command.actor.name },
+            Number((yield* Clock.monotonicTimeNanos) - started) / 1_000_000,
+          )
+        return { outcome, replayed }
+      }).pipe(Effect.withSpan(SpanNames.turn(command.actor.name, command.member)))
 
     /** Runs a command on its owner and waits until its entry is durable; the outcome is the reply. */
     const execute = (command: Command): Effect.Effect<Outcome, ActorError> =>
@@ -990,6 +1054,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
           }),
           connection: undefined,
         }).pipe(
+          Effect.withSpan(SpanNames.delivery),
           Effect.catchIf(
             (error) => error.isRetryable,
             (error) => Effect.andThen(Effect.sleep("50 millis"), Effect.fail(error)),
@@ -1026,7 +1091,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
                 onBehalfOf: next.onBehalfOf,
               }),
               connection: undefined,
-            }),
+            }).pipe(Effect.withSpan(SpanNames.delivery)),
           )
           if (shard.generation !== generation) return
           if (Exit.isFailure(result)) {
@@ -1195,6 +1260,22 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       seed,
       durableRecord,
       instances,
+      find: (
+        actor: AnyActor,
+        query: FindQuery<Fields>,
+        ids: ReadonlyArray<number> = Array.from({ length: catalog.shards }, (_, id) => id),
+      ): Effect.Effect<ReadonlyArray<FindRow>, ActorError> =>
+        Effect.map(
+          Effect.forEach(
+            ids,
+            (id) =>
+              Effect.map(readable(shardRuntime(id)), (shard) =>
+                Indexes.query(shard.durable.index, actor, query),
+              ),
+            { concurrency: "unbounded" },
+          ),
+          (partitions) => Finds.rows(query, partitions.flat()),
+        ),
       /** Receiver retirement inspects a recovered, valid owner image, never an unopened shard. */
       retireJobCalls: (id: number, jobId: string): Effect.Effect<void, ActorError> =>
         Effect.flatMap(readable(shardRuntime(id)), (shard) =>

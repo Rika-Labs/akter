@@ -8,34 +8,39 @@ export const milliseconds = [
 
 /**
  * Metric names and attribute keys are public, like span names. Prometheus
- * exposition replaces `.` and `-` with `_`, so `akter.turns` is
- * scraped as `akter_turns`. Attributes are bounded by the
- * deployment's declarations (actor types, commands, jobs) or by fixed
+ * exposition replaces `.` with `_`. Attributes are bounded by the
+ * deployment's declarations (actor types and jobs) or by fixed
  * sets; no metric carries a tenant, actor id, or command id.
  */
 export const Metrics = {
-  turns: Metric.counter("akter.turns", {
-    description:
-      "Turns finished on this runner, by actor_type and outcome (success, failure, defect, replay, acknowledged).",
+  actions: Metric.counter("akter.actions", {
+    description: "Durable actions, by actor_type and outcome (success, failure, defect).",
     incremental: true,
   }),
-  turnDuration: Metric.histogram("akter.turn.duration_ms", {
-    description: "Turn time from the mailbox to the reply, by actor_type.",
+  actionDuration: Metric.histogram("akter.action.duration_ms", {
+    description: "Action admission to durability, by actor_type.",
     boundaries: milliseconds,
   }),
-  mailboxAge: Metric.histogram("akter.mailbox.age_ms", {
-    description:
-      "How long a command waited between its admission and the start of its turn, by actor_type.",
+  batchEntries: Metric.histogram("akter.batch.entries", {
+    description: "Entries per durable segment.",
+    boundaries: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 4096],
+  }),
+  appendDuration: Metric.histogram("akter.append.duration_ms", {
+    description: "Segment append duration.",
     boundaries: milliseconds,
   }),
+  appendAmbiguous: Metric.counter("akter.append.ambiguous", { incremental: true }),
+  shardOpens: Metric.counter("akter.shard.opens", { incremental: true }),
+  replayEntries: Metric.histogram("akter.replay.entries", {
+    boundaries: [0, 1, 10, 100, 1000, 10_000, 100_000],
+  }),
+  pageMisses: Metric.counter("akter.page.misses", { incremental: true }),
   activations: Metric.gauge("akter.activations", {
     description: "Activations resident on this runner, by actor_type.",
   }),
-  activationsStarted: Metric.counter("akter.activations.started", {
-    description:
-      "Activations built on this runner, by actor_type, including rebuilds after a defect.",
-    incremental: true,
-  }),
+  jobs: Metric.counter("akter.jobs", { incremental: true }),
+  admissionRefused: Metric.counter("akter.admission.refused", { incremental: true }),
+  gcDeleted: Metric.counter("akter.gc.deleted", { incremental: true }),
 } as const
 
 type Attributes = Readonly<Record<string, string>>
