@@ -82,7 +82,7 @@ export class PageCorrupt extends Schema.TaggedError<PageCorrupt>()("PageCorrupt"
  * with, so it refuses the store rather than adopt or overwrite the record.
  */
 export class StoreMismatch extends Schema.TaggedError<StoreMismatch>()("StoreMismatch", {
-  setting: Schema.Literals(["shards", "retention"]),
+  setting: Schema.Literal("shards"),
   stored: Schema.Finite,
   configured: Schema.Finite,
 }) {

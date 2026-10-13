@@ -20,6 +20,7 @@ A store is one bucket (or one prefix of a bucket) holding everything durable:
 
 ```text
 meta/store                  store descriptor, created once
+meta/retention              effective retention and operator audit, CAS-updated
 s/<nn>/log/<offset>         segments
 s/<nn>/cp/<inverted offset> checkpoint manifests
 pages/<sha256>              state, list, manifest and index pages

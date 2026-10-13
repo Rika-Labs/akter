@@ -70,6 +70,14 @@ const served = Akter.serve({
 
 Provide exactly one store: `Store.s3({ bucket })` for a durable bucket or `Store.fileSystem(dir)` for local development. `Store.memory()` is non-durable test infrastructure. The framework has no Postgres, PGlite, Drizzle, or migration layer.
 
+### Store retention
+
+`StoreOptions.retention` seeds only a new store (default seven days); reopening with another value does not change policy or defect. Read `Store.retention` for the effective duration in milliseconds. Change it with `Store.setRetention(duration, { grant, reason })` from `@rikalabs/akter/server`, or `store.setRetention` on the provided service. The duration is `Duration.Input`, bounded to one through 365 days inclusive. The separate authenticated `OperatorGrant` must include `{ action: "retention.set", tenant: "*" }` without actor or command restrictions. No application caller converts to it.
+
+The operation returns `{ retentionMillis, revision, audit }`. `RetentionRefused` carries `reason: "scope" | "range"`; concurrent writers receive `RetentionConflict` (the revision they tried to replace). An unavailable or corrupt record returns `StorageUnavailable` or `CorruptSegment`. The effective value and audit become durable together at `meta/retention` through compare-and-swap; the initial `meta/store` value is never overwritten. A previous embedded audit is archived before replacement, and `store.audits` includes the current one.
+
+GC captures one value per collection pass; an already-running pass finishes under that value, and changes apply on the next pass. Segment trim reads once per request. Widening can preserve still-stored history but cannot restore history already trimmed. Fork and history/log admission use the value at request time. `store.history.read(shard, 0n)` lists in-window segments; an explicit expired start fails with `HistoryExpired`. Older checkpoints remain visible only as reconstruction anchors/newest recovery images; their visibility does not authorize an expired fork. `store.read` is the lower-level recovery-chain read, not a public history authorization boundary.
+
 The example's fixed user is for local development only. Production must authenticate a real credential with `Auth.make`, `Auth.jwt`, or the hosted assertion provider. `Auth.none` authenticates `Anonymous`; an actor's default `access` admits only `User` and `System`, so a public actor must explicitly admit anonymous requests. The current server refuses tenants other than `default` until tenant-scoped actor addresses have their own evidence.
 
 ### Several runners and graceful shutdown (0.2)

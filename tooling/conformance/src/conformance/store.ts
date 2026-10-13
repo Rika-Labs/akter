@@ -605,7 +605,7 @@ export const storeConformance = <OpenError, ClientError>(
     )
 
     it.effect(
-      "writes meta/store once with its creation time and refuses a runner configured otherwise (rejects a last-writer-wins record and adopting another shard count)",
+      "writes meta/store once, refuses another shard count and ignores reopening retention options (rejects last-writer-wins metadata or changing retention on open)",
       () =>
         Effect.gen(function* () {
           const client = yield* backend.namespace
@@ -636,17 +636,11 @@ export const storeConformance = <OpenError, ClientError>(
             storeOf(bucket, { retry: RETRY }),
           )
           expect(adopting.meta).toEqual(meta)
-          const retention = yield* failureOf(
-            Effect.flatMap(client, (bucket) =>
-              storeOf(bucket, { shards: meta.shards, retention: "30 days", retry: RETRY }),
-            ),
+          const retention = yield* Effect.flatMap(client, (bucket) =>
+            storeOf(bucket, { shards: meta.shards, retention: "30 days", retry: RETRY }),
           )
-          expect(retention).toBeInstanceOf(StoreMismatch)
-          expect(retention).toMatchObject({
-            setting: "retention",
-            stored: 7 * 24 * 60 * 60 * 1000,
-            configured: 30 * 24 * 60 * 60 * 1000,
-          })
+          expect(retention.meta).toEqual(meta)
+          expect(yield* retention.retention).toBe(7 * 24 * 60 * 60 * 1000)
           const exit = yield* Effect.exit(adopting.open(meta.shards))
           expect(Exit.isFailure(exit) && !Exit.hasFails(exit)).toBe(true)
         }),

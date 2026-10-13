@@ -25,12 +25,20 @@ import { META_KEY } from "./keys.ts"
 import { bucketLeases, type Leases } from "./leases.ts"
 import { bucketLog, type HistoryCheckpoint, type Lease, type StoredSegment } from "./log.ts"
 import { bucketPages } from "./pages.ts"
+import { bucketRetention } from "./retention.ts"
+import type {
+  HistoryExpired,
+  RetentionConflict,
+  RetentionRecord,
+  RetentionRefused,
+  SetRetentionOptions,
+} from "./retention.ts"
 
 /** How a store is created and how its owners keep their leases honest. */
 export interface StoreOptions {
   /** Shards recorded in `meta/store` when this call creates the store; an existing store with another count is refused. Default: 16 for a new store, the recorded count for an existing one. */
   readonly shards?: number
-  /** History retention recorded in `meta/store` when this call creates the store; an existing store with another retention is refused. Default: 7 days for a new store, the recorded retention for an existing one. */
+  /** Initial history retention for a new store only; ignored when reopening. Default: 7 days. Use `setRetention` to change an existing store. */
   readonly retention?: Duration.Input
   /** The application bundle digest and framework version recorded in every segment beside the runtime's own build. Default: both empty. */
   readonly build?: Application
@@ -72,6 +80,16 @@ export class Store extends Context.Service<
     /** The store's identity record, as created by its first runner. */
     readonly meta: StoreMeta
     readonly build: Build
+    /** Reads effective retention from the bucket, falling back to the initial descriptor value. */
+    readonly retention: Effect.Effect<number, StorageUnavailable | CorruptSegment>
+    /** Atomically changes retention and its audit with a store-wide `retention.set` grant. */
+    readonly setRetention: (
+      duration: Duration.Input,
+      options: SetRetentionOptions,
+    ) => Effect.Effect<
+      RetentionRecord,
+      StorageUnavailable | CorruptSegment | RetentionConflict | RetentionRefused
+    >
     /** Reads the recovery point without opening, fencing or activating a shard. */
     readonly recoveryPoint: (shard: number) => Effect.Effect<
       {
@@ -81,7 +99,7 @@ export class Store extends Context.Service<
       StorageUnavailable | CorruptSegment
     >
     readonly audit: (record: AuditRecord) => Effect.Effect<void, StorageUnavailable>
-    readonly audits: Effect.Effect<ReadonlyArray<AuditRecord>, StorageUnavailable>
+    readonly audits: Effect.Effect<ReadonlyArray<AuditRecord>, StorageUnavailable | CorruptSegment>
     /** Opens a shard from its newest intact checkpoint: fences every earlier owner and returns the new lease. */
     readonly open: (
       shard: number,
@@ -143,7 +161,7 @@ export class Store extends Context.Service<
         shard: number,
         from: bigint,
         through?: bigint,
-      ) => Stream.Stream<StoredSegment, LogUnavailable | CorruptSegment>
+      ) => Stream.Stream<StoredSegment, LogUnavailable | CorruptSegment | HistoryExpired>
     }
     /** Runs the conformance probe against this store's bucket. */
     readonly check: (options?: CheckOptions) => Effect.Effect<CheckReport, StorageUnavailable>
@@ -164,14 +182,6 @@ const agrees = (meta: StoreMeta, configured: Configured) =>
         setting: "shards",
         stored: meta.shards,
         configured: Option.getOrElse(configured.shards, () => meta.shards),
-      })
-    if (
-      Option.exists(configured.retentionMillis, (retention) => retention !== meta.retentionMillis)
-    )
-      return yield* StoreMismatch.make({
-        setting: "retention",
-        stored: meta.retentionMillis,
-        configured: Option.getOrElse(configured.retentionMillis, () => meta.retentionMillis),
       })
     return meta
   })
@@ -229,9 +239,13 @@ export const storeOf: {
     })
     const writer = options.writer ?? (yield* randomHex)
     const build = yield* runtimeBuild(options.build ?? { bundle: "", framework: "" })
+    const retention = bucketRetention({ bucket, retry, initial: meta.retentionMillis })
+    const audit = bucketAudit({ bucket, retry })
     return Store.of({
       meta,
       build,
+      retention: retention.retention,
+      setRetention: retention.setRetention,
       ...bucketLog({
         bucket,
         retry,
@@ -240,7 +254,7 @@ export const storeOf: {
         shards: meta.shards,
         validFor,
         trimAfter,
-        retentionMillis: meta.retentionMillis,
+        retention: retention.retention,
       }),
       ...bucketGc({
         bucket,
@@ -249,10 +263,17 @@ export const storeOf: {
         shards: meta.shards,
         validFor,
         trimAfter,
-        retentionMillis: meta.retentionMillis,
+        retention: retention.retention,
       }),
       ...bucketPages({ bucket, retry }),
-      ...bucketAudit({ bucket, retry }),
+      audit: audit.audit,
+      audits: Effect.gen(function* () {
+        const current = yield* retention.retentionAudit
+        const records = yield* audit.audits
+        if (current !== undefined && !records.some((record) => record.id === current.id))
+          records.push(current)
+        return records
+      }),
       leases: bucketLeases({ bucket, retry }),
       check: checkBucket(bucket),
     })

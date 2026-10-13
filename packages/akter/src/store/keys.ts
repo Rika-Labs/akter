@@ -17,6 +17,9 @@ const parseHex16 = (text: string): Option.Option<bigint> =>
 /** The store's identity record, written once when the store is created. */
 export const META_KEY = "meta/store"
 
+/** The effective retention and its audit, replaced only by compare-and-swap. */
+export const RETENTION_KEY = "meta/retention"
+
 /** Prefix of every content-addressed page. */
 export const PAGES_PREFIX = "pages/"
 

@@ -38,7 +38,7 @@ export class PagePublicationBusy extends Schema.TaggedError<PagePublicationBusy>
 export interface GcSettings extends RetriedBucket {
   readonly writer: string
   readonly shards: number
-  readonly retentionMillis: number
+  readonly retention: Effect.Effect<number, StorageUnavailable | CorruptSegment>
   readonly validFor: number
   readonly trimAfter: number
 }
@@ -248,7 +248,7 @@ export const bucketGc = (settings: GcSettings) => {
         yield* confirm(holding)
         const roots: Array<string> = []
         const candidates: Array<Candidate> = []
-        const retentionCutoff = at - settings.retentionMillis
+        const retentionCutoff = at - (yield* settings.retention)
         for (let shard = 0; shard < settings.shards; shard++) {
           const window = yield* retrying(historyWindow(bucket, shard, retentionCutoff))
           let covered = 0n

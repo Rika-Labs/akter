@@ -12,7 +12,13 @@ import { envCommand } from "./commands/cloud/env.ts"
 import { logsCommand } from "./commands/cloud/logs.ts"
 import { keysCommand } from "./commands/cloud/keys.ts"
 import { storageCommand } from "./commands/storage/check.ts"
-import { inspectCommand, logCommand, replayCommand, snapshotCommand } from "./commands/operator.ts"
+import {
+  inspectCommand,
+  logCommand,
+  replayCommand,
+  retentionCommand,
+  snapshotCommand,
+} from "./commands/operator.ts"
 import { devCommand } from "./commands/dev.ts"
 import { forkCommand } from "./commands/operators/fork.ts"
 
@@ -37,7 +43,14 @@ export const akter = Command.make("akter").pipe(
     { group: "Storage", commands: [storageCommand] },
     {
       group: "Operators",
-      commands: [inspectCommand, logCommand, snapshotCommand, forkCommand, replayCommand],
+      commands: [
+        inspectCommand,
+        logCommand,
+        snapshotCommand,
+        forkCommand,
+        replayCommand,
+        retentionCommand,
+      ],
     },
     { group: "Local", commands: [devCommand] },
   ]),

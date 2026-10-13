@@ -67,7 +67,7 @@ const forkOnce = (target: Engine, options: ForkOptions, source: Store["Service"]
     const shard = Durable.shardOf(Durable.addressOf(actor.name, from), source.meta.shards)
     const catalog: Catalog = { ...target.catalog, shards: source.meta.shards }
     const now = yield* Clock.currentTimeMillis
-    const cutoff = now - source.meta.retentionMillis
+    const cutoff = now - (yield* source.retention)
     const cache = new PageCache()
     const available = yield* source.history.checkpoints(shard)
     let base: ReturnType<typeof Checkpoints.capture> | undefined
@@ -103,7 +103,7 @@ const forkOnce = (target: Engine, options: ForkOptions, source: Store["Service"]
     const segments =
       "version" in at && position?.version === at.version
         ? []
-        : yield* Stream.runCollect(source.history.read(shard, BigInt(start)))
+        : yield* Stream.runCollect(source.read(shard, BigInt(start)))
     entries: for (const segment of segments) {
       for (const [index, bytes] of segment.entries.entries()) {
         const entry = Result.getOrThrow(EntryCodec.decode(bytes))

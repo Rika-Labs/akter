@@ -23,12 +23,15 @@ This checkout implements cloud `login`, `logout`, `whoami`, `deploy`, `env`, `ke
 | `akter snapshot <shard>`                            | `snapshot.read`     | Checkpoint, manifest, and page data                             |
 | `akter fork <Type> <id> --at <version>`             | `fork`              | Actor branch from retained history; default excludes work       |
 | `akter replay <shard> [--current]`                  | `replay`            | Replay a refused shard; `--current` is explicit opt-in          |
+| `akter retention <duration>`                        | `retention.set`     | Set store-wide history retention from one through 365 days      |
 
 Stored success/failure values require `outcomes.read` independently of `inspect`; `export`, `delete`, and `audit.read` also have distinct grants in the operator target. Served operator requests use separate `POST /operator`, never `/rpc`. The server composes `Akter.serve({ app, auth, operatorAuth?, prometheus? })`; `OperatorAuth.tokens([{ token: Redacted.make(...), grant: { operator, capabilities } }])` maps bearer tokens to grants. The served commands default to `http://127.0.0.1:8080`, tenant `default`, and `AKTER_OPERATOR_TOKEN`; `--url`, `--tenant`, `--reason`, and `--token-env` override those values. Application credentials and `System` callers never become operator grants. Capabilities scope tenant, actor type/id, and optionally command id.
 
 `fork` instead loads an application module with `authorizeOperator(token)` and operates directly on a directory or bucket/prefix. It accepts version, timestamp or qualified offset/index positions, a target id/store, and opt-in `--with-work`. It is not a hosted operator request. See [operator forks](forks.md) for flags, key-schema decoding and scope limits.
 
 Reads write a create-once audit record before answering. Mutations include `Audit` in the same segment as their effect; a crash leaves both or neither. Scope denials are audited. No operation may return data when its required audit cannot be written. [ADR 0137](../decisions/0137-inspection-audited-operations-telemetry.md) defines this target; [runbooks](../operations/runbooks.md) describe safe recovery.
+
+`akter retention "30 days" --url https://runner.example --reason "paid plan"` uses the existing separate operator endpoint and `AKTER_OPERATOR_TOKEN` (or `--token-env`). It is store-wide, so it has no `--tenant` flag and requires `retention.set` with `tenant: "*"`, unrestricted by actor/command. Its request is `{ operation: "retention", target: { store: true }, tenant: "*", reason, retentionMillis }`. The response contains `retentionMillis` and `revision`. The audit is atomic with the CAS policy record, not a shard log entry. Invalid durations are usage errors; denied/conflicting writes exit 1. Widening does not restore already-trimmed history; an active GC pass finishes with its captured old value. Local dev does not grant this capability implicitly.
 
 ## Local development
 

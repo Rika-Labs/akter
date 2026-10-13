@@ -8,6 +8,8 @@ import { fileSystemBucket } from "./file-system.ts"
 import { memoryBucket } from "./memory.ts"
 import { type S3Options, s3Bucket } from "./s3.ts"
 import { Store, storeOf, type StoreOptions } from "./service.ts"
+import type { Duration } from "effect"
+import type { SetRetentionOptions } from "./retention.ts"
 
 export { Store, type StoreOptions }
 
@@ -29,6 +31,13 @@ export const memory = (options: StoreOptions = {}) =>
 
 /** Runs the conformance probe against the provided store's bucket. */
 export const check = (options?: CheckOptions) => Store.use((store) => store.check(options))
+
+/** Reads the store's current retention in milliseconds, without caching it in this process. */
+export const retention = Store.use((store) => store.retention)
+
+/** Changes retention and its audit together; a conflict requires a new operator request. */
+export const setRetention = (duration: Duration.Input, options: SetRetentionOptions) =>
+  Store.use((store) => store.setRetention(duration, options))
 
 /** Collects engine pages and expired checkpoints with the store-wide publication barrier. */
 export const collect = (options: Omit<GcOptions, "references" | "entryReferences"> = {}) =>

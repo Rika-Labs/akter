@@ -53,6 +53,7 @@ Owner validity uses elapsed time on the owner's own clock ([actor authority](01-
 
 - A store is restored from a copy of its bucket. Every runner of the store MUST be stopped before a restore and stay stopped until it completes.
 - A restore MUST include `meta/store`, each shard's newest checkpoint and every segment after it, and every page reachable from those checkpoints; before any runner restarts, every restored checkpoint's pages MUST be verified by existence and digest. A shard whose copy is incomplete MUST be refused, never opened with default state.
+- A restore MUST also include `meta/retention` when present and the operator audit objects; omitting it would silently restore the initial retention rather than the effective policy. An absent retention record in a store that never changed policy still uses `meta/store`.
 - After a restore, pending sends, timers, job journals and deduplication state recover as after a crash. An external id that expired MUST stay refused. Actions durable after the copy was taken are lost; a retry of such an id MAY run again, and their external consequences are the operator's to reconcile.
 - A stopped `akter dev` store is copied by copying its whole directory.
 
