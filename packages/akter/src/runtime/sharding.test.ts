@@ -5,6 +5,7 @@ import {
   Deferred,
   type Duration,
   Effect,
+  Exit,
   Layer,
   Option,
   Predicate,
@@ -73,7 +74,7 @@ const port = Effect.callback<number>((resume) => {
   })
 })
 
-const setup = (requestTimeout: Duration.Input = "10 seconds") =>
+const setup = (requestTimeout: Duration.Input = "10 seconds", count = 2) =>
   Effect.gen(function* () {
     const bucket = { ...memoryBucket() }
     const authority = yield* RunnerAuthority.make()
@@ -86,7 +87,7 @@ const setup = (requestTimeout: Duration.Input = "10 seconds") =>
       shards: 4,
     }
     const runners = []
-    for (let index = 0; index < 2; index++) {
+    for (let index = 0; index < count; index++) {
       const scope = yield* Scope.fork(yield* Effect.scope)
       const store = yield* storeOf(bucket, { shards: 4, writer: `runner-${index}` })
       const engine = yield* Engine.make(catalog, {
@@ -134,12 +135,58 @@ const setup = (requestTimeout: Duration.Input = "10 seconds") =>
 
 describe("bucket-backed Cluster routing", () => {
   it(
+    "F24 rejects hanging shutdown on a shard refused because its actionable tail belongs to another build",
+    () =>
+      Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const { runners, bucket } = yield* setup("10 seconds", 1)
+            const old = runners[0]!
+            const id = yield* Effect.flatMap(Clock.currentTimeMillis, CommandIds.mint)
+            yield* old.routing.admitted(user("ana"), id, {
+              actor: Ledger,
+              id: "build-tail",
+              member: "add",
+              payload: 41,
+            })
+            yield* Scope.close(old.scope, Exit.void)
+            const scope = yield* Scope.fork(yield* Effect.scope)
+            const store = yield* storeOf(bucket, {
+              shards: 4,
+              writer: "new-build",
+              build: { bundle: "new", framework: "" },
+            })
+            const engine = yield* Engine.make(old.engine.catalog, old.engine.options).pipe(
+              Effect.provideService(Store, store),
+              Effect.provideService(Scope.Scope, scope),
+            )
+            const authority = yield* RunnerAuthority.make()
+            const credentials = yield* authority.issue({ deployment: "store-cluster" })
+            yield* Routing.make(engine, {
+              address: { host: "127.0.0.1", port: yield* port },
+              peering: { deployment: "store-cluster", credentials: Effect.succeed(credentials) },
+              shardLockExpiration: "3 seconds",
+              shardLockRefreshInterval: "1 second",
+              refreshAssignmentsInterval: "100 millis",
+            }).pipe(Effect.provideService(Store, store), Effect.provideService(Scope.Scope, scope))
+            const shard = engine.shardOf(Durable.addressOf(Ledger.name, "build-tail"))
+            for (let poll = 0; poll < 500 && engine.status(shard).status !== "refused"; poll++)
+              yield* Effect.sleep("10 millis")
+            expect(engine.status(shard).status).toBe("refused")
+            yield* Scope.close(scope, Exit.void).pipe(Effect.timeout("5 seconds"))
+            expect(yield* bucket.leases.list("cluster/runners/")).toHaveLength(0)
+          }),
+        ),
+      ),
+    15_000,
+  )
+  it(
     "F16 rejects executing a request on the gateway instead of its owner; the same id returns the durable outcome",
     () =>
       Effect.runPromise(
         Effect.scoped(
           Effect.gen(function* () {
-          const { runners } = yield* setup()
+            const { runners } = yield* setup()
             const gateway = runners[0]!
             const owner = runners[1]!
             let key = ""

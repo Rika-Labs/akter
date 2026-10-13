@@ -234,6 +234,14 @@ const clustered = (engine: Engine, options: RunnerOptions) =>
     /** A drained runner keeps a disabled self only in its local membership view, preventing Cluster from hot-looping registration; it never renews its bucket row or heartbeat. */
     const storage = RunnerStorage.RunnerStorage.of({
       ...raw,
+      unregister: (runner) =>
+        Effect.gen(function* () {
+          if (Equal.equals(runner, address)) {
+            draining = true
+            yield* engine.unassign(Array.from(held))
+          }
+          yield* raw.unregister(runner)
+        }),
       getRunners: healthy(raw.getRunners).pipe(
         Effect.map((runners) =>
           draining && self !== undefined
