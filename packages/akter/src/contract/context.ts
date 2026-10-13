@@ -143,7 +143,7 @@ export interface Step {
     name: string,
     effect: Effect.Effect<A, E, R>,
   ): Effect.Effect<A, E, R>
-  <S extends Schema.Top, E, R>(
+  <S extends MemberSchema, E, R>(
     name: string,
     schema: S,
     effect: Effect.Effect<S["Type"], E, R>,

@@ -19,6 +19,7 @@ Settled names for 0.2:
 - List operations in actions: `put`, `get`, `delete`, `range`, `deleteBefore`
 - Action context: `caller`, `now`, `id`, `random`, `self`, `send(Target, id).<action>`, `schedule(durationOrDate).<action>`, `start.<job>`, `emit.<event>`, `connection`
 - Job context: `self`, `step`, `emit`, `id`, `attempt`
+- Jobs: [`step(name, effect)` / `step(name, schema, effect)` and `DurableClock.sleep({ name, duration })`](jobs.md)
 - Implementation: `X.toLayer({ ...actions, ...views, ...jobs, connect?, disconnect? })`
 - Client: `X.client(id)` with each action, `state`, each list's `range`, each view, each event and `join`; static `X.find({ where, orderBy, limit })`
 - Server: `Akter.serve({ auth })`, `Store.s3({ bucket, prefix? })`, `Store.fileSystem(dir)`, `Store.memory()`, `App.make`

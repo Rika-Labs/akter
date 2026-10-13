@@ -1,5 +1,6 @@
 import { Context, Effect, FileSystem, Layer } from "effect"
 import { engineConformance } from "../../../../tooling/conformance/src/conformance/engine.ts"
+import { jobConformance } from "../../../../tooling/conformance/src/conformance/jobs.ts"
 import { storeConformance } from "../../../../tooling/conformance/src/conformance/store.ts"
 import { fileSystemBucket } from "./file-system.ts"
 
@@ -20,7 +21,7 @@ storeConformance({
   ),
 })
 
-engineConformance({
+const engineBackend = {
   name: "the file system",
   location: Effect.flatMap(Layer.build(platform), (services) =>
     Effect.map(
@@ -33,4 +34,7 @@ engineConformance({
       }),
     ),
   ),
-})
+}
+
+engineConformance(engineBackend)
+jobConformance(engineBackend)

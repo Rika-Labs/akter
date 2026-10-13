@@ -3,7 +3,7 @@ import { Caller } from "../contract/caller.ts"
 import { Actions } from "../execution/action.ts"
 import { Durable } from "../execution/durable.ts"
 import type { Catalog, ClientRecord, ShardImage } from "../execution/durable.ts"
-import { Outcome, Send, Timer, formatVersion } from "../execution/entries.ts"
+import { JobFailedEntry, Outcome, Send, Timer, formatVersion } from "../execution/entries.ts"
 import { Layouts } from "../execution/layout.ts"
 import { Lists } from "../handlers/lists.ts"
 
@@ -64,6 +64,10 @@ export const Checkpoint = Schema.Struct({
       key: Schema.optional(Schema.String),
       onBehalfOf: Schema.optional(Schema.String),
       attempt: Schema.Int,
+      at: Schema.Finite,
+      failure: Schema.optional(JobFailedEntry),
+      done: Schema.optional(Schema.Literals(["Succeeded", "Failed"])),
+      workflow: Schema.Array(Schema.Json),
       steps: Schema.Array(Schema.Struct({ name: Schema.String, value: Schema.Json })),
     }),
   ),
@@ -124,6 +128,10 @@ const capture = (image: ShardImage): Checkpoint => ({
     key: job.key,
     onBehalfOf: job.onBehalfOf,
     attempt: job.attempt,
+    at: job.at,
+    failure: job.failure,
+    done: job.done,
+    workflow: job.workflow,
     steps: Array.from(job.steps, ([name, value]) => ({ name, value })),
   })),
 })
@@ -169,6 +177,10 @@ const restore = (catalog: Catalog, checkpoint: Checkpoint): ShardImage => {
       ...job,
       key: job.key,
       onBehalfOf: job.onBehalfOf,
+      failure: job.failure,
+      done: job.done,
+      suspended: undefined,
+      workflow: Array.from(job.workflow),
       steps: new Map(job.steps.map(({ name, value }) => [name, value])),
     })
   return image

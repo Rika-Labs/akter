@@ -28,6 +28,7 @@ Startup migration evidence lives in `runtime/database/migrations.test.ts`: six c
 - [Store protocol: the 0.2 bucket log, pages, leases and runner storage on memory, a local directory and MinIO](store-protocol.md)
 - [E1 execution: the 0.2 contract, synchronous execution, deduplication, recovery and the 1,000-seed `Simulation` matrix on Bun and Node](e1-execution.md)
 - [E4 RPC, sessions and serving: `/rpc` over WebSocket and HTTP, the Effect client, sessions and reauthorization, `Akter.serve` and the self-host recipe on Bun and Node](e4-rpc-serve.md)
+- [E5 jobs: shard workflow journals, F17–F19/F17′, durable sleeps, streaming retries and Bun/Node/MinIO evidence](e5-jobs.md)
 - [Store provider support matrix: which object-storage providers pass `akter storage check`, with date and version](store-providers.md)
 - [Low-connection Postgres: direct four-session floor and explicit transaction-pooler evidence](low-connection-postgres.md)
 - [Performance and capacity](../../BENCHMARKS.md)

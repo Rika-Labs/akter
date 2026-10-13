@@ -134,6 +134,22 @@ export const DeliveredEntry = Schema.TaggedStruct("Delivered", {
 export const AttemptEntry = Schema.TaggedStruct("Attempt", {
   jobId: Schema.String,
   attempt: Schema.Int,
+  at: Schema.Finite,
+})
+
+/** An attempt's terminal failure, recorded before any backoff or failure action. */
+export const JobFailedEntry = Schema.TaggedStruct("JobFailed", {
+  jobId: Schema.String,
+  attempt: Schema.Int,
+  cause: Schema.Literals(["Failed", "Defect", "Timeout"]),
+  ambiguous: Schema.Boolean,
+  retryAt: Schema.Finite,
+})
+
+/** Encoded workflow bookkeeping owned and fenced by the job's shard. */
+export const WorkflowEntry = Schema.TaggedStruct("Workflow", {
+  jobId: Schema.String,
+  value: Schema.Json,
 })
 
 /** A job step finished; it never runs again. */
@@ -152,6 +168,9 @@ export const DoneEntry = Schema.TaggedStruct("Done", {
 
 /** A receiver dropped the call stream of a finished job. */
 export const RetiredEntry = Schema.TaggedStruct("Retired", { jobId: Schema.String })
+
+/** All receivers acknowledged stream retirement; the completed job's cleanup obligation is gone. */
+export const JobRetiredEntry = Schema.TaggedStruct("JobRetired", { jobId: Schema.String })
 
 /**
  * A cron tick found older than `cronSkipIfOlderThan` when it came due, at admission time `at`: it
@@ -174,9 +193,12 @@ export const Entry = Schema.Union([
   SeedEntry,
   DeliveredEntry,
   AttemptEntry,
+  JobFailedEntry,
+  WorkflowEntry,
   StepEntry,
   DoneEntry,
   RetiredEntry,
+  JobRetiredEntry,
   SkippedEntry,
   ReleasedEntry,
 ]).pipe(Schema.toTaggedUnion("_tag"))

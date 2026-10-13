@@ -54,6 +54,18 @@
   },
   "overrides": [
     {
+      "files": ["packages/akter/src/execution/workflow.test.ts"],
+      "rules": { "effecttsgo/strict-effect-provide": "off" }
+    },
+    {
+      "files": ["packages/akter/src/execution/workflow.ts"],
+      "rules": { "effecttsgo/any-unknown-in-error-context": "off" }
+    },
+    {
+      "files": ["packages/akter/src/serve/assertion/binding.test.ts"],
+      "rules": { "effecttsgo/node-builtin-import": "off" }
+    },
+    {
       "files": [
         "apps/self-host/src/bucket.ts",
         "apps/self-host/src/probe.ts",
