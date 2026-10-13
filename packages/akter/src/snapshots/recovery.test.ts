@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Context, Effect, Layer, Result, Schema } from "effect"
+import { Context, Deferred, Effect, Fiber, Layer, Result, Schema } from "effect"
 import { Actor } from "../index.ts"
 import type { AnyActor } from "../contract/make.ts"
 import type { Catalog } from "../execution/durable.ts"
@@ -9,6 +9,7 @@ import { Simulation, SimulationService } from "../testing/index.ts"
 import { Checkpoints } from "./checkpoint.ts"
 import { PagedCheckpoints } from "./pages.ts"
 import { Recovery } from "./recovery.ts"
+import { PageDocuments } from "../handlers/page-tree.ts"
 
 const Tally = Actor.make("Tally", {
   state: Schema.Struct({
@@ -78,6 +79,66 @@ const workload = Effect.gen(function* () {
 })
 
 describe("Recovery", () => {
+  it("uploads independent actor pages concurrently but preserves captured order and waits for every page before publishing the root", () =>
+    Simulation.run(
+      { actors: [Tally], seed: 65, shards: 1, checkpointEvery: 0 },
+      Effect.gen(function* () {
+        for (const [key, amount] of [
+          ["a", 5],
+          ["b", 11],
+          ["c", 19],
+        ] as const)
+          yield* (yield* Tally.client(key)).add(amount)
+        yield* Simulation.settle
+        const { engine } = yield* SimulationService
+        const first = yield* Deferred.make<void>()
+        const others = yield* Deferred.make<void>()
+        const release = yield* Deferred.make<void>()
+        let uploaded = 0
+        let root = false
+        const store = {
+          ...engine.store,
+          putPage: (bytes: Uint8Array) =>
+            Effect.gen(function* () {
+              const page = PageDocuments.decode(bytes)
+              if (page.kind === "actor") {
+                const value = page.value as { readonly key: string }
+                if (value.key === "a") {
+                  yield* Deferred.succeed(first, undefined)
+                  yield* Deferred.await(release)
+                } else {
+                  uploaded++
+                  if (uploaded === 2) yield* Deferred.succeed(others, undefined)
+                }
+              } else root = true
+              return yield* engine.store.putPage(bytes)
+            }),
+        }
+        const upload = yield* Effect.forkChild(
+          PagedCheckpoints.write(engine.durableImage(0)!, store, engine.pages),
+        )
+        yield* Deferred.await(first)
+        yield* Deferred.await(others)
+        expect(root).toBe(false)
+        expect(upload.pollUnsafe()).toBeUndefined()
+        yield* (yield* Tally.client("a")).add(7)
+        yield* Deferred.succeed(release, undefined)
+        const prepared = yield* Fiber.join(upload)
+        const captured = Result.getOrThrow(
+          Checkpoints.decode(yield* PagedCheckpoints.materialize(prepared.hash, engine.store)),
+        )
+        expect(captured.actors.map(({ key, state }) => [key, state.total])).toEqual([
+          ["a", 5],
+          ["b", 11],
+          ["c", 19],
+        ])
+        expect(root).toBe(true)
+        prepared.committed()
+        expect((yield* Simulation.state(Tally, "a")).total).toBe(12)
+      }).pipe(Effect.scoped),
+      handlers(1),
+    ))
+
   it("captures the actor state, index and offset before a delayed upload, rejecting a checkpoint that drifts to later commits", () =>
     Simulation.run(
       { actors: [Tally], seed: 64, shards: 1, checkpointEvery: 0 },

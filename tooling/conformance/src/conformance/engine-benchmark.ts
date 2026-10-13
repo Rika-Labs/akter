@@ -1,4 +1,17 @@
-import { Config, Console, Effect, Random, Result, Schema } from "effect"
+import { hostname } from "node:os"
+import {
+  Config,
+  Console,
+  Context,
+  Duration,
+  Effect,
+  FileSystem,
+  Layer,
+  Random,
+  Result,
+  Schema,
+} from "effect"
+import { fileSystemBucket } from "../../../../packages/akter/src/store/file-system.ts"
 import { s3Bucket } from "../../../../packages/akter/src/store/s3.ts"
 import type { Bucket } from "../../../../packages/akter/src/store/bucket.ts"
 import { add, assignAll, mint, runner, SHARDS, total } from "./engine-runner.ts"
@@ -11,6 +24,13 @@ interface Sample {
   readonly throughput: number
   readonly p50Ms: number
   readonly p99Ms: number
+  readonly logPuts: number
+  readonly logPutP50Ms: number
+  readonly logPutP99Ms: number
+  readonly segmentP50Bytes: number
+  readonly segmentP99Bytes: number
+  readonly actionsPerPut: number
+  readonly pagePuts: number
 }
 
 const quantile = (values: ReadonlyArray<number>, fraction: number) => {
@@ -24,9 +44,43 @@ const actionSample = (
   actors: number,
   durationMs: number,
   concurrency: number,
+  checkpointEvery: number,
+  maxBatch: number,
+  diagnostics: boolean,
+  drainBudgetMs: number,
 ) =>
   Effect.gen(function* () {
-    const opened = yield* runner(bucket, { writer: name, checkpointEvery: 64 })
+    const puts: Array<number> = []
+    const sizes: Array<number> = []
+    let pages = 0
+    let measuring = false
+    const opened = yield* runner(
+      {
+        ...bucket,
+        create: (key, bytes) =>
+          /\/log\//u.test(key)
+            ? Effect.suspend(() => {
+                const before = performance.now()
+                const measured = measuring
+                return bucket.create(key, bytes).pipe(
+                  Effect.tap(() =>
+                    Effect.sync(() => {
+                      if (measured) {
+                        puts.push(performance.now() - before)
+                        sizes.push(bytes.length)
+                      }
+                    }),
+                  ),
+                )
+              })
+            : bucket.create(key, bytes),
+        put: (key, bytes) => {
+          if (measuring) pages++
+          return bucket.put(key, bytes)
+        },
+      },
+      { writer: name, checkpointEvery, maxBatch },
+    )
     yield* assignAll(opened.engine)
     yield* Effect.forEach(
       Array.from({ length: Math.max(actors, 256) }, (_, key) => key),
@@ -39,6 +93,7 @@ const actionSample = (
     let failures = 0
     const started = performance.now()
     const deadline = started + durationMs
+    measuring = true
     yield* Effect.forEach(
       Array.from({ length: concurrency }, (_, worker) => worker),
       (worker) =>
@@ -60,10 +115,41 @@ const actionSample = (
       { concurrency: "unbounded", discard: true },
     )
     const elapsedMs = performance.now() - started
-    const drained = yield* opened.engine.drain("30 seconds")
+    measuring = false
+    const sample = {
+      name,
+      actions,
+      failures,
+      elapsedMs,
+      throughput: actions / (elapsedMs / 1_000),
+      p50Ms: quantile(latencies, 0.5),
+      p99Ms: quantile(latencies, 0.99),
+      logPuts: puts.length,
+      logPutP50Ms: quantile(puts, 0.5),
+      logPutP99Ms: quantile(puts, 0.99),
+      segmentP50Bytes: quantile(sizes, 0.5),
+      segmentP99Bytes: quantile(sizes, 0.99),
+      actionsPerPut: actions / puts.length,
+      pagePuts: pages,
+    } satisfies Sample
+    if (diagnostics)
+      yield* Console.log(
+        yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))({
+          phase: "measured",
+          ...sample,
+        }),
+      )
+    const drainStarted = performance.now()
+    const drained = yield* opened.engine.drain(Duration.millis(drainBudgetMs))
+    const drainMs = performance.now() - drainStarted
     if (drained.outcome !== "clean")
       return yield* Effect.die(new Error("benchmark drain timed out"))
-    const recovered = yield* runner(bucket, { writer: `${name}-recovery`, checkpointEvery: 64 })
+    const recoveryStarted = performance.now()
+    const recovered = yield* runner(bucket, {
+      writer: `${name}-recovery`,
+      checkpointEvery,
+      maxBatch,
+    })
     yield* assignAll(recovered.engine)
     yield* Effect.forEach(
       expected,
@@ -75,15 +161,7 @@ const actionSample = (
         ),
       { concurrency: concurrency, discard: true },
     )
-    return {
-      name,
-      actions,
-      failures,
-      elapsedMs,
-      throughput: actions / (elapsedMs / 1_000),
-      p50Ms: quantile(latencies, 0.5),
-      p99Ms: quantile(latencies, 0.99),
-    } satisfies Sample
+    return { ...sample, drainMs, recoveryMs: performance.now() - recoveryStarted, recovered: true }
   })
 
 const putBaseline = (bucket: Bucket, durationMs: number) =>
@@ -130,7 +208,7 @@ const options = Effect.gen(function* () {
 })
 
 /**
- * A closed-loop engine diagnostic on the named S3-compatible provider: one hot actor and 10,000
+ * A closed-loop engine diagnostic on the named store: one hot actor and 10,000
  * pre-created actors, plus a serial 64 KiB conditional PUT baseline. It checks every acknowledged
  * increment after drain and reopen. No network client, CPU quota or production SLO is inferred.
  */
@@ -139,38 +217,81 @@ const program = Effect.gen(function* () {
     durationMs: Config.Number("BENCH_DURATION_MS").pipe(Config.withDefault(5_000)),
     concurrency: Config.Number("BENCH_CONCURRENCY").pipe(Config.withDefault(64)),
     provider: Config.String("BENCH_PROVIDER").pipe(Config.withDefault("MinIO local")),
+    adapter: Config.String("BENCH_ADAPTER").pipe(Config.withDefault("s3")),
+    checkpointEvery: Config.Number("BENCH_CHECKPOINT_EVERY").pipe(Config.withDefault(64)),
+    maxBatch: Config.Number("BENCH_MAX_BATCH").pipe(Config.withDefault(64)),
+    diagnostics: Config.Boolean("BENCH_DIAGNOSTICS").pipe(Config.withDefault(false)),
+    drainBudgetMs: Config.Number("BENCH_DRAIN_MS").pipe(Config.withDefault(30_000)),
   })
-  if (!Number.isInteger(config.concurrency) || config.concurrency < 1 || config.durationMs <= 0)
-    return yield* Effect.die(new RangeError("duration and integer concurrency must be positive"))
-  const location = yield* options
-  const bucket = yield* s3Bucket(location)
+  if (
+    !Number.isInteger(config.concurrency) ||
+    config.concurrency < 1 ||
+    !Number.isFinite(config.durationMs) ||
+    config.durationMs <= 0 ||
+    !Number.isInteger(config.maxBatch) ||
+    config.maxBatch < 1 ||
+    !Number.isInteger(config.checkpointEvery) ||
+    config.checkpointEvery < 0 ||
+    !Number.isFinite(config.drainBudgetMs) ||
+    config.drainBudgetMs <= 0
+  )
+    return yield* Effect.die(
+      new RangeError("invalid duration, concurrency, batch or checkpoint bound"),
+    )
+  if (!["s3", "fileSystem"].includes(config.adapter))
+    return yield* Effect.die(new RangeError("adapter must be s3 or fileSystem"))
+  const platform =
+    globalThis.Bun === undefined
+      ? (yield* Effect.promise(() => import("@effect/platform-node"))).NodeServices.layer
+      : (yield* Effect.promise(() => import("@effect/platform-bun"))).BunServices.layer
+  const services = yield* Layer.build(platform)
+  const fs = Context.get(services, FileSystem.FileSystem)
+  const directory = yield* fs.makeTempDirectoryScoped({ prefix: "akter-engine-bench-" })
+  const location = config.adapter === "s3" ? yield* options : undefined
+  const at = (name: string) =>
+    location === undefined
+      ? fileSystemBucket(`${directory}/${name}`).pipe(Effect.provideContext(services))
+      : s3Bucket({ ...location, prefix: `${location.prefix}${name}/` })
+  const bucket = yield* at("baseline")
   const baseline = yield* putBaseline(bucket, config.durationMs)
   const hot = yield* Effect.scoped(
     actionSample(
-      yield* s3Bucket({ ...location, prefix: `${location.prefix}t1/` }),
+      yield* at("t1"),
       "t1",
       1,
       config.durationMs,
       config.concurrency,
+      config.checkpointEvery,
+      config.maxBatch,
+      config.diagnostics,
+      config.drainBudgetMs,
     ),
   )
   const broad = yield* Effect.scoped(
     actionSample(
-      yield* s3Bucket({ ...location, prefix: `${location.prefix}t2/` }),
+      yield* at("t2"),
       "t2",
       10_000,
       config.durationMs,
       config.concurrency,
+      config.checkpointEvery,
+      config.maxBatch,
+      config.diagnostics,
+      config.drainBudgetMs,
     ),
   )
   yield* Console.log(
     yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))({
       provider: config.provider,
-      machine: `${process.platform}-${process.arch}`,
+      machine: hostname(),
+      platform: `${process.platform}-${process.arch}`,
       runtime: globalThis.Bun === undefined ? `Node ${process.version}` : `Bun ${Bun.version}`,
       shards: SHARDS,
       durationMs: config.durationMs,
       concurrency: config.concurrency,
+      checkpointEvery: config.checkpointEvery,
+      maxBatch: config.maxBatch,
+      drainBudgetMs: config.drainBudgetMs,
       baseline,
       t1: hot,
       t2: broad,

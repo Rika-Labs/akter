@@ -22,41 +22,46 @@ const write = (image: ShardImage, store: Store["Service"], cache: PageCache) => 
   )
   return Effect.gen(function* () {
     const replacements = new Map<string, { before: Image; after: Image }>()
-    const roots: Array<string> = []
-    for (const snapshot of checkpoint.actors) {
-      const address = Durable.addressOf(snapshot.actor, snapshot.key)
-      const captured = images.get(address)!
-      const before = captured.image
-      const layout = Layouts.of(captured.actor)
-      const lists = new Map(before.lists)
-      const saved: Array<Checkpoint["actors"][number]["lists"][number]> = []
-      const references: Array<string> = []
-      for (const [field, list] of layout.lists) {
-        const items = before.lists.get(field) ?? Lists.empty
-        const tree =
-          items instanceof PagedItems
-            ? items
-            : new PagedItems(
-                PageTrees.empty,
-                PageTrees.empty,
-                cache,
-                list.ordering,
-                list.item,
-              ).apply({ put: Lists.all(items, list.ordering), delete: [] })
-        const keys = yield* PageTrees.persist(tree.keys, store, cache)
-        const ordered = yield* PageTrees.persist(tree.ordered, store, cache)
-        references.push(keys, ordered)
-        saved.push({ field, items: [], keys, ordered })
-        lists.set(field, new PagedItems(keys, ordered, cache, list.ordering, list.item))
-      }
-      const bytes = PageDocuments.encode({
-        kind: "actor",
-        references,
-        value: PageDocuments.json({ ...snapshot, lists: saved }),
-      })
-      roots.push(yield* store.putPage(bytes))
-      replacements.set(address, { before, after: { ...before, lists } })
-    }
+    const roots = yield* Effect.forEach(
+      checkpoint.actors,
+      (snapshot) =>
+        Effect.gen(function* () {
+          const address = Durable.addressOf(snapshot.actor, snapshot.key)
+          const captured = images.get(address)!
+          const before = captured.image
+          const layout = Layouts.of(captured.actor)
+          const lists = new Map(before.lists)
+          const saved: Array<Checkpoint["actors"][number]["lists"][number]> = []
+          const references: Array<string> = []
+          for (const [field, list] of layout.lists) {
+            const items = before.lists.get(field) ?? Lists.empty
+            const tree =
+              items instanceof PagedItems
+                ? items
+                : new PagedItems(
+                    PageTrees.empty,
+                    PageTrees.empty,
+                    cache,
+                    list.ordering,
+                    list.item,
+                  ).apply({ put: Lists.all(items, list.ordering), delete: [] })
+            const keys = yield* PageTrees.persist(tree.keys, store, cache)
+            const ordered = yield* PageTrees.persist(tree.ordered, store, cache)
+            references.push(keys, ordered)
+            saved.push({ field, items: [], keys, ordered })
+            lists.set(field, new PagedItems(keys, ordered, cache, list.ordering, list.item))
+          }
+          const bytes = PageDocuments.encode({
+            kind: "actor",
+            references,
+            value: PageDocuments.json({ ...snapshot, lists: saved }),
+          })
+          const hash = yield* store.putPage(bytes)
+          replacements.set(address, { before, after: { ...before, lists } })
+          return hash
+        }),
+      { concurrency: 32 },
+    )
     const hash = yield* store.putPage(
       PageDocuments.encode({
         kind: "checkpoint",

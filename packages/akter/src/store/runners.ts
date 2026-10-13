@@ -1,24 +1,27 @@
-import { Clock, Duration, Effect, Layer, Option, Random, Schema } from "effect"
+import { Clock, Duration, Effect, Layer, Option, Random, Schema, Semaphore } from "effect"
 import { PersistenceError } from "effect/cluster/ClusterError"
 import * as RunnerStorage from "effect/cluster/RunnerStorage"
 import * as ShardingConfig from "effect/cluster/ShardingConfig"
 import { Store } from "./service.ts"
 
 /**
- * Cluster timing on a bucket: a shard lock expires after 30 seconds without
- * a heartbeat and assignments are re-read every 15 seconds, sized for object
- * store write latency and per-key write limits rather than a database's.
+ * Cluster timing on a bucket: a shard lock expires after three seconds without
+ * a heartbeat and assignments are re-read every 250 milliseconds. The lock
+ * refresh remains slower than one write per second per heartbeat key while
+ * leaving enough time for a runner to notice a crashed peer before five
+ * seconds elapse.
  */
 export const runnerDefaults = {
-  shardLockExpiration: Duration.seconds(30),
-  refreshAssignmentsInterval: Duration.seconds(15),
+  shardLockExpiration: Duration.seconds(3),
+  refreshAssignmentsInterval: Duration.millis(250),
+  shardLockRefreshInterval: Duration.seconds(2),
 } satisfies Partial<ShardingConfig.ShardingConfig["Service"]>
 
 /** Machine ids Effect Cluster's snowflakes can carry. */
 const MACHINE_IDS = 1024
 
-/** Floor between two heartbeats of one runner, the per-key write rate some buckets enforce. */
-const BEAT_FLOOR_MILLIS = 1000
+/** A 1.5-second floor leaves write-limit headroom; the default refresh timer writes about every two seconds. */
+const BEAT_FLOOR_MILLIS = 1500
 
 const RUNNERS = "cluster/runners/"
 const BEATS = "cluster/beats/"
@@ -80,7 +83,6 @@ export const runnerStorage = Effect.gen(function* () {
   }
 
   const beats = new Map<string, { readonly etag: string; readonly since: number }>()
-  let beatsListedAt = Number.NEGATIVE_INFINITY
   const registrations = new Map<
     string,
     { readonly etag: string; readonly runner: string; readonly healthy: boolean }
@@ -88,6 +90,7 @@ export const runnerStorage = Effect.gen(function* () {
   const lockOwners = new Map<string, string | null>()
   const held = new Map<string, string>()
   const lastBeat = new Map<string, number>()
+  const withHeartbeat = Semaphore.makeUnsafe(1).withPermits(1)
 
   const keyOf = (prefix: string, name: string) => `${prefix}${encodeURIComponent(name)}`
   const nameOf = (prefix: string, key: string) => decodeURIComponent(key.slice(prefix.length))
@@ -112,13 +115,24 @@ export const runnerStorage = Effect.gen(function* () {
         beats.set(address, { etag: item.etag, since: at })
     }
     for (const address of beats.keys()) if (!seen.has(address)) beats.delete(address)
-    beatsListedAt = at
   })
 
   const isLive = (address: string, at: number) => {
     const beat = beats.get(address)
     return beat !== undefined && at - beat.since < expiration
   }
+
+  /** An expired cached observation must see the current heartbeat before allowing takeover. */
+  const liveOwner = (address: string) =>
+    Effect.gen(function* () {
+      if (isLive(address, yield* now)) return true
+      const current = yield* leases.read(keyOf(BEATS, address))
+      if (Option.isNone(current)) return false
+      const previous = beats.get(address)
+      if (previous?.etag === current.value.etag) return false
+      beats.set(address, { etag: current.value.etag, since: yield* now })
+      return true
+    })
 
   /** The owner a lock's body names, if the lock still has the listed etag. */
   const ownerOf = (key: string, etag: string) =>
@@ -133,12 +147,14 @@ export const runnerStorage = Effect.gen(function* () {
     })
 
   const heartbeat = (address: string) =>
-    Effect.gen(function* () {
-      const at = yield* now
-      if (at - (lastBeat.get(address) ?? Number.NEGATIVE_INFINITY) < BEAT_FLOOR_MILLIS) return
-      yield* leases.write(keyOf(BEATS, address), yield* ownerBody(address))
-      lastBeat.set(address, at)
-    })
+    withHeartbeat(
+      Effect.gen(function* () {
+        const at = yield* now
+        if (at - (lastBeat.get(address) ?? Number.NEGATIVE_INFINITY) < BEAT_FLOOR_MILLIS) return
+        yield* leases.write(keyOf(BEATS, address), yield* ownerBody(address))
+        lastBeat.set(address, yield* now)
+      }),
+    )
 
   const claimMachineId = (address: string) =>
     Effect.gen(function* () {
@@ -155,7 +171,7 @@ export const runnerStorage = Effect.gen(function* () {
         }
         const owner = (yield* readOwner(existing.value.body)).address
         if (owner === address) return id
-        if (owner !== null && isLive(owner, yield* now)) continue
+        if (owner !== null && (yield* liveOwner(owner))) continue
         if (
           Option.isSome(yield* leases.replace(key, yield* ownerBody(address), existing.value.etag))
         )
@@ -184,8 +200,8 @@ export const runnerStorage = Effect.gen(function* () {
   const releaseHeld = (shardId: string) =>
     Effect.gen(function* () {
       const etag = held.get(shardId)
-      held.delete(shardId)
       if (etag !== undefined) yield* writeLock(shardId, null, Option.some(etag))
+      held.delete(shardId)
     })
 
   return RunnerStorage.makeEncoded({
@@ -230,7 +246,6 @@ export const runnerStorage = Effect.gen(function* () {
           nonce: nonce(),
         }).pipe(Effect.orDie)
         yield* leases.write(keyOf(RUNNERS, address), encoder.encode(body))
-        lastBeat.delete(address)
         yield* heartbeat(address)
         return machineId
       }).pipe(refail),
@@ -260,9 +275,7 @@ export const runnerStorage = Effect.gen(function* () {
 
     acquire: (address, shardIds) =>
       Effect.gen(function* () {
-        if ((yield* now) - beatsListedAt > BEAT_FLOOR_MILLIS) yield* observeBeats
         const locks = yield* listLocks
-        const at = yield* now
         const acquired: Array<string> = []
         for (const shardId of shardIds) {
           const etag = locks.get(shardId)
@@ -281,7 +294,7 @@ export const runnerStorage = Effect.gen(function* () {
             acquired.push(shardId)
             continue
           }
-          if (owner.value !== null && isLive(owner.value, at)) continue
+          if (owner.value !== null && (yield* liveOwner(owner.value))) continue
           const taken = yield* writeLock(shardId, address, Option.some(etag))
           if (Option.isSome(taken)) {
             held.set(shardId, taken.value)

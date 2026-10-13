@@ -19,14 +19,15 @@ import {
   MessageStorage,
   RunnerAddress,
   RunnerHealth,
+  Runners,
+  RunnerServer,
   RunnerStorage,
   ShardId,
   Sharding as Cluster,
   ShardingConfig,
-  SocketRunner,
 } from "effect/cluster"
 import { Headers } from "effect/http"
-import { Rpc, RpcSerialization } from "effect/rpc"
+import { Rpc, RpcSerialization, RpcServer } from "effect/rpc"
 import { Caller } from "../contract/caller.ts"
 import {
   ActorError,
@@ -50,6 +51,7 @@ import type { Readiness } from "./drain.ts"
 import { mtls, PeerHealth } from "./peering/transport.ts"
 import type { MutualTlsOptions } from "./peering/transport.ts"
 import { PersistenceError } from "effect/cluster/ClusterError"
+import { assignmentRefresh } from "./assignment-refresh.ts"
 
 /** A runner's directly reachable peer listener and bucket coordination timings. */
 export interface RunnerOptions {
@@ -225,6 +227,8 @@ const clustered = (engine: Engine, options: RunnerOptions) =>
       preemptiveShutdown: false,
     }
     const address = Option.getOrThrow(config.runnerAddress)
+    const assignments = assignmentRefresh(config.refreshAssignmentsInterval)
+    let notifyPeers: Effect.Effect<void> = Effect.void
     const raw = yield* runnerStorage.pipe(
       Effect.provideService(ShardingConfig.ShardingConfig, config),
     )
@@ -235,6 +239,10 @@ const clustered = (engine: Engine, options: RunnerOptions) =>
     let storageHealthy = true
     let completed = false
     let drainReport: Deferred.Deferred<DrainReport> | undefined
+    const engineDrained = Deferred.makeUnsafe<void>()
+    const afterEngineDrain = Effect.suspend(() =>
+      drainReport === undefined ? Effect.void : Deferred.await(engineDrained),
+    )
     const held = new Set<number>()
     const blocked = new Set<number>()
     const expected = new Set<number>()
@@ -251,7 +259,13 @@ const clustered = (engine: Engine, options: RunnerOptions) =>
           }),
         ),
       )
-    /** A drained runner keeps a disabled self only in its local membership view, preventing Cluster from hot-looping registration; it never renews its bucket row or heartbeat. */
+    /**
+     * A drained runner keeps a disabled self only in its local membership view, preventing Cluster
+     * from hot-looping registration; it never renews its bucket row or heartbeat. While the engine
+     * drain is still writing `Released`, the runner keeps renewing its heartbeat and holds every
+     * advisory lock, because Cluster reacts to the disabled self within one membership refresh and
+     * a peer that took a lock then would fence the drain before its release became durable.
+     */
     const storage = RunnerStorage.RunnerStorage.of({
       ...raw,
       unregister: (runner) =>
@@ -262,7 +276,7 @@ const clustered = (engine: Engine, options: RunnerOptions) =>
           }
           yield* raw.unregister(runner)
         }),
-      getRunners: healthy(raw.getRunners).pipe(
+      getRunners: Effect.andThen(assignments.wait, healthy(raw.getRunners)).pipe(
         Effect.map((runners) =>
           draining && self !== undefined
             ? [
@@ -314,7 +328,8 @@ const clustered = (engine: Engine, options: RunnerOptions) =>
         }),
       refresh: (runner, ids) =>
         Effect.gen(function* () {
-          if (draining) return []
+          if (draining && (drainReport === undefined || (yield* Deferred.isDone(engineDrained))))
+            return []
           const requested = Array.from(ids)
           const refreshed = yield* healthy(raw.refresh(runner, requested))
           const kept = new Set(refreshed.map((id) => id.id - 1))
@@ -335,27 +350,57 @@ const clustered = (engine: Engine, options: RunnerOptions) =>
             return yield* PersistenceError.make({
               cause: new Error(`Shard ${id.id - 1} did not durably release`),
             })
+          yield* afterEngineDrain
           held.delete(id.id - 1)
           blocked.delete(id.id - 1)
           yield* raw.release(runner, id)
+          if (!draining) yield* notifyPeers
         }),
       releaseAll: (runner) =>
         Effect.gen(function* () {
+          yield* afterEngineDrain
           yield* engine.unassign(Array.from(held))
           held.clear()
           yield* raw.releaseAll(runner)
         }),
     })
-    const clusterLayer = SocketRunner.layer.pipe(
+    const clusterLayer = RpcServer.layer(Runners.Rpcs, {
+      spanPrefix: "RunnerServer",
+      disableTracing: true,
+      disableFatalDefects: true,
+    }).pipe(
+      Layer.provide(
+        Layer.merge(
+          RunnerServer.layerHandlers,
+          Runners.Rpcs.toLayerHandler("Ping", () => Effect.asVoid(assignments.wake)),
+        ),
+      ),
+      Layer.provideMerge(Cluster.layer),
+      Layer.provideMerge(Runners.layerRpc),
+      Layer.provide(RpcServer.layerProtocolSocketServer),
       Layer.provideMerge(mtls(options.peering)),
       Layer.provide(Layer.succeed(RunnerStorage.RunnerStorage, storage)),
       Layer.provide(MessageStorage.layerNoop),
       Layer.provide(RunnerHealth.layerNoop),
-      Layer.provide(ShardingConfig.layer(config)),
+      Layer.provide(ShardingConfig.layer({ ...config, refreshAssignmentsInterval: Duration.zero })),
       Layer.provide(RpcSerialization.layerNdjson),
     )
     const services = yield* Layer.build(clusterLayer)
     const cluster = Context.get(services, Cluster.Sharding)
+    const peers = Context.get(services, Runners.Runners)
+    notifyPeers = raw.getRunners.pipe(
+      Effect.flatMap((runners) =>
+        Effect.forEach(
+          runners.filter(([runner]) => !Equal.equals(runner.address, address)),
+          ([runner]) =>
+            peers.ping(runner.address).pipe(Effect.timeoutOption("250 millis"), Effect.ignore),
+          { discard: true, concurrency: "unbounded" },
+        ),
+      ),
+      Effect.timeoutOption("500 millis"),
+      Effect.ignore,
+    )
+    yield* notifyPeers
     const peerHealth = Context.get(services, PeerHealth)
     const keys: Array<string> = []
     for (let shard = 0; shard < engine.catalog.shards; shard++) {
@@ -669,6 +714,7 @@ const clustered = (engine: Engine, options: RunnerOptions) =>
           return Effect.gen(function* () {
             const started = yield* Clock.monotonicTimeNanos
             const report = yield* engine.drain(deadline)
+            yield* Deferred.succeed(engineDrained, undefined)
             const elapsed = Number((yield* Clock.monotonicTimeNanos) - started) / 1_000_000
             const remaining = Math.max(
               0,
@@ -678,6 +724,7 @@ const clustered = (engine: Engine, options: RunnerOptions) =>
               .unregister(address)
               .pipe(
                 Effect.andThen(raw.releaseAll(address)),
+                Effect.andThen(report.outcome === "clean" ? notifyPeers : Effect.void),
                 Effect.ignore,
                 Effect.timeoutOption(Duration.millis(remaining)),
               )

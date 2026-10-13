@@ -143,6 +143,7 @@ interface Shard {
   durable: ShardImage
   refusal: RecoveryError | undefined
   readonly speculative: Map<string, Image>
+  readonly activations: Map<string, number>
   readonly pending: Map<string, Pending>
   readonly batch: Array<Array<Pending>>
   inFlight: ReadonlyArray<Pending>
@@ -248,6 +249,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       durable: Durable.empty(id),
       refusal: undefined,
       speculative: new Map(),
+      activations: new Map(),
       pending: new Map(),
       batch: [],
       inFlight: [],
@@ -272,6 +274,22 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       shards.set(id, created)
       return created
     }
+
+    const activationMetrics = () =>
+      Effect.forEach(
+        catalog.actors.keys(),
+        (name) =>
+          metricRecord(
+            Metrics.activations,
+            { actor_type: name },
+            Array.from(shards.values()).reduce(
+              (total, shard) =>
+                total + (shard.status === "open" ? (shard.activations.get(name) ?? 0) : 0),
+              0,
+            ),
+          ),
+        { discard: true },
+      )
 
     /**
      * Drops everything this owner holds for the shard without publishing: speculative images, the
@@ -302,7 +320,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       shard.committing = undefined
       Deferred.doneUnsafe(shard.opened, Exit.fail(reason))
       for (const flushed of shard.flushed.splice(0)) Deferred.doneUnsafe(flushed, Exit.void)
-      const closing = Scope.close(shard.scope, Exit.void)
+      const closing = Effect.andThen(Scope.close(shard.scope, Exit.void), activationMetrics())
       return shard.status === "restarting"
         ? Effect.andThen(closing, Effect.asVoid(Effect.forkIn(restart(shard), root)))
         : closing
@@ -426,6 +444,13 @@ const make = (catalog: Catalog, options: EngineOptions) =>
                   return Effect.fail(unavailable())
                 }
                 shard.durable = recovered.success
+                shard.activations.clear()
+                for (const record of shard.durable.actors.values())
+                  if (record.created)
+                    shard.activations.set(
+                      record.actor.name,
+                      (shard.activations.get(record.actor.name) ?? 0) + 1,
+                    )
                 shard.lease = lease
                 shard.lastAt = recovered.success.lastAt
                 shard.sinceCheckpoint = 0
@@ -445,6 +470,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
                     for (const address of recovered.success.actors.keys())
                       if (channels.has(address)) notify(address)
                     return Effect.forkIn(committer(shard, generation), shard.scope).pipe(
+                      Effect.andThen(activationMetrics()),
                       Effect.andThen(after(shard)),
                     )
                   }),
@@ -519,32 +545,18 @@ const make = (catalog: Catalog, options: EngineOptions) =>
             const offset = Number(appended.value)
             for (const [index, pending] of entries.entries()) publish(shard, pending, offset, index)
             shard.inFlight = []
-            for (const pending of entries) {
-              if (Entry.guards.Action(pending.entry))
-                yield* count(
-                  Metrics.actions,
-                  {
-                    actor_type: pending.entry.actor,
-                    outcome: pending.entry.effects.outcome._tag.toLowerCase(),
-                  },
-                  1,
-                )
+            const totals = new Map<string, Map<string, number>>()
+            for (const { entry } of entries) {
+              if (!Entry.guards.Action(entry)) continue
+              const outcomes = totals.get(entry.actor) ?? new Map<string, number>()
+              const outcome = entry.effects.outcome._tag.toLowerCase()
+              outcomes.set(outcome, (outcomes.get(outcome) ?? 0) + 1)
+              totals.set(entry.actor, outcomes)
             }
-            for (const name of catalog.actors.keys())
-              yield* metricRecord(
-                Metrics.activations,
-                { actor_type: name },
-                Array.from(shards.values()).reduce(
-                  (total, current) =>
-                    total +
-                    (current.status === "open"
-                      ? Array.from(current.durable.actors.values()).filter(
-                          (actor) => actor.created && actor.actor.name === name,
-                        ).length
-                      : 0),
-                  0,
-                ),
-              )
+            for (const [actor_type, outcomes] of totals)
+              for (const [outcome, value] of outcomes)
+                yield* count(Metrics.actions, { actor_type, outcome }, value)
+            yield* activationMetrics()
             if (shard.generation !== generation) return
             yield* after(shard)
             if (shard.generation !== generation) return
@@ -629,9 +641,14 @@ const make = (catalog: Catalog, options: EngineOptions) =>
 
     /** Applies one durable entry: the shard image moves, the waiter gets its outcome, streams hear of it. */
     const publish = (shard: Shard, pending: Pending, offset: number, index: number): void => {
+      const entry = pending.entry
+      if (Entry.guards.Action(entry) || Entry.guards.Seed(entry) || Entry.guards.Forked(entry)) {
+        const record = Durable.resident(shard.durable, catalog, entry.actor, entry.key)
+        if (!record.created)
+          shard.activations.set(entry.actor, (shard.activations.get(entry.actor) ?? 0) + 1)
+      }
       Durable.record(shard.durable, catalog, pending.entry, pending.after, pages)
       shard.durable.offset = offset
-      const entry = pending.entry
       if (Entry.guards.Action(entry) || Entry.guards.Seed(entry) || Entry.guards.Forked(entry)) {
         const record = Durable.resident(shard.durable, catalog, entry.actor, entry.key)
         record.position = {
@@ -1357,6 +1374,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
         shard.generation++
         shard.lease = undefined
         yield* Scope.close(shard.scope, Exit.void)
+        yield* activationMetrics()
         return true
       })
 

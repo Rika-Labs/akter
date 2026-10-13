@@ -67,6 +67,8 @@ Names use dots; Prometheus exposition replaces `.` with `_`. No metric carries a
 
 `akter.activations` keeps its 0.1 name and meaning; receipt, outbox, relay, cold-tier, subscription, fleet and pool metrics are removed.
 
+The live engine counts created actors as their entries become durable and rebuilds those counts from the recovered image. Gauges exclude closed shards and change on open, drain and owner loss; speculative residents never count. Action counters aggregate identical actor/outcome labels per durable segment without changing their totals. This keeps telemetry cost independent of the resident actor count on the commit path; it creates no new authority or metric labels.
+
 ## E7 implementation
 
 `Akter.serve({ operatorAuth })` serves separate `POST /operator` requests; it never asks application `auth` to convert a caller to a grant. Read-only inspection recovers a captured checkpoint-plus-tail position without opening or activating an actor. Scope denial creates a denied audit, and a held or failed create-once audit holds or refuses the answer. Actor inspection returns stored outcome tags and retained rejected-send metadata, not stored outcome values. The separately scoped outcome read honors `commandId`. Snapshot/log data may include state and payload values only under their independent capabilities; telemetry and audit records never carry those values.

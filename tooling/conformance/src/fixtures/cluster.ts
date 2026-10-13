@@ -101,6 +101,7 @@ export const Request = Schema.Union([
 
 export const Options = Schema.Struct({
   url: Schema.String,
+  directory: Schema.optional(Schema.String),
   prefix: Schema.String,
   writer: Schema.String,
   deployment: Schema.String,

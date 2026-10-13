@@ -44,6 +44,7 @@ export interface RunnerOptions {
   readonly policy?: ReplayPolicy
   readonly faults?: Faults
   readonly checkpointEvery?: number
+  readonly maxBatch?: number
 }
 
 /**
@@ -67,7 +68,7 @@ export const runner = Effect.fnUntraced(function* (bucket: Bucket, options: Runn
   const engine = yield* Engine.make(catalog, {
     shards: SHARDS,
     policy: options.policy ?? "matching",
-    maxBatch: 64,
+    maxBatch: options.maxBatch ?? 64,
     checkpointEvery: options.checkpointEvery ?? 2,
     cronSkipIfOlderThan: 3_600_000,
     doubleRun: false,
