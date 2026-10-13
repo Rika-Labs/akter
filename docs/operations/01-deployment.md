@@ -15,7 +15,7 @@ Set a stable application bundle digest and framework version through `StoreOptio
 
 ## Multiple runners
 
-`Akter.serve({ app, auth, runner })` accepts reachable peer addresses and mTLS peering configuration. Cluster locks choose candidates; the log epoch fences writers. New releases start in standby and wait for a durable `Released` tail or owner expiry. Store-scoped peering identity is provisional; resolve the security amendment before a production rollout.
+`Akter.serve({ app, auth, runner })` accepts reachable peer addresses and mTLS peering configuration. Cluster locks choose candidates; the log epoch fences writers. New releases start in standby and wait for a durable `Released` tail or owner expiry. Authorized releases share a store-scoped peering identity; it adds no authority beyond the store bucket credential.
 
 ## Drain and readiness
 

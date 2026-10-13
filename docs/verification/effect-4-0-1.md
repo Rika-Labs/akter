@@ -1,5 +1,7 @@
 # Effect 4.0.1 cohort verification
 
+> Historical 0.1 verification, retained as of 2026-10-12. Recorded observations below are unchanged; they do not establish support for the 0.2 bucket engine. See [current verification](README.md).
+
 This is historical dependency evidence. The [package split](framework-package.md) upgrades the cohort to 4.0.2; [ADR 0112](../decisions/0112-postgres-and-pglite-only.md) removes Neki rather than leaving its former gates pending. See [removal verification](neki-removal.md) for current Postgres/PGlite-only checks.
 
 Recorded on 2026-10-07 for `chore/664-effect-4-0-x`, stacked on the alpha.2 release preparation. The registry reports `4.0.1` as the newest jointly published 4.0.x patch for `effect`, `@effect/platform-bun`, `@effect/platform-node-shared`, `@effect/platform-node`, `@effect/sql-pg`, `@effect/sql-pglite` and `@effect/vitest`.

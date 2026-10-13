@@ -41,7 +41,7 @@ CLI forms are `inspect actor`, `inspect shard`, `log tail`, `log export`, `snaps
 On Dallen's Mac (macOS arm64, Bun 1.4.2, Node v26.7.0):
 
 - `bun install --frozen-lockfile`: passed without a lockfile change.
-- `bun run check`: passed all 45 Turbo tasks, including lint, format, structure, types, tests, builds and `pack:check`.
+- `bun run check`: passed directive, structure and format checks, all 23 Turbo lint/type/test/build tasks and `pack:check`.
 - `bun run --cwd packages/akter test`: 31 files / 222 tests passed.
 - `node node_modules/vitest/vitest.mjs run packages/akter/src --exclude packages/akter/src/store/s3.test.ts --exclude packages/akter/src/runtime/cluster-process.test.ts`: the same complete non-S3 package suite passed on Node.
 - `bun run --cwd apps/cli test`: 13 files / 65 tests passed.

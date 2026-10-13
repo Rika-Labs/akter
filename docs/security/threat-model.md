@@ -15,4 +15,4 @@ Assume hostile clients, untrusted input, network loss, runner crashes, and opera
 | Credential/payload disclosure       | Redaction and bounded telemetry, encrypted and restricted backup/export paths                                     |
 | GC or fork race                     | Retained roots, fenced collector, grace period and isolated fork identities; E6 failure evidence required         |
 
-The current served runtime allows only tenant `default`. The provisional store-scoped mTLS identity, general tenant isolation, slow-consumer behavior, provider atomicity, and hosted orchestration need their own accepted boundary and evidence. Local MinIO results do not certify a hosted provider. See [security contract](../contracts/10-security.md) and the [support matrix](../operations/support-matrix.md).
+The current served runtime allows only tenant `default`. General tenant isolation, slow-consumer behavior, provider atomicity, and hosted orchestration need their own accepted boundary and evidence. Local MinIO results do not certify a hosted provider. See [security contract](../contracts/10-security.md) and the [support matrix](../operations/support-matrix.md).

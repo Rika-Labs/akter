@@ -1,5 +1,7 @@
 # Cold-tier framework evidence
 
+> Historical 0.1 verification, retained as of 2026-10-12. Recorded observations below are unchanged; they do not establish support for the 0.2 bucket engine. See [current verification](README.md).
+
 **Responsibility:** bind ADR 0036/0114 lifecycle claims to executed runtime scenarios.  
 **Authority:** verification evidence.  
 **Owner role:** runtime/storage reliability.  

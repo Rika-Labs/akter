@@ -1,5 +1,7 @@
 # Customer Postgres cloud contract verification
 
+> Historical 0.1 verification, retained as of 2026-10-12. Recorded observations below are unchanged; they do not establish support for the 0.2 bucket engine. See [current verification](README.md).
+
 Recorded on 2026-10-09 for [ADR 0113](../decisions/0113-customer-postgres-cloud-contract.md), on `feat/customer-postgres-contract` based on `origin/main` after [#711](https://github.com/Rika-Labs/akter/pull/711). This records the public contract, CLI and candidate tarballs, not hosted database probes or billing enforcement.
 
 ## Environment and executed checks

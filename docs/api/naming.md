@@ -17,4 +17,4 @@ description: "Settled public names for the Akter 0.2 API."
 | `Store.fileSystem`    | Local `akter dev` store                       |
 | `akter storage check` | Bucket or directory protocol probe            |
 
-The removed 0.1 names `connect` as a client factory, `toJobLayer`, `X.self`, `Database.postgres`, `Actor.table`, receipts, outbox, relational queries, and Promise clients are not compatibility aliases.
+The removed 0.1 client-factory, job-layer, self-handle, SQL adapter, relational member, receipt, outbox, relational-query, and Promise-client spellings are not compatibility aliases.

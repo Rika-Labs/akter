@@ -9,7 +9,7 @@ The app contract and handlers from the [quickstart](../quickstart.md) do not cha
 
 Run `akter storage check --bucket BUCKET --endpoint https://S3-ENDPOINT` against the intended provider. Credentials come from environment or the SDK chain, not command arguments. Check the [provider matrix](../verification/store-providers.md); a passing MinIO run does not validate another provider.
 
-The [self-host recipe](../operations/self-host.md) builds a Bun or Node runner on MinIO. Multiple runners require direct mTLS peer reachability and the provisional store-scoped peering amendment. Readiness, drain, matching-build recovery, and stopped-store wake-up are host responsibilities, not optional rollout details.
+The [self-host recipe](../operations/self-host.md) builds a Bun or Node runner on MinIO. Multiple runners require direct mTLS peer reachability and the store-scoped peering identity. Readiness, drain, matching-build recovery, and stopped-store wake-up are host responsibilities, not optional rollout details.
 
 For hosted deployment, [Akter Cloud](../cloud/get-started.md) provisions one store bucket per environment. It does not require `DATABASE_URL`. Pricing, quotas, and provider rollout claims require E8 evidence and approval.
 

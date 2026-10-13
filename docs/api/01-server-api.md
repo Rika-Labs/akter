@@ -74,7 +74,7 @@ The example's fixed user is for local development only. Production must authenti
 
 ### Several runners and graceful shutdown (0.2)
 
-Omit `runner` for one process. A multi-runner `runner` has `address`, optional `listenAddress`, and `peering: { deployment, credentials }`. Peer addresses must be directly reachable; credential material supplies a CA, certificate, and redacted key. The provisional store-scoped identity is shared across authorized releases, not across stores. See the [self-host configuration](../operations/self-host.md#stop) and [E3 security limits](../verification/e3-cluster.md).
+Omit `runner` for one process. A multi-runner `runner` has `address`, optional `listenAddress`, and `peering: { deployment, credentials }`. Peer addresses must be directly reachable; credential material supplies a CA, certificate, and redacted key. The store-scoped identity is shared across authorized releases, not across stores; it adds no write authority beyond the store bucket credential. See the [self-host configuration](../operations/self-host.md#stop) and [E3 security limits](../verification/e3-cluster.md).
 
 Keep the server/store scope alive while `RuntimeControl.waitForSignal({ deadline: "15 seconds" })` waits for SIGTERM or SIGINT and drains. It makes the runner unready before release and prints `DRAINED` with final durable offsets and `nextDue`. The host must persist that report and arrange future wake-ups; the engine cannot wake a stopped process.
 
