@@ -77,6 +77,12 @@ describe("akter fork", () => {
           member: "add",
           payload: 31,
         })
+        yield* Transports.client(engine, user("keys")).call({
+          actor: Numeric,
+          id: "17",
+          member: "add",
+          payload: 401,
+        })
         expect((yield* engine.drain("10 seconds")).outcome).toBe("clean")
         const printed = yield* runCliWith({ env: { AKTER_OPERATOR_TOKEN: "fixture-only" } })([
           "fork",
@@ -95,6 +101,23 @@ describe("akter fork", () => {
           "--json-ids",
         ])
         expect(printed.exitCode).toBe(0)
+        const denied = yield* runCliWith({ env: { AKTER_OPERATOR_TOKEN: "fixture-only" } })([
+          "fork",
+          "Numeric",
+          "17",
+          "--app",
+          app,
+          "--directory",
+          source,
+          "--to-directory",
+          target,
+          "--at",
+          "1",
+          "--to",
+          "outside",
+        ])
+        expect(denied.exitCode).toBe(1)
+        expect(denied.reason).toBe("ForkRefused")
         expect(
           Result.getOrThrow(
             Schema.decodeResult(Schema.fromJsonString(Schema.Struct({ id: Schema.Int })))(

@@ -8,6 +8,7 @@ Current evidence concerns the 0.2 bucket engine. A recorded 0.1 observation, a s
 - [E3: bucket membership, mTLS routing, sends, timers and measured handoff limits](e3-cluster.md)
 - [E4: the one RPC group, sessions, Effect client and serving](e4-rpc-serve.md)
 - [E5: jobs, workflow journals, retries and durable sleep](e5-jobs.md)
+- [E6: page trees, bounded cache, history, actor forks and lease-fenced GC](e6-pages-history.md)
 - [E7: persisted owner indexes, audited operators, local dev and telemetry](e7-find-operators.md)
 - [Store protocol](store-protocol.md) and [provider support matrix](store-providers.md)
 - [Framework package boundary](framework-package.md) and [self-host recipe evidence](self-host.md)
@@ -16,4 +17,4 @@ Current evidence concerns the 0.2 bucket engine. A recorded 0.1 observation, a s
 
 Use the repository commands. `bun run test:node:units` runs its named unit/protocol cases; the full framework suite runs separately on Bun and Node. `TEST_S3_URL` selects the local S3-compatible integration endpoint. The bucket protocol and cluster process suites run against MinIO on both runtimes; the CLI storage probe has its own integration suite. Remove only the test containers, volumes and networks you created.
 
-E6 owns pages, full history, garbage collection and fork failure evidence. General multi-tenant addressing and hosted lifecycle/provider gates remain unverified. The [support matrix](../operations/support-matrix.md) names these limits. A capability is supported only within the scope of its passing invariant, failure-path and backend evidence.
+E6's local page, actor-fork and GC evidence is scoped in its report; retained-history boundary repair and production-provider/50 GB gates remain open. General multi-tenant addressing and hosted lifecycle/provider gates remain unverified. The [support matrix](../operations/support-matrix.md) names these limits. A capability is supported only within the scope of its passing invariant, failure-path and backend evidence.
