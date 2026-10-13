@@ -1,6 +1,6 @@
 # Jobs, timers and cron
 
-Status: partially normative (0.2), owned by ADR 0129. E5 promotes the job journal, retries, failure delivery, concurrency, durable sleep and derived-call clauses in [E5 jobs](../verification/e5-jobs.md). E2b promotes pending-timer recovery, drain-time `nextDue` and persisted cron catch-up in [E2 recovery](../verification/e2-recovery.md). Runner routing, the other timer/cron clauses and the complete cross-build inspection path retain proposal status for E3/E8.
+Status: partially normative (0.2), owned by ADR 0129. E5 promotes the job journal, retries, failure delivery, concurrency, durable sleep and derived-call clauses in [E5 jobs](../verification/e5-jobs.md). E2b promotes pending-timer recovery, drain-time `nextDue` and persisted cron catch-up in [E2 recovery](../verification/e2-recovery.md). [E3 cluster evidence](../verification/e3-cluster.md) adds routed job calls and retirement, the scoped timer wheel, split-owner recovery, attribution, DST and no-runner restart. Cloud's proactive wake orchestration and the complete cross-build inspection path retain proposal status for E6/E8.
 
 **Responsibility:** define how I/O runs, how timers and recurring actions fire, and what survives crashes, owner changes, deploys and scale to zero.  
 **Authority:** normative target on `rewrite/0.2`.  
@@ -29,9 +29,10 @@ Status: partially normative (0.2), owned by ADR 0129. E5 promotes the job journa
 
 ## Timers
 
-- A timer staged by `ctx.schedule` MUST become durable with its action. Firing MUST append a `Fired` entry and run the target action with a command id derived from the timer id, as `System({ source: "timer", ref: <actor>, onBehalfOf })`.
+- A timer staged by `ctx.schedule` MUST become durable with its action. Firing MUST append an `Action` with `Fired` origin and run the target action under the timer's derived command id, as `System({ source: "timer", ref: <actor>, onBehalfOf })`. The pending record and checkpoint MUST retain that originating principal.
 - A timer MUST fire at most once and MUST NOT be dropped. A timer due while its shard has no owner MUST fire when the shard next opens, late, with its original due time recorded.
 - Every checkpoint, including the drain-time one, MUST record the shard's `nextDue`, and the drain report MUST list it per shard so a host can wake a stopped store.
+- A temporary failure to verify an expired lease MUST NOT leave a due timer marked armed forever. The attempt retries with the same id while its shard remains open; a closed shard's next owner rebuilds pending wakeups from the durable records.
 
 ## Cron
 
@@ -47,4 +48,4 @@ A shard whose open jobs name a declaration or step that the running build lacks 
 
 ## Verification
 
-F14 (timer due during failover), F15 (cron across a DST change), F17 (crash inside a step; after a step before its journal entry is durable), F17′ (crash after a job's call is durable, before it is journaled: one effect), F18 (retries exhausted reach `onFailure` with the right `ambiguous`), F19 (concurrency under load), F27 (timer due while the store is scaled to zero). E2b verifies recovery of a pending timer and the cron skip boundary; runner-layer failover, DST, and scaled-to-zero routing remain E3.
+F14 (timer due during failover), F15 (cron across a DST change), F17 (crash inside a step; after a step before its journal entry is durable), F17′ (crash after a job's call is durable, before it is journaled: one effect), F18 (retries exhausted reach `onFailure` with the right `ambiguous`), F19 (concurrency under load), F27 (timer due while the store is scaled to zero). [E3 cluster evidence](../verification/e3-cluster.md) separates simulator, scoped clock/DST and process restart evidence; it does not claim that the Cloud control plane already schedules wakes.

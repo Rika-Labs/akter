@@ -1,6 +1,6 @@
 # ADR 0129: Jobs, the timer wheel and `ShardWorkflowEngine`
 
-Status: accepted for jobs and E2b recovery, 2026-10-12 (rewrite/0.2); the E3 timer/cron routing and E8 inspection remainder is proposed.
+Status: accepted for jobs, E2b recovery and the locally verified E3 routing/timer/cron clauses, 2026-10-12 (rewrite/0.2); Cloud wake orchestration and E8 inspection remain proposed.
 
 **Responsibility:** decide how I/O runs (jobs), how timers and cron fire, how both survive owner changes and scale to zero, and what happens to cancellation.
 
@@ -45,13 +45,13 @@ The job runner calls the public `WorkflowEngine.execute` with the already-durabl
 
 `Done` retains the completed job until receiver `Retired` entries and the owning shard's `JobRetired` release its cleanup obligation. Queue gates persist admission order within a declaration; a semaphore bounds live attempts per shard and actor type, not per actor instance. Job fibers cannot append or send calls under a later owner generation. Remaining durable jobs are redispatched if a replay fiber is interrupted while the shard remains owned; the simulator counts durable obligations, not only process-local fibers.
 
-`Jobs.install` accepts one narrow `JobRouting` seam for E3: route the original derived command and its encoded outcome to the receiver owner, and durably retire its per-job streams there. The default serves a runner that owns every shard. Cluster assignment and network routing remain E3, and no timer-wheel, runner-registration or peering code changes here. Suspend reasons for missing declarations, removed completed steps or incompatible result schemas are owner-local inspection metadata, not durable authority; the original journal remains intact and no failure action is delivered.
+`Jobs.install` accepts one narrow `JobRouting` seam: route the original derived command and its encoded outcome to the receiver owner, and durably retire its per-job streams there. E3's `Routing.make` installs it before assignment, deferring calls until shard entities are registered. Retirement fans out to every shard owner, retaining the terminal job until receiver acknowledgements are durable; a lost acknowledgement retries cleanup. The default still serves an engine that owns every shard. Suspend reasons for missing declarations, removed completed steps or incompatible result schemas are owner-local inspection metadata, not durable authority; the original journal remains intact and no failure action is delivered.
 
 All 22 upstream Effect 4.0.3 workflow behavior cases remain in [workflow.test.ts](../../packages/akter/src/execution/workflow.test.ts), including internal compensation/deferred behavior. This compatibility corpus does not expose those primitives on Akter's job API. The implementation imports only public Effect APIs; `makeUnsafe`, `WorkflowInstance.initial`, `makeDeferredState`, scoped `FiberMap`, and synchronous `FiberMap.setUnsafe`/`Fiber.getCurrent` are the adapter seams to rerun on an Effect upgrade. Encoded workflow boundaries and test-layer entry points have narrowly scoped lint configuration exceptions; they are not general job-handler exceptions.
 
 ### 4. The timer wheel
 
-- Each shard keeps a timer wheel in memory and in its checkpoint. `ctx.schedule(durationOrDate).<action>(payload)` adds a timer as an effect of the durable entry. Firing appends a `Fired` entry and runs the action with a command id derived from the timer id, as `System({ source: "timer", ref: <actor>, onBehalfOf })`.
+- Each shard keeps durable timer records in its checkpoint and rebuilds a scoped in-memory timer wheel from them. `ctx.schedule(durationOrDate).<action>(payload)` adds a timer as an effect of the durable entry. Firing appends an `Action` with `Fired` origin and runs the action under the timer's derived command id, as `System({ source: "timer", ref: <actor>, onBehalfOf })`.
 - A timer is never dropped. A timer due while its shard is closed fires when the shard next opens, late, with its original due time recorded.
 - **`nextDue`.** Every checkpoint manifest, including the drain-time one, records the earliest due instant of the shard. The drain report carries it per shard, so a host that stops a store can wake it in time. Self-hosted, a stopped store's timers fire when a runner next opens the shard.
 
@@ -72,6 +72,12 @@ Job bodies follow Effect Workflow's replay model: finished steps return their jo
 The catch-up threshold is inclusive: a pending tick exactly `cronSkipIfOlderThan` late (default one hour) fires once; only a tick older than the threshold is skipped. A skip is a durable `Skipped { commandId, at }` entry, which removes that pending tick and schedules the first tick after `at`. The state transition is replayed from the log; a crash must not resurrect a durably skipped tick, and days of downtime must not create a tick backlog.
 
 E2b's ownership suite exercises recovery on both sides of the threshold and after days of downtime, while the real-store restart scenario recovers a pending one-shot timer. Engine drain checkpoints and reports `nextDue` per shard, with `null` for none. This does not establish cluster failover, DST (F15), a host waking a scaled-to-zero store (F27), or the E5 job guarantees; those remain their own milestones. Evidence and remaining boundary checks are in [E2 recovery](../verification/e2-recovery.md).
+
+## E3 amendment: scoped timers and DST
+
+`execution/timer-wheel.ts` keeps one indexed priority queue and one bounded next-due sleep per opened shard, not one sleeping fiber per pending timer. Due actions run independently in the shard's scope; closing that scope cancels the sleeper and running timer attempts. Checkpoints retain the original due instant and the originating principal, never the heap or fibers. A timer whose expired lease cannot temporarily be verified retries with the same derived id until it succeeds or its shard closes. An interrupted caller cannot strand the engine in `opening`: marking that transition and forking recovery are one interruption-safe operation.
+
+Cron maps a skipped local time to the first instant after the gap, including a half-hour transition, and maps an autumn fold to its first occurrence only. The clock computes the next tick after the instant at which catch-up fires or skips; it does not replay a backlog of still-fresh missed intervals. The [E3 evidence](../verification/e3-cluster.md) names the failure scenarios and distinguishes deterministic clock-driven DST tests from object-store and host wake behavior. Jobs, workflow compatibility, Cloud's scheduled wake and provider atomicity remain separate evidence.
 
 ## Supersedes and amends
 

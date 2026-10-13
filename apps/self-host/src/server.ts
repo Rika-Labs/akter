@@ -1,9 +1,9 @@
 import { timingSafeEqual } from "node:crypto"
 import { readFileSync } from "node:fs"
 import { Actor, ActorError, isUser, Unauthorized, User } from "@rikalabs/akter"
-import { Akter, App, Auth, Store } from "@rikalabs/akter/server"
-import type { AuthRequest } from "@rikalabs/akter/server"
-import { Config, Effect, Layer, Option, Schema } from "effect"
+import { Akter, App, Auth, RuntimeControl, Store } from "@rikalabs/akter/server"
+import type { AuthRequest, RunnerOptions } from "@rikalabs/akter/server"
+import { Config, Effect, Layer, Option, Redacted, Schema } from "effect"
 
 /** The recipe's actor: a counter every authenticated caller can add to and watch. */
 const Counter = Actor.make("Counter", {
@@ -71,15 +71,46 @@ const store = Layer.unwrap(
   }),
 )
 
-const main = Akter.serve({
-  app: App.make({ actors: [Counter], layer: CounterLive }),
-  auth: bearer(),
-}).pipe(Layer.provide(store), Layer.launch)
+const serving = Layer.unwrap(
+  Effect.gen(function* () {
+    const host = yield* Config.option(Config.String("RUNNER_HOST"))
+    let runner: RunnerOptions | undefined
+    if (Option.isSome(host)) {
+      const port = yield* Config.Int("RUNNER_PORT")
+      runner = {
+        address: { host: host.value, port },
+        listenAddress: { host: "0.0.0.0", port },
+        peering: {
+          deployment: yield* Config.String("PEER_IDENTITY"),
+          credentials: Effect.sync(() => ({
+            ca: secret("peer-ca"),
+            certificate: secret("peer-certificate"),
+            key: Redacted.make(secret("peer-key")),
+          })),
+        },
+      }
+    }
+    return Akter.serve({
+      app: App.make({ actors: [Counter], layer: CounterLive }),
+      auth: bearer(),
+      runner,
+    })
+  }),
+).pipe(Layer.provide(store))
+
+const main = Effect.scoped(
+  Effect.gen(function* () {
+    const context = yield* Layer.build(serving)
+    yield* RuntimeControl.waitForSignal({ deadline: "15 seconds" }).pipe(
+      Effect.provideContext(context),
+    )
+  }),
+)
 
 if (typeof Bun === "undefined") {
-  const { NodeRuntime, NodeServices } = await import("@effect/platform-node")
-  NodeRuntime.runMain(Effect.provide(main, NodeServices.layer))
+  const { NodeServices } = await import("@effect/platform-node")
+  await Effect.runPromise(Effect.provide(main, NodeServices.layer))
 } else {
-  const { BunRuntime, BunServices } = await import("@effect/platform-bun")
-  BunRuntime.runMain(Effect.provide(main, BunServices.layer))
+  const { BunServices } = await import("@effect/platform-bun")
+  await Effect.runPromise(Effect.provide(main, BunServices.layer))
 }

@@ -44,7 +44,13 @@ export const Checkpoint = Schema.Struct({
       outcomes: Schema.Array(Schema.Struct({ commandId: Schema.String, outcome: Outcome })),
     }),
   ),
-  timers: Schema.Array(Schema.Struct({ address: Schema.String, timer: Timer })),
+  timers: Schema.Array(
+    Schema.Struct({
+      address: Schema.String,
+      timer: Timer,
+      onBehalfOf: Schema.optional(Schema.String),
+    }),
+  ),
   outbox: Schema.Array(
     Schema.Struct({
       stream: Schema.String,
@@ -109,7 +115,10 @@ const capture = (image: ShardImage): Checkpoint => ({
     jobId,
     outcomes: Array.from(outcomes, ([commandId, outcome]) => ({ commandId, outcome })),
   })),
-  timers: Array.from(image.timers.values()),
+  timers: Array.from(image.timers.values(), (record) => ({
+    ...record,
+    onBehalfOf: record.onBehalfOf,
+  })),
   outbox: Array.from(image.outbox.values())
     .flat()
     .map((pending) => ({
@@ -165,7 +174,8 @@ const restore = (catalog: Catalog, checkpoint: Checkpoint): ShardImage => {
   for (const { stream, sequence } of checkpoint.received) image.received.set(stream, sequence)
   for (const { jobId, outcomes } of checkpoint.calls)
     image.calls.set(jobId, new Map(outcomes.map(({ commandId, outcome }) => [commandId, outcome])))
-  for (const timer of checkpoint.timers) image.timers.set(timer.timer.commandId, timer)
+  for (const timer of checkpoint.timers)
+    image.timers.set(timer.timer.commandId, { ...timer, onBehalfOf: timer.onBehalfOf })
   for (const pending of checkpoint.outbox) {
     const queue = image.outbox.get(pending.stream) ?? []
     queue.push({ ...pending, onBehalfOf: pending.onBehalfOf })

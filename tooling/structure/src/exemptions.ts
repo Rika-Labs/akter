@@ -28,4 +28,22 @@ export const exemptions: ReadonlyArray<Exemption> = [
     reason:
       "The E2 ownership and failure matrix exercises the shared engine implementation without a separate ownership module.",
   },
+  {
+    path: "packages/akter/src/execution/cron.test.ts",
+    rule: "tests-beside-sources",
+    reason:
+      "The E3 cron durability scenario exercises the engine and simulator; the parser's focused tests stay beside contract/cron.ts.",
+  },
+  {
+    path: "packages/akter/src/testing/cluster.test.ts",
+    rule: "tests-beside-sources",
+    reason:
+      "The E3 split-shard seed matrix exercises the shared simulator rather than a second cluster simulator implementation.",
+  },
+  {
+    path: "packages/akter/src/runtime/cluster-process.test.ts",
+    rule: "tests-beside-sources",
+    reason:
+      "The integration-only E3 process harness exercises sharding over MinIO; its runner fixtures live in unpublished conformance tooling.",
+  },
 ]

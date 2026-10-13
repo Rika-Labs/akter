@@ -75,6 +75,7 @@ export interface JobRecord {
 export interface TimerRecord {
   readonly address: string
   readonly timer: Timer
+  readonly onBehalfOf: string | undefined
 }
 
 /**
@@ -179,6 +180,7 @@ const armCron = (
   image.timers.set(commandId, {
     address,
     timer: { commandId, at, member, payload: null, cron: true },
+    onBehalfOf: undefined,
   })
 }
 
@@ -233,7 +235,11 @@ const recordAction = (
   })
   for (const bucket of image.clients.keys()) if (bucket < image.lastAt) image.clients.delete(bucket)
   for (const timer of entry.effects.timers)
-    image.timers.set(timer.commandId, { address: record.address, timer })
+    image.timers.set(timer.commandId, {
+      address: record.address,
+      timer,
+      onBehalfOf: principalOf(entry.caller),
+    })
   for (const send of entry.effects.sends) {
     const target = shardOf(addressOf(send.actor, send.key), catalog.shards)
     if (target === image.shard) continue

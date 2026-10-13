@@ -172,7 +172,11 @@ const matches = (state: Decoded, where: Readonly<Record<string, Decoded>>): bool
  * recomputed on durable change, events after durability, presence through `connect` and
  * `disconnect`, and `find` over every shard.
  */
-const reads = (engine: Engine, caller: Caller): Omit<Transport, "call"> => ({
+const reads = (
+  engine: Engine,
+  caller: Caller,
+  shards?: ReadonlyArray<number>,
+): Omit<Transport, "call"> => ({
   state: (target: Target) =>
     Stream.unwrap(
       Effect.as(
@@ -316,7 +320,7 @@ const reads = (engine: Engine, caller: Caller): Omit<Transport, "call"> => ({
     Effect.gen(function* () {
       const { actor, query } = request
       yield* allowed(actor, caller, { kind: "find", member: "find" })
-      const records = yield* engine.instances(actor)
+      const records = yield* engine.instances(actor, shards)
       const where = query.where ?? {}
       const selected = records.filter((record) => matches(record.image.state, where))
       const order = query.orderBy

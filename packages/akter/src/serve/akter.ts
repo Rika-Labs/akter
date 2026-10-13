@@ -13,9 +13,11 @@ import { RpcSerialization, RpcServer } from "effect/rpc"
 import { ActorError, Unauthorized } from "../contract/errors.ts"
 import { Engine } from "../execution/engine.ts"
 import type { Bound, Catalog } from "../execution/durable.ts"
-import { Jobs } from "../execution/jobs.ts"
 import { groupOf, SPAN_PREFIX } from "../rpc/group.ts"
 import type { App } from "../runtime/app.ts"
+import { RuntimeControl } from "../runtime/drain.ts"
+import { Routing } from "../runtime/sharding.ts"
+import type { RunnerOptions } from "../runtime/sharding.ts"
 import { Store } from "../store/service.ts"
 import { KEY_REFRESH_PATH, requestDigest } from "./assertion/binding.ts"
 import type { AuthProvider, AuthRequest } from "./auth.ts"
@@ -43,6 +45,8 @@ export interface ServeOptions {
   readonly reauthorizeEvery?: Duration.Input
   /** The largest credential a request may carry, in UTF-8 bytes; default 8 KiB. */
   readonly credentialBytes?: number
+  /** Omitted for one process; multi-runner stores require directly reachable mTLS peers. */
+  readonly runner?: RunnerOptions
 }
 
 const refused = (code: (typeof Unauthorized.Type)["code"]) =>
@@ -80,7 +84,7 @@ const platform = (port: number, hostname: string) =>
 
 /**
  * The engine over the provided store, with every actor of the app bound. One served process owns
- * every shard of its store, so it assigns itself all of them; a cron tick more than an hour late
+ * its store; assignment is supplied by the routing layer. A cron tick more than an hour late
  * after downtime is skipped.
  */
 const engineOf = (app: App) =>
@@ -99,8 +103,6 @@ const engineOf = (app: App) =>
       doubleRun: false,
       observer: undefined,
     })
-    Jobs.install(engine)
-    yield* engine.assign(Array.from({ length: catalog.shards }, (_, shard) => shard))
     return engine
   })
 
@@ -135,13 +137,18 @@ const serve = (options: ServeOptions) => {
   const routes = Effect.gen(function* () {
     const crypto = yield* Crypto.Crypto
     const engine = yield* engineOf(options.app)
+    const routing = yield* Routing.make(engine, options.runner)
+    const control = RuntimeControl.of({
+      readiness: routing.readiness,
+      drain: ({ deadline }) => routing.drain(deadline),
+    })
     const sessions = yield* Sessions.make({
       auth,
       reauthorizeEvery: options.reauthorizeEvery ?? Duration.seconds(60),
     })
     const group = groupOf(options.app.actors).middleware(Authorization)
     const handlers = yield* group.toHandlers(
-      Effect.succeed(Handlers.make(engine, options.app.actors, sessions)),
+      Effect.succeed(Handlers.make(engine, options.app.actors, sessions, routing)),
     )
     const served = <E, R>(
       protocol: Effect.Effect<
@@ -174,12 +181,6 @@ const serve = (options: ServeOptions) => {
       RpcSerialization.json,
     )
     const http = yield* served(RpcServer.makeProtocolWithHttpEffect(), RpcSerialization.ndjson)
-    let ready = true
-    yield* Effect.addFinalizer(() =>
-      Effect.sync(() => {
-        ready = false
-      }),
-    )
 
     const authRequest = (request: HttpServerRequest.HttpServerRequest): AuthRequest => ({
       headers: Headers.remove(request.headers, SESSION_HEADER),
@@ -237,7 +238,7 @@ const serve = (options: ServeOptions) => {
         return yield* Effect.provideService(transport, HttpServerRequest.HttpServerRequest, trusted)
       })
 
-    return HttpServer.serve(
+    const serving = HttpServer.serve(
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest
         const origin = Headers.get(request.headers, "origin")
@@ -251,11 +252,13 @@ const serve = (options: ServeOptions) => {
         if (path === rpcPath && request.method === "GET")
           return yield* gate(request, socket, "socket")
         if (path === rpcPath && request.method === "POST") return yield* gate(request, http, "http")
-        if (path === `${base}/ready` && request.method === "GET")
-          return HttpServerResponse.jsonUnsafe(
-            ready ? ReadyBody.make({ ready }) : ReadyBody.make({ ready, reason: "draining" }),
-            { status: ready ? 200 : 503 },
-          )
+        if (path === `${base}/ready` && request.method === "GET") {
+          const readiness = yield* control.readiness
+          return HttpServerResponse.jsonUnsafe(ReadyBody.make(readiness), {
+            status: readiness.ready ? 200 : 503,
+            headers: { "cache-control": "no-store" },
+          })
+        }
         const refreshKeys = auth.refreshKeys
         if (
           path === `${base}${KEY_REFRESH_PATH}` &&
@@ -270,6 +273,7 @@ const serve = (options: ServeOptions) => {
         return HttpServerResponse.empty({ status: path === rpcPath ? 405 : 404 })
       }),
     )
+    return Layer.merge(serving, Layer.succeed(RuntimeControl, control))
   })
 
   return Layer.unwrap(routes).pipe(

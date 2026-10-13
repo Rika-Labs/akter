@@ -2,7 +2,7 @@
 
 Status: proposed, 2026-10-12 (rewrite/0.2).
 
-E2b implements the engine/store boundary described in the amendment below; this is partial evidence, not acceptance of the cluster, rollout or clock-suspension clauses.
+E2b implements the engine/store boundary. E3 adds bucket-backed Cluster routing and handoff as described below. The release-to-store peering amendment remains an explicit captain question; clock-suspension and production-provider claims are not established by this evidence.
 
 **Responsibility:** decide how a runner becomes the one writer of a shard, how batches become durable in the store's bucket, how a stale owner is fenced, how admission is bounded, and how a shard moves between releases.
 
@@ -80,7 +80,7 @@ Runner registration and shard locks use Effect Cluster's `RunnerStorage` impleme
 
 ### 9. Release handoff: drain, then open
 
-Releases of one store overlap during a rollout. They are separate clusters (different runner identities, [contract 10](../contracts/10-security.md)), so without a rule both would open every shard.
+Releases of one store overlap during a rollout. E3 uses one bucket-backed membership and a stable store-scoped peering identity, so the new runner can forward to the old owner while it is in standby. This amends the earlier separate-release-cluster proposal; the reason and outstanding confirmation are recorded in the E3 amendment below.
 
 - A new release starts in standby: it registers, serves `/rpc` through the gateway path and opens no shard of the store.
 - Draining a shard stops admission (callers get `ShardMoved` with `retryAfter`), flushes the committer, writes a checkpoint, and appends a final segment holding one `Released` entry. The drain report lists each shard's offset and `nextDue`.
@@ -102,6 +102,18 @@ Store owns `validFor` (default 10 seconds), confirmation time and `fresh(lease)`
 Engine drain stops admission, flushes, writes the checkpoint, then appends a segment containing only `Released`. It returns `{ outcome: "clean" | "timedOut", shards: [{ shard, offset, nextDue }] }`, with `nextDue` in epoch milliseconds or `null`. An incomplete release closes without publishing undurable work. The next build has no application entries to replay, although the bookkeeping-only `Released` tail remains. The runner layer still owns unready/readiness, registration and routing, rollout standby/no-open-before-release (F24), advisory lease release, and self-host `DRAINED` output; `engine.assign` establishes none of those guarantees.
 
 [E2 recovery](../verification/e2-recovery.md) maps F6–F12 to the seeded ownership suite and the six real-store engine scenarios. Provider performance and production-bucket atomicity remain T5 evidence, not simulator or filesystem claims.
+
+## E3 amendment: assignment, peering and the release barrier
+
+`runtime/sharding.ts` is the Akter adapter over Effect Cluster's `Sharding`, volatile shard entities and `SocketRunner`. `store/runners.ts` supplies `RunnerStorage.makeEncoded` over the Store's bucket. Cluster computes assignments with `HashRing`; no assignment object or second durable message store exists. Only newly acquired advisory locks call `engine.assign`; a refresh that loses a lock calls `engine.unassign`. Repeated requests never call assignment. The defaults remain 30-second lock expiration and 15-second assignment refresh, rather than silently shortening them to meet T6.
+
+An orderly Cluster lock release first runs engine release: stop admission, flush, checkpoint, append `Released`, then release the advisory lock. A failed checkpoint or release keeps that live runner's lock instead of letting another release open an unreleased tail. Lock expiration still permits crash recovery, whose actionable tail requires the matching build. Readiness remains `routing` until the bucket registration and all HashRing-assigned shards are open; expired Store verification and peer-credential health produce `storage` and `peering` respectively.
+
+The runner is unready before drain starts, rejects new gateway calls with `ShardMoved`, unregisters before releasing its advisory locks and does not renew its heartbeat afterwards. A disabled self remains only in the drained runner's local Cluster membership view, preventing Cluster's automatic registration loop from recreating it; other runners see only the bucket. Host signal handling keeps the runtime alive through the bounded drain and prints `DRAINED <JSON report>` before scope close. `nextDue` remains a checkpoint field and a per-shard drain-report value; there is no `next_due` table or instance directory.
+
+**Provisional peering choice requiring captain confirmation.** D27 requires cross-runner forwarding, including a standby new release reaching an old owner, while the earlier §9 and security proposal required release-specific certificates that reject that connection. E3 takes the closest D24/D27 option: one trusted cluster per store, with a stable identity shared only by that store's authorized releases. The kept peering implementation still spells its option `deployment` and its URI `spiffe://akter/deployment/<identity>`; for 0.2 that identity must name the store, not a release. Hosted assertion audiences remain release-specific. This does not authorize credentials or peers of another store. Confirm this amendment before promoting the security boundary or launching a rollout.
+
+[E3 cluster evidence](../verification/e3-cluster.md) separates the seeded engine simulator from real mTLS/MinIO process evidence and records the T6 limits. It does not establish R2/Tigris behavior, suspend-safe clocks, Cloud wake orchestration or old-build image retention.
 
 ## Supersedes and amends
 

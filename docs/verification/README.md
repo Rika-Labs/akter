@@ -27,6 +27,8 @@ Startup migration evidence lives in `runtime/database/migrations.test.ts`: six c
 - [Cold tier: owner-side fetch, guarded garbage, Postgres crashes and S3-compatible evidence](cold-tier.md)
 - [Store protocol: the 0.2 bucket log, pages, leases and runner storage on memory, a local directory and MinIO](store-protocol.md)
 - [E1 execution: the 0.2 contract, synchronous execution, deduplication, recovery and the 1,000-seed `Simulation` matrix on Bun and Node](e1-execution.md)
+- [E2 recovery: create-once epoch fencing, checkpoint/tail replay, bounded drain and actionable-tail build matching](e2-recovery.md)
+- [E3 cluster: bucket membership, mTLS routing, durable sends, timers/cron, handoff and measured limits](e3-cluster.md)
 - [E4 RPC, sessions and serving: `/rpc` over WebSocket and HTTP, the Effect client, sessions and reauthorization, `Akter.serve` and the self-host recipe on Bun and Node](e4-rpc-serve.md)
 - [E5 jobs: shard workflow journals, F17–F19/F17′, durable sleeps, streaming retries and Bun/Node/MinIO evidence](e5-jobs.md)
 - [Store provider support matrix: which object-storage providers pass `akter storage check`, with date and version](store-providers.md)

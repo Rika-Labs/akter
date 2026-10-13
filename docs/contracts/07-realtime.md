@@ -22,6 +22,7 @@ Status: proposal (0.2), owned by ADR 0130; promoted when E4 (streams, presence a
 - A stream whose consumer falls behind its bounded buffer MUST either replace the queued patches with one new full value or end with `SessionEnded { cause: "SlowConsumer", resync: true }`. It MUST NOT skip a patch silently. Served state, list and view streams keep the newest of 64 values and send one patch from the last value sent; event streams end with `SlowConsumer` when 64 events wait.
 - A client that resubscribes after a lost connection receives a full value first and MUST NOT deliver it again when it equals the value it already delivered.
 - When the actor's shard moves, its streams MUST end with `SessionEnded { cause: "OwnerMoved", resync: true }`; a client that resubscribes MUST receive a full value first.
+- A full frame starts a fresh stream baseline even when its owner-local version is lower than the previous owner's. Version checks apply to patches within that baseline, not across owners. Equal decoded values are suppressed using the actor schema's equivalence.
 
 ## Presence
 
