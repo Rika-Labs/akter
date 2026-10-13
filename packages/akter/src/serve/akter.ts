@@ -148,6 +148,7 @@ const serve = (options: ServeOptions) => {
     const routing = yield* Routing.make(engine, options.runner)
     const control = RuntimeControl.of({
       readiness: routing.readiness,
+      usage: engine.usage,
       drain: ({ deadline }) => routing.drain(deadline),
     })
     const sessions = yield* Sessions.make({

@@ -8,4 +8,6 @@ Idle actors can stop being resident while their manifests, lists, timers, sends,
 
 On drain the runner becomes unready, stops admission, flushes, checkpoints, appends `Released`, and reports each shard's durable offset and `nextDue`. A clean handoff permits the next release to open; an unclean tail requires its matching build. A stopped store needs a host to restart it for due work—no process can wake itself after all runners stop.
 
+The drain report adds optional top-level `actions` and `jobSeconds` totals since runner open, including work on shards already released or lost. Attempt finalizers settle the local interval before the report is read. These attribution counters stay with the runner, not with a checkpoint or a shard's next owner; replay never replenishes them.
+
 See [recovery](../contracts/09-recovery.md) for promotion status and [jobs](../api/jobs.md) for journaled work.

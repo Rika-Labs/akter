@@ -80,6 +80,18 @@ Bucket coordination defaults are `shardLockExpiration: "3 seconds"`, `refreshAss
 
 Keep the server/store scope alive while `RuntimeControl.waitForSignal({ deadline: "15 seconds" })` waits for SIGTERM or SIGINT and drains. It makes the runner unready before release and prints `DRAINED` with final durable offsets and `nextDue`. The host must persist that report and arrange future wake-ups; the engine cannot wake a stopped process.
 
+### Runner usage
+
+`Telemetry.usage` is an `Effect<UsageSnapshot, never, RuntimeControl>` from `@rikalabs/akter/server`. `Akter.serve` provides its runner's context; read it inside that live context, including after drain but before scope close:
+
+```ts
+const snapshot = yield * Telemetry.usage
+```
+
+`UsageSnapshot` contains `{ actions, jobSeconds, actors: [{ actorType, actions, jobSeconds }] }`. Every declared actor type appears, including zero totals. Each read is detached from later updates and never resets or seals totals. Counts are monotonic since that runner opened, survive its shard recovery and release, and never include another runner's work. Only successful, confirmed durable actions count; replays, duplicate answers, page-miss reruns, failures and defects do not. Job seconds round local elapsed time up independently for each durably admitted attempt or resumed local interval, including success, failure, defect, timeout and interruption. Active attempts enter totals when they settle; retry backoff and admission queues do not count.
+
+The `DrainReport` wire adds optional top-level `actions` and `jobSeconds`, with the same cumulative runner-wide meaning, including work on shards already released or lost. Legacy reports still decode; absent counters mean unknown, not zero. Current producers include totals after settling interrupted attempts on both clean and timed-out drains. Hosts compute interval deltas using their own runner-incarnation identity; the framework neither seals reports nor signs them. These counters are attribution to reconcile with platform observations, not billing authority. Hard process death can leave an unreported interval; replay does not count it again.
+
 ## RPC
 
 The served app exposes one RPC group at `/rpc`. WebSocket clients exchange JSON and keep a session; HTTP clients use `POST` with newline-delimited JSON. Authentication runs before RPC handling and each session is rebound or reauthorized according to the server options.

@@ -62,6 +62,7 @@ Names use dots; Prometheus exposition replaces `.` with `_`. No metric carries a
 | `akter.page.misses`        | counter   | `actor_type`                              |
 | `akter.activations`        | gauge     | `actor_type`                              |
 | `akter.jobs`               | counter   | `job`, `outcome`                          |
+| `akter.job.seconds`        | counter   | `actor_type`                              |
 | `akter.admission.refused`  | counter   | `reason`                                  |
 | `akter.gc.deleted`         | counter   | none                                      |
 
@@ -76,6 +77,14 @@ The live engine counts created actors as their entries become durable and rebuil
 Replay appends `Replayed` and `Audit` together as [ADR 0133](0133-build-matched-replay.md) specifies. The CLI uses `effect/cli` and only `AKTER_OPERATOR_TOKEN` implicitly. It permits HTTPS or loopback HTTP, rejects credential-bearing URLs, and can select another credential variable explicitly.
 
 `Telemetry.layer` composes Effect OTLP metrics/traces and DevTools behind one redacting tracer; failed span causes, attributes, links and event data are removed before the exporters. No OTLP logs exporter is installed. Prometheus is opt-in on `Akter.serve`, while local dev enables it on loopback. Page-miss and GC instruments are declared for E6's transitions, not proof that those transitions have landed. [E7 evidence](../verification/e7-find-operators.md) covers real exporter delivery, stable names, redaction and each operator command's allowed/denied/missing-grant path.
+
+## E8a implementation: runner-local attribution
+
+`Telemetry.usage` reads `UsageSnapshot { actions, jobSeconds, actors: [{ actorType, actions, jobSeconds }] }` from the `RuntimeControl` supplied by `Akter.serve`. It is separate from Effect's process-wide diagnostic registry, starts at zero per runner, and remains monotonic across recovery and released or lost shards. Reads return detached values and do not reset or seal them. The existing `akter.actions` outcome series still include declared failures and defects for diagnostics; usage counts only successes.
+
+The committer adds successful actions synchronously after append confirmation and before publication; there is no counter in admission, execution or replay. A durably admitted job attempt measures only its local execution interval with the Effect monotonic clock. Its finalizer rounds that interval up once and updates both usage and `akter.job.seconds`, including interruptions before shard scope closure. Concurrency queues, retry backoff and cleanup are outside the interval. A resumed attempt starts a new local interval rather than charging downtime from the original `Attempt.at`.
+
+Drain reports optional top-level `actions` and `jobSeconds`, cumulative across the runner's lifetime, after finalizers settle attempts. Both clean and timed-out reports include them; decoders accept legacy reports without either field, whose usage remains unknown. No new journal entry, checkpoint field, storage write, signing protocol or billing authority is introduced. A hard kill can lose unreported attribution; a write durable just before the runner dies can be replayed without ever entering its observed counters. The host owns runner-incarnation identities, interval deltas and reconciliation. [E8a evidence](../verification/e8a-usage.md) proves the engine semantics, not Cloud ingestion or provider reconciliation.
 
 ## Supersedes and amends
 

@@ -14,7 +14,7 @@ export const milliseconds = [
  */
 export const Metrics = {
   actions: Metric.counter("akter.actions", {
-    description: "Durable actions, by actor_type and outcome (success, failure, defect).",
+    description: "Durable action outcomes, by actor_type and outcome (success, failure, defect).",
     incremental: true,
   }),
   actionDuration: Metric.histogram("akter.action.duration_ms", {
@@ -39,6 +39,10 @@ export const Metrics = {
     description: "Activations resident on this runner, by actor_type.",
   }),
   jobs: Metric.counter("akter.jobs", { incremental: true }),
+  jobSeconds: Metric.counter("akter.job.seconds", {
+    description: "Local attempt wall time rounded up per attempt, by actor_type.",
+    incremental: true,
+  }),
   admissionRefused: Metric.counter("akter.admission.refused", { incremental: true }),
   gcDeleted: Metric.counter("akter.gc.deleted", { incremental: true }),
 } as const

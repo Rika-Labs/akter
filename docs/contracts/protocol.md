@@ -61,6 +61,21 @@ Status: proposal (0.2), owned by ADR 0130. E4 evidence for calls, same-id retrie
 
 `GET {basePath}/ready` MUST answer `200 { ready: true }` or `503 { ready: false, reason }`, with `reason` one of `draining`, `drained`, `storage`, `routing`, `peering` or `unregistered`. It needs no credential and reveals nothing else.
 
+## Host drain report
+
+The server entry's `DrainReport` schema describes the host handoff, not a new application RPC:
+
+```ts
+{
+  outcome: "clean" | "timedOut",
+  shards: ReadonlyArray<{ shard: number; offset: number; nextDue: number | null }>,
+  actions?: number,
+  jobSeconds?: number,
+}
+```
+
+`actions` and `jobSeconds` MUST be nonnegative integers when present. They are runner-wide cumulative attribution since runner open, including work on previously released or lost shards, and settle active attempts before reporting drain. Both fields are optional so a new decoder accepts legacy reports without them; absence means unknown, not zero. They create no storage or billing authority and are not restored by replay. See [background work](08-background-work.md#runner-usage-attribution) and [E8a evidence](../verification/e8a-usage.md).
+
 ## Verification
 
 Client conformance over HTTP and WebSocket on Node and Bun: same-id retries and `replayed`, streaming frames, `$reauthenticate`, refusals before the handler, origin and scheme checks; assertion verification cases including each failure code and the key refresh push. Evidence: [E4 RPC and serving](../verification/e4-rpc-serve.md).
