@@ -52,7 +52,7 @@ export const bucketPages = ({ bucket, retry }: RetriedBucket) => {
   const putPage = (payload: Uint8Array) =>
     Effect.gen(function* () {
       const stored = encodePage(payload)
-      const hash = yield* sha256(stored)
+      const hash = sha256(stored)
       const key = pageKey(hash)
       yield* retrying(
         bucket.put(key, stored).pipe(

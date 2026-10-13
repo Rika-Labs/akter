@@ -407,6 +407,38 @@ export const storeConformance = <OpenError, ClientError>(
     )
 
     it.effect(
+      "holds a lease fresh only within validFor of its last append or check, without a bucket call, and never after a fence (rejects freshness that ignores time, that a check does not renew, or that outlives a detected fence)",
+      () =>
+        Effect.gen(function* () {
+          const client = yield* backend.namespace
+          const a = yield* owner(client, "a")
+          const b = yield* owner(client, "b")
+          const lease = yield* a.store.open(2)
+          const calls = Effect.map(a.faults.operations, (operations) => operations.length)
+          const before = yield* calls
+          yield* TestClock.adjust("10 seconds")
+          expect(yield* a.store.fresh(lease)).toBe(true)
+          yield* TestClock.adjust("1 millis")
+          expect(yield* a.store.fresh(lease)).toBe(false)
+          expect(yield* calls).toBe(before)
+
+          yield* a.store.verify(lease)
+          expect(yield* a.store.fresh(lease)).toBe(true)
+          yield* TestClock.adjust("9 seconds")
+          yield* a.store.append(lease, [text("renews")])
+          yield* TestClock.adjust("9 seconds")
+          expect(yield* a.store.fresh(lease)).toBe(true)
+
+          yield* b.store.open(2)
+          expect(yield* a.store.fresh(lease)).toBe(true)
+          expect(yield* failureOf(a.store.append(lease, [text("stale")]))).toBeInstanceOf(
+            StaleEpoch,
+          )
+          expect(yield* a.store.fresh(lease)).toBe(false)
+        }),
+    )
+
+    it.effect(
       "stores pages once per content hash and checks them on load (rejects keys not derived from content and loads that trust stored bytes)",
       () =>
         Effect.gen(function* () {

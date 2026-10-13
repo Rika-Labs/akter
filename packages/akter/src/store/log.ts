@@ -387,5 +387,14 @@ export const bucketLog = (settings: Settings) => {
 
   const verify = (lease: Lease) => guarded(lease, () => Effect.void)
 
-  return { open, append, read, checkpoint, trim, verify }
+  /** Whether `verify` would succeed without asking the bucket: the lease is open and within `validFor` of its last confirmation. */
+  const fresh = (lease: Lease) =>
+    Effect.map(now, (at) => {
+      const holding = holdings.get(lease)
+      return (
+        holding !== undefined && !holding.closed && at - holding.confirmedAt <= settings.validFor
+      )
+    })
+
+  return { open, append, read, checkpoint, trim, verify, fresh }
 }
