@@ -25,7 +25,7 @@ export const Capability = Schema.Struct({
   action: OperatorAction,
   tenant: Schema.NonEmptyString,
   actorType: Schema.optionalKey(Schema.NonEmptyString),
-  actorId: Schema.optionalKey(Schema.NonEmptyString),
+  actorId: Schema.optionalKey(Schema.Json),
   commandId: Schema.optionalKey(Schema.NonEmptyString),
 })
 
@@ -45,7 +45,7 @@ export type OperatorGrant = typeof OperatorGrant.Type
 export interface Resource {
   readonly tenant: string
   readonly actorType?: string | undefined
-  readonly actorId?: string | undefined
+  readonly actorId?: Schema.Json | undefined
   readonly commandId?: string | undefined
 }
 
@@ -72,7 +72,8 @@ export const authorizing = ({
         capability.action === action &&
         (capability.tenant === "*" || capability.tenant === resource.tenant) &&
         covers(capability.actorType, resource.actorType) &&
-        covers(capability.actorId, resource.actorId) &&
+        (capability.actorId === undefined ||
+          JSON.stringify(capability.actorId) === JSON.stringify(resource.actorId)) &&
         covers(capability.commandId, resource.commandId),
     ),
   )

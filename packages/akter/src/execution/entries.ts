@@ -188,10 +188,46 @@ export const SkippedEntry = Schema.TaggedStruct("Skipped", {
  */
 export const ReleasedEntry = Schema.TaggedStruct("Released", {})
 
+/** A fork installs one actor image without reissuing any source action or staged side effect. */
+export const ForkedEntry = Schema.TaggedStruct("Forked", {
+  actor: Schema.String,
+  key: Schema.Json,
+  from: Schema.Json,
+  position: Schema.Struct({
+    shard: Schema.Int,
+    offset: Schema.Int,
+    index: Schema.Int,
+    version: Schema.Int,
+  }),
+  at: Schema.Finite,
+  manifest: Schema.String,
+  state: Schema.Record(Schema.String, Schema.Json),
+  lists: Schema.Array(
+    Schema.Struct({ field: Schema.String, keys: Schema.String, ordered: Schema.String }),
+  ),
+  timers: Schema.Array(Timer),
+  jobs: Schema.Array(
+    Schema.Struct({
+      jobId: Schema.String,
+      job: Schema.String,
+      payload: Schema.Json,
+      key: Schema.optional(Schema.String),
+      steps: Schema.Array(Schema.Struct({ name: Schema.String, value: Schema.Json })),
+    }),
+  ),
+})
+
+/** An operator operation and its authority, committed in the same batch as its result. */
+export const AuditEntry = Schema.TaggedStruct("Audit", {
+  record: AuditRecord,
+})
+
 /** Every log entry. */
 export const Entry = Schema.Union([
-  Schema.TaggedStruct("Replayed", { checkpoint: Schema.String }),
-  Schema.TaggedStruct("Audit", { record: AuditRecord }),
+  Schema.TaggedStruct("Replayed", {
+    checkpoint: Schema.optionalKey(Schema.String),
+    page: Schema.optionalKey(Schema.String),
+  }),
   ActionEntry,
   SeedEntry,
   DeliveredEntry,
@@ -204,6 +240,8 @@ export const Entry = Schema.Union([
   JobRetiredEntry,
   SkippedEntry,
   ReleasedEntry,
+  ForkedEntry,
+  AuditEntry,
 ]).pipe(Schema.toTaggedUnion("_tag"))
 
 /** Every log entry. */

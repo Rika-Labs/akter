@@ -39,6 +39,8 @@ export interface Settings extends RetriedBucket {
   readonly validFor: number
   /** Milliseconds a checkpoint must have been known before trim deletes what it covers. */
   readonly trimAfter: number
+  /** Milliseconds of history retained by the store descriptor. */
+  readonly retentionMillis: number
 }
 
 /**
@@ -60,6 +62,11 @@ export interface Lease {
 /** A segment read from the log, with the offset it is stored at. */
 export interface StoredSegment extends Segment {
   readonly offset: bigint
+}
+
+/** A retained checkpoint and its provider's last-modified time in epoch milliseconds. */
+export interface HistoryCheckpoint extends Manifest {
+  readonly modified: number
 }
 
 interface Known {
@@ -323,9 +330,14 @@ export const bucketLog = (settings: Settings) => {
   const read = (
     shard: number,
     from: bigint,
+    through?: bigint,
   ): Stream.Stream<StoredSegment, LogUnavailable | CorruptSegment> =>
     Stream.unwrap(
       Effect.gen(function* () {
+        if (through !== undefined && through < from)
+          return yield* Effect.die(
+            new RangeError("History upper offset must not precede its lower offset"),
+          )
         const keys = yield* retrying(
           bucket.list(logPrefix(shard), { startAfter: segmentKey(shard, from) }),
         )
@@ -334,6 +346,7 @@ export const bucketLog = (settings: Settings) => {
         for (const key of keys) {
           const offset = segmentOffset(shard, key)
           if (Option.isNone(offset)) continue
+          if (through !== undefined && offset.value > through) break
           if (offset.value !== expected)
             return yield* CorruptSegment.make({
               key: segmentKey(shard, expected),
@@ -342,6 +355,11 @@ export const bucketLog = (settings: Settings) => {
           listed.push([offset.value, key])
           expected += 1n
         }
+        if (through !== undefined && expected <= through)
+          return yield* CorruptSegment.make({
+            key: segmentKey(shard, expected),
+            reason: "bounded history is missing a retained segment",
+          })
         return Stream.fromIterable(listed).pipe(
           Stream.mapEffect(
             ([offset, key]) =>
@@ -351,6 +369,36 @@ export const bucketLog = (settings: Settings) => {
         )
       }),
     ).pipe(Stream.catchTag("StorageUnavailable", (error) => Stream.fail(unavailable(error))))
+
+  const checkpoints = (shard: number) =>
+    Effect.gen(function* () {
+      const cutoff = (yield* Clock.currentTimeMillis) - settings.retentionMillis
+      const retained: Array<HistoryCheckpoint> = []
+      let newest = true
+      for (const key of yield* retrying(bucket.list(checkpointPrefix(shard)))) {
+        const offset = checkpointOffset(shard, key)
+        if (Option.isNone(offset)) continue
+        const modified = yield* retrying(bucket.modified(key))
+        if (Option.isNone(modified))
+          return yield* CorruptSegment.make({
+            key,
+            reason: "listed checkpoint has no last-modified time",
+          })
+        if (!newest && modified.value < cutoff) continue
+        newest = false
+        const bytes = yield* retrying(bucket.get(key))
+        if (Option.isNone(bytes))
+          return yield* CorruptSegment.make({ key, reason: "retained checkpoint is missing" })
+        const manifest = yield* decodeManifest(key)(bytes.value)
+        if (manifest.offset !== offset.value)
+          return yield* CorruptSegment.make({
+            key,
+            reason: "checkpoint offset differs from its key",
+          })
+        retained.push({ ...manifest, modified: modified.value })
+      }
+      return retained.reverse()
+    }).pipe(Effect.catchTag("StorageUnavailable", (error) => Effect.fail(unavailable(error))))
 
   const checkpoint = (lease: Lease, manifest: Manifest) =>
     guarded(lease, (holding) =>
@@ -382,12 +430,19 @@ export const bucketLog = (settings: Settings) => {
             covered = known.offset
         const bound = through < covered ? through : covered
         if (bound < 1n) return 0n
+        const cutoff = (yield* Clock.currentTimeMillis) - settings.retentionMillis
         const doomed: Array<string> = []
-        for (const key of yield* retrying(bucket.list(logPrefix(lease.shard))))
-          if (Option.exists(segmentOffset(lease.shard, key), (offset) => offset <= bound))
-            doomed.push(key)
+        let deletedThrough = 0n
+        for (const key of yield* retrying(bucket.list(logPrefix(lease.shard)))) {
+          const offset = segmentOffset(lease.shard, key)
+          if (Option.isNone(offset) || offset.value > bound) continue
+          const modified = yield* retrying(bucket.modified(key))
+          if (Option.isNone(modified) || modified.value >= cutoff) break
+          doomed.push(key)
+          deletedThrough = offset.value
+        }
         if (doomed.length > 0) yield* retrying(bucket.delete(doomed))
-        return bound
+        return deletedThrough
       }),
     )
 
@@ -402,5 +457,15 @@ export const bucketLog = (settings: Settings) => {
       )
     })
 
-  return { open, append, read, checkpoint, trim, verify, fresh, recoveryPoint }
+  return {
+    open,
+    append,
+    read,
+    checkpoint,
+    trim,
+    verify,
+    fresh,
+    recoveryPoint,
+    history: { checkpoints, read },
+  }
 }

@@ -1,6 +1,7 @@
 import { Context, Effect, FileSystem, Layer } from "effect"
 import { engineConformance } from "../../../../tooling/conformance/src/conformance/engine.ts"
 import { jobConformance } from "../../../../tooling/conformance/src/conformance/jobs.ts"
+import { pageConformance } from "../../../../tooling/conformance/src/conformance/pages.ts"
 import { storeConformance } from "../../../../tooling/conformance/src/conformance/store.ts"
 import { operatorConformance } from "../../../../tooling/conformance/src/conformance/operators.ts"
 import { fileSystemBucket } from "./file-system.ts"
@@ -40,3 +41,4 @@ const engineBackend = {
 engineConformance(engineBackend)
 jobConformance(engineBackend)
 operatorConformance(engineBackend)
+pageConformance(engineBackend)

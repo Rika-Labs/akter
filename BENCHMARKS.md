@@ -1,5 +1,29 @@
 # Akter benchmarks
 
+## 0.2 E6 cold wake and missed list pages: local diagnostic (2026-10-12–13)
+
+Machine: `dallens-mbp.lan`, Apple M5 Max, macOS arm64, Bun 1.4.2 and Node v26.7.0. Filesystem runs used a temporary APFS directory; S3 runs used MinIO in a local Docker container over loopback. The MinIO image was `cgr.dev/chainguard/minio@sha256:4b862594d23cb20ae0fbeb93311ed312a5b566ecba2293220b204c89ef3c1fe2`.
+
+The harness is `tooling/conformance/src/conformance/page-benchmark.ts`. Each run creates 9,000 list items with at least 9,900,000 payload bytes, checkpoints them, writes a 100-action-entry tail, and measures 20 cold owner recoveries plus one checked range. It then measures 100 checked one-row ranges after clearing the clean-page cache. The cache budget is 72,000 bytes. Values are wall-clock milliseconds, using sorted array index `floor(samples * fraction)` capped at the last sample; these are observed quantiles, not confidence bounds.
+
+| Backend               | Runtime | Cold wake p50 | Cold wake p99 | Page miss p50 | Page miss p99 | Errors |
+| --------------------- | ------- | ------------: | ------------: | ------------: | ------------: | -----: |
+| APFS filesystem       | Bun     |       114.396 |       117.197 |         0.453 |         1.380 |      0 |
+| APFS filesystem       | Node    |       152.556 |       188.352 |         0.296 |         0.662 |      0 |
+| MinIO loopback Docker | Bun     |       175.490 |       325.978 |         1.329 |         5.507 |      0 |
+| MinIO loopback Docker | Node    |       189.163 |       217.666 |         1.691 |         4.282 |      0 |
+
+Reproduce from the repository root; `TEST_S3_URL` names the disposable test bucket and test credentials:
+
+```sh
+BENCH_MACHINE=dallens-mbp.lan BENCH_PROVIDER='filesystem macOS APFS' BENCH_ADAPTER=fileSystem bun run --cwd tooling/conformance bench:pages
+BENCH_MACHINE=dallens-mbp.lan BENCH_PROVIDER='filesystem macOS APFS' BENCH_ADAPTER=fileSystem bun run --cwd tooling/conformance bench:pages:node
+BENCH_MACHINE=dallens-mbp.lan BENCH_PROVIDER='MinIO loopback Docker' BENCH_ADAPTER=s3 TEST_S3_URL="$TEST_S3_URL" bun run --cwd tooling/conformance bench:pages
+BENCH_MACHINE=dallens-mbp.lan BENCH_PROVIDER='MinIO loopback Docker' BENCH_ADAPTER=s3 TEST_S3_URL="$TEST_S3_URL" bun run --cwd tooling/conformance bench:pages:node
+```
+
+These are small local diagnostics, not a T4 production-provider pass or evidence for the original 50 GB page-miss target. The amended T5 gate is the separate R2/Tigris latency and atomicity probe from Fly `iad`; none of these numbers establishes it. No R2, Tigris, S3 Standard or S3 Express latency is inferred from MinIO or APFS.
+
 ## 0.2 bucket-log engine: T1/T2 diagnostic (2026-10-12)
 
 The runnable harness is `tooling/conformance/src/conformance/engine-benchmark.ts`.

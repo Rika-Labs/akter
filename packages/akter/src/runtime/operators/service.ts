@@ -8,6 +8,8 @@ import { Layouts } from "../../execution/layout.ts"
 import { pendingClocks } from "../../execution/workflow.ts"
 import { Checkpoints } from "../../snapshots/checkpoint.ts"
 import { Recovery } from "../../snapshots/recovery.ts"
+import { PagedCheckpoints } from "../../snapshots/pages.ts"
+import { PageCache } from "../../handlers/page-tree.ts"
 import { auditIdentity } from "../../store/audit.ts"
 import type { AuditRecord } from "../../store/audit.ts"
 import { authorizing } from "./grants.ts"
@@ -64,12 +66,13 @@ type Writable<T> = { -readonly [K in keyof T]: T[K] }
 /** Reads bounded checkpoint-plus-tail positions without acquiring a lease or activating an actor. */
 const make = (engine: Engine) => {
   const store = engine.store
+  const pages = new PageCache()
   const point = (shard: number) =>
     Effect.gen(function* () {
       const { checkpoint, damaged } = yield* store.recoveryPoint(shard)
       const manifest = Option.getOrUndefined(checkpoint)
       const page = manifest?.statePages[0]
-      const bytes = page === undefined ? undefined : yield* store.getPage(page)
+      const bytes = page === undefined ? undefined : yield* PagedCheckpoints.read(page, store)
       const tail = yield* Stream.runCollect(store.read(shard, manifest?.offset ?? 0n))
       return { manifest, bytes, tail, damaged }
     })
@@ -84,11 +87,7 @@ const make = (engine: Engine) => {
       if (request.commandId !== undefined) resource.commandId = request.commandId
       if (actorTarget !== undefined && request.operation !== "audit") {
         resource.actorType = actorTarget.actorType
-        resource.actorId = Predicate.isString(actorTarget.actorId)
-          ? actorTarget.actorId
-          : yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Json))(
-              actorTarget.actorId,
-            ).pipe(Effect.orDie)
+        resource.actorId = actorTarget.actorId
       }
       const action = actions[request.operation]
       const capability = authorizing({ grant, action, resource })
@@ -136,29 +135,56 @@ const make = (engine: Engine) => {
           Effect.gen(function* () {
             const lease = yield* store.open(shard)
             const page = Option.getOrUndefined(lease.checkpoint)?.statePages[0]
-            const bytes = page === undefined ? undefined : yield* store.getPage(page)
+            const bytes = page === undefined ? undefined : yield* PagedCheckpoints.read(page, store)
             const tail = yield* Stream.runCollect(
               store.read(shard, Option.getOrUndefined(lease.checkpoint)?.offset ?? 0n),
             )
-            const recovered = Recovery.recover(
-              engine.catalog,
-              shard,
-              bytes,
-              tail,
-              store.build,
-              request.replay ?? "matching",
+            const recovered = yield* pages.resolve(store, () =>
+              Recovery.recover(
+                engine.catalog,
+                shard,
+                bytes,
+                tail,
+                store.build,
+                request.replay ?? "matching",
+                pages,
+              ),
             )
             if (Result.isFailure(recovered))
               return yield* OperatorRefused.make({ reason: "recovery" })
             const image = recovered.success
-            const replayed = Entry.cases.Replayed.make({
-              checkpoint: new TextDecoder().decode(Checkpoints.encode(Checkpoints.capture(image))),
-            })
-            image.offset = Number(
-              yield* store.append(lease, [
+            image.offset = Number(lease.head + 1n)
+            const paged = Array.from(image.actors.values()).some(
+              (actor) => Layouts.of(actor.actor).lists.size > 0,
+            )
+            let replayPage: string | undefined
+            const append = (replayed: Entry) =>
+              store.append(lease, [
                 EntryCodec.encode(replayed),
                 EntryCodec.encode(Entry.cases.Audit.make({ record: audit })),
-              ]),
+              ])
+            image.offset = Number(
+              paged
+                ? yield* store.gc.protect(
+                    Effect.gen(function* () {
+                      const prepared = yield* PagedCheckpoints.write(image, store, pages)
+                      replayPage = prepared.hash
+                      const offset = yield* append(
+                        Entry.cases.Replayed.make({ page: prepared.hash }),
+                      )
+                      prepared.committed()
+                      return offset
+                    }),
+                  )
+                : yield* pages
+                    .resolve(store, () =>
+                      Entry.cases.Replayed.make({
+                        checkpoint: new TextDecoder().decode(
+                          Checkpoints.encode(Checkpoints.capture(image)),
+                        ),
+                      }),
+                    )
+                    .pipe(Effect.flatMap(append)),
             )
             let nextDue: number | undefined
             for (const timer of image.timers.values())
@@ -167,16 +193,19 @@ const make = (engine: Engine) => {
               for (const at of pendingClocks(job.workflow))
                 nextDue = Math.min(nextDue ?? Infinity, at)
             yield* Effect.ignore(
-              Effect.gen(function* () {
-                const hash = yield* store.putPage(Checkpoints.encode(Checkpoints.capture(image)))
-                yield* store.checkpoint(lease, {
-                  offset: BigInt(image.offset),
-                  statePages: [hash],
-                  indexPages: [hash],
-                  nextDue,
-                })
-                yield* store.append(lease, [EntryCodec.encode(Entry.cases.Released.make({}))])
-              }),
+              store.gc.protect(
+                Effect.gen(function* () {
+                  const hash =
+                    replayPage ?? (yield* PagedCheckpoints.write(image, store, pages)).hash
+                  yield* store.checkpoint(lease, {
+                    offset: BigInt(image.offset),
+                    statePages: [hash],
+                    indexPages: [hash],
+                    nextDue,
+                  })
+                  yield* store.append(lease, [EntryCodec.encode(Entry.cases.Released.make({}))])
+                }),
+              ),
             )
             yield* engine.assign([shard])
             return json({
@@ -251,13 +280,16 @@ const make = (engine: Engine) => {
             if (actor?.created !== true) return yield* OperatorRefused.make({ reason: "not_found" })
             return json({ manifest: captured.manifest, actor })
           }
-          const recovered = Recovery.recover(
-            engine.catalog,
-            shard,
-            captured.bytes,
-            captured.tail,
-            store.build,
-            "matching",
+          const recovered = yield* pages.resolve(store, () =>
+            Recovery.recover(
+              engine.catalog,
+              shard,
+              captured.bytes,
+              captured.tail,
+              store.build,
+              "matching",
+              pages,
+            ),
           )
           if (Result.isFailure(recovered))
             return yield* OperatorRefused.make({ reason: "recovery" })
@@ -281,12 +313,14 @@ const make = (engine: Engine) => {
                 .map(({ commandId, outcome }) => ({ commandId, outcome })),
             )
           if (record === undefined) return yield* OperatorRefused.make({ reason: "invalid_target" })
-          const lists = Array.from(Layouts.of(record.actor).lists, ([field, layout]) => ({
-            field,
-            items: Lists.all(record.image.lists.get(field) ?? Lists.empty, layout.ordering).map(
-              layout.item.encode,
-            ),
-          }))
+          const lists = yield* pages.resolve(store, () =>
+            Array.from(Layouts.of(record.actor).lists, ([field, layout]) => ({
+              field,
+              items: Lists.all(record.image.lists.get(field) ?? Lists.empty, layout.ordering).map(
+                layout.item.encode,
+              ),
+            })),
+          )
           const retained = yield* Stream.runCollect(store.read(shard, 0n))
           const rejections = retained
             .filter((segment) => Number(segment.offset) <= image.offset)

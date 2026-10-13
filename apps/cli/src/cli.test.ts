@@ -26,6 +26,7 @@ describe("akter", () => {
         "snapshot",
         "replay",
         "dev",
+        "fork",
       ])
         expect(root.stdout).toMatch(new RegExp(`^  ${command} +\\S`, "m"))
 

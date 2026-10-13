@@ -14,9 +14,16 @@ import {
   StoreMismatch,
 } from "./errors.ts"
 import type { Faults } from "./faults.ts"
+import {
+  bucketGc,
+  type GcOptions,
+  type GcReport,
+  type GcStaleEpoch,
+  type PagePublicationBusy,
+} from "./gc.ts"
 import { META_KEY } from "./keys.ts"
 import { bucketLeases, type Leases } from "./leases.ts"
-import { bucketLog, type Lease, type StoredSegment } from "./log.ts"
+import { bucketLog, type HistoryCheckpoint, type Lease, type StoredSegment } from "./log.ts"
 import { bucketPages } from "./pages.ts"
 
 /** How a store is created and how its owners keep their leases honest. */
@@ -94,7 +101,7 @@ export class Store extends Context.Service<
       lease: Lease,
       manifest: Manifest,
     ) => Effect.Effect<void, StaleEpoch | LogUnavailable>
-    /** Deletes segments at or below `through` that an old enough checkpoint covers; returns the offset deleted through, 0 for none. */
+    /** Deletes the expired history prefix at or below `through` that an old enough checkpoint covers; returns the offset deleted through, 0 for none. */
     readonly trim: (
       lease: Lease,
       through: bigint,
@@ -112,6 +119,32 @@ export class Store extends Context.Service<
     /** Loads a page by hash; concurrent loads are batched. A page that is absent or does not match its hash is the `PageCorrupt` defect. */
     readonly getPage: (hash: string) => Effect.Effect<Uint8Array, StorageUnavailable>
     readonly leases: Leases
+    readonly gc: {
+      /** Marks retained checkpoints and log references, then removes expired checkpoints and unreachable old pages. */
+      readonly collect: (
+        options: GcOptions,
+      ) => Effect.Effect<GcReport, GcStaleEpoch | StorageUnavailable | CorruptSegment>
+      /** Holds the store-wide barrier from page uploads through the durable checkpoint or fork reference; unknown publication failures stay blocked. */
+      readonly protect: <A, E, R>(
+        effect: Effect.Effect<A, E, R>,
+      ) => Effect.Effect<
+        A,
+        E | PagePublicationBusy | GcStaleEpoch | StorageUnavailable | CorruptSegment,
+        R
+      >
+    }
+    readonly history: {
+      /** Checkpoints within retention plus the newest per shard, in ascending offset order. */
+      readonly checkpoints: (
+        shard: number,
+      ) => Effect.Effect<ReadonlyArray<HistoryCheckpoint>, LogUnavailable | CorruptSegment>
+      /** Retained log objects after `from` through an optional inclusive upper offset; does not load any later segment. */
+      readonly read: (
+        shard: number,
+        from: bigint,
+        through?: bigint,
+      ) => Stream.Stream<StoredSegment, LogUnavailable | CorruptSegment>
+    }
     /** Runs the conformance probe against this store's bucket. */
     readonly check: (options?: CheckOptions) => Effect.Effect<CheckReport, StorageUnavailable>
   }
@@ -199,7 +232,25 @@ export const storeOf: {
     return Store.of({
       meta,
       build,
-      ...bucketLog({ bucket, retry, writer, build, shards: meta.shards, validFor, trimAfter }),
+      ...bucketLog({
+        bucket,
+        retry,
+        writer,
+        build,
+        shards: meta.shards,
+        validFor,
+        trimAfter,
+        retentionMillis: meta.retentionMillis,
+      }),
+      ...bucketGc({
+        bucket,
+        retry,
+        writer,
+        shards: meta.shards,
+        validFor,
+        trimAfter,
+        retentionMillis: meta.retentionMillis,
+      }),
       ...bucketPages({ bucket, retry }),
       ...bucketAudit({ bucket, retry }),
       leases: bucketLeases({ bucket, retry }),

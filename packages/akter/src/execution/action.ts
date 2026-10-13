@@ -8,6 +8,8 @@ import type { Action, Event, Job } from "../contract/members.ts"
 import { Draft } from "../handlers/draft.ts"
 import { Lists } from "../handlers/lists.ts"
 import type { Items } from "../handlers/lists.ts"
+import { PageMiss } from "../handlers/page-tree.ts"
+import { PageCorrupt } from "../store/errors.ts"
 import type { AnyHandler } from "../handlers/registry.ts"
 import { CommandIds } from "./command-ids.ts"
 import { Digest } from "./digest.ts"
@@ -212,6 +214,7 @@ const run = (invocation: Invocation): Ran => {
     result = invocation.handler(session.draft, invocation.payload, ctx)
   } catch (thrown) {
     open = false
+    if (thrown instanceof PageMiss || Schema.is(PageCorrupt)(thrown)) throw thrown
     if (Schema.is(ActionDefect)(thrown))
       return discarded(Outcome.cases.Defect.make({ kind: thrown.kind, detail: thrown.detail }))
     return discarded(Outcome.cases.Defect.make({ kind: "Thrown", detail: describe(thrown) }))
@@ -302,6 +305,7 @@ const run = (invocation: Invocation): Ran => {
       image: changed ? { state, encoded, lists: nextLists } : image,
     }
   } catch (thrown) {
+    if (thrown instanceof PageMiss || Schema.is(PageCorrupt)(thrown)) throw thrown
     if (Schema.is(ActionDefect)(thrown))
       return discarded(Outcome.cases.Defect.make({ kind: thrown.kind, detail: thrown.detail }))
     return discarded(Outcome.cases.Defect.make({ kind: "DecodeFailure", detail: describe(thrown) }))

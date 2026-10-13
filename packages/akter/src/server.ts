@@ -20,6 +20,9 @@ export {
 } from "./store/faults.ts"
 export type { Leases } from "./store/leases.ts"
 export type { Lease, StoredSegment } from "./store/log.ts"
+export type { HistoryCheckpoint } from "./store/log.ts"
+export { GcStaleEpoch, PagePublicationBusy } from "./store/gc.ts"
+export type { GcOptions, GcReport } from "./store/gc.ts"
 export type { StoreOptions } from "./store/service.ts"
 export type { S3Options } from "./store/s3.ts"
 export { Telemetry } from "./runtime/telemetry/observability.ts"
@@ -31,6 +34,8 @@ export { OperatorGrant, OperatorAction, Capability } from "./runtime/operators/g
 export { Store }
 
 export { DurableClock } from "./execution/sleep.ts"
+export { Forks, ForkRefused } from "./snapshots/forks.ts"
+export type { ForkOptions, ForkPosition } from "./snapshots/forks.ts"
 
 export { Akter } from "./serve/akter.ts"
 export type { ServeOptions } from "./serve/akter.ts"

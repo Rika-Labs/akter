@@ -1,6 +1,6 @@
 # Storage
 
-Status: partially normative (0.2), owned by ADR 0127. E7 establishes the shared checkpoint/index page and audit-before-answer boundaries in [its failure evidence](../verification/e7-find-operators.md). E2 store protocol evidence and E6 list/history/GC gates retain their stated scopes.
+Status: partially normative (0.2), owned by ADR 0127. E7 establishes the shared checkpoint/index page and audit-before-answer boundaries in [its failure evidence](../verification/e7-find-operators.md). E6 establishes page-backed lists and GC within [its evidence scope](../verification/e6-pages-history.md); retained-history boundary and production-provider gates remain open.
 
 **Responsibility:** define what a store holds, how objects are written and verified, how long history is kept, and how unreachable objects are deleted.  
 **Authority:** normative target on `rewrite/0.2`.  
@@ -57,6 +57,8 @@ A provider is supported only while `akter storage check` passes on it: atomic co
 
 - An actor manifest MUST hold the encoded state without lists, at most 256 KiB, and the root of each list's page tree.
 - `Actor.list` items MUST live in page trees ordered by `by` then `key`, with no size limit. A snapshot MUST write only the pages that changed.
+- A nonresident page MUST stop a synchronous action with the internal `PageMiss` signal. Its draft and all staged effects MUST be discarded; the resolver loads the missing hashes and reruns from the same command id and admission time. An absent bucket object remains `PageCorrupt`, never an empty list.
+- The clean-page cache MUST be byte-bounded. An invocation MAY hold a larger temporary working set until its reruns finish, so eviction MUST NOT make a wide range retry forever. An owner MUST revalidate its lease after a page load before it answers or stages work.
 
 ## History
 
@@ -65,8 +67,9 @@ A provider is supported only while `akter storage check` passes on it: atomic co
 
 ## Garbage collection
 
-- Roots MUST be every checkpoint within retention plus each shard's newest checkpoint. GC MUST NOT delete an object reachable from a root (I7).
+- Roots MUST be every checkpoint within retention plus each shard's newest checkpoint and the manifests named by retained `Forked` entries. A `Forked` entry in the recovery tail beyond the newest checkpoint MUST remain a root even after its own retention expires, until a checkpoint covers it. GC MUST NOT delete an object reachable from a root (I7).
 - A collector MUST hold the newest `gc/<epoch>` key, created with `If-None-Match: *`, and MUST confirm before every delete batch that no newer key exists, verifying under the same `T_valid` rule as a shard owner. Two collectors MUST NOT delete concurrently.
+- A checkpoint or fork publisher MUST hold a `publishing` epoch from its first page write through its durable reference. A collector MUST claim a `deleting` epoch before an unconditional DELETE. Only `marking` epochs MAY expire; an unknown publishing or deleting outcome MUST block subsequent collection and publication. Successful completion creates the next immutable `idle` epoch. A publisher whose sequential protected work has stopped with a confirmed `StaleEpoch` MAY also advance to `idle`; it MUST NOT do so after an unknown outcome, defect or interruption. Timestamp checks alone MUST NOT be treated as a fence against PUT/DELETE races.
 - GC MUST delete only unmarked objects whose last-modified time is older than the grace period (default 24 hours, and more than twice the longest checkpoint interval plus `T_trim`).
 - A snapshot MUST either write a page again with plain `PUT` or reference only pages reachable from the actor's current durable manifest.
 - History and pages MUST be expired by GC, not by provider lifecycle rules.

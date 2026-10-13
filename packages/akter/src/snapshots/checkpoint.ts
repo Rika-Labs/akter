@@ -5,15 +5,27 @@ import { Durable } from "../execution/durable.ts"
 import type { Catalog, ClientRecord, ShardImage } from "../execution/durable.ts"
 import { JobFailedEntry, Outcome, Send, Timer, formatVersion } from "../execution/entries.ts"
 import { Layouts } from "../execution/layout.ts"
-import { Lists } from "../handlers/lists.ts"
 import { IndexSnapshot, Indexes } from "../execution/indexes.ts"
+import { Lists, PagedItems } from "../handlers/lists.ts"
+import type { PageCache } from "../handlers/page-tree.ts"
 
 const Snapshot = Schema.Struct({
   actor: Schema.String,
   key: Schema.Json,
   created: Schema.Boolean,
+  version: Schema.optional(Schema.Int),
+  position: Schema.optional(
+    Schema.Struct({ offset: Schema.Int, index: Schema.Int, at: Schema.Finite }),
+  ),
   state: Schema.Record(Schema.String, Schema.Json),
-  lists: Schema.Array(Schema.Struct({ field: Schema.String, items: Schema.Array(Schema.Json) })),
+  lists: Schema.Array(
+    Schema.Struct({
+      field: Schema.String,
+      items: Schema.Array(Schema.Json),
+      keys: Schema.optional(Schema.String),
+      ordered: Schema.optional(Schema.String),
+    }),
+  ),
 })
 
 /**
@@ -91,7 +103,7 @@ const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
 /** Captures a shard image as a checkpoint. */
-const capture = (image: ShardImage): Checkpoint => ({
+const capture = (image: ShardImage, includeLists = true): Checkpoint => ({
   format: formatVersion,
   shard: image.shard,
   offset: image.offset,
@@ -103,12 +115,16 @@ const capture = (image: ShardImage): Checkpoint => ({
       actor: record.actor.name,
       key: record.keyJson,
       created: record.created,
+      version: record.version,
+      position: record.position,
       state: { ...record.image.encoded },
       lists: Array.from(layout.lists, ([field, list]) => ({
         field,
-        items: Lists.all(record.image.lists.get(field) ?? Lists.empty, list.ordering).map(
-          list.item.encode,
-        ),
+        items: includeLists
+          ? Lists.all(record.image.lists.get(field) ?? Lists.empty, list.ordering).map(
+              list.item.encode,
+            )
+          : [],
       })),
     }
   }),
@@ -153,7 +169,7 @@ const capture = (image: ShardImage): Checkpoint => ({
  * running build's schema and takes the checkpoint's fields and list items, so a field added since
  * keeps its default; a field that no longer decodes refuses the whole checkpoint.
  */
-const restore = (catalog: Catalog, checkpoint: Checkpoint): ShardImage => {
+const restore = (catalog: Catalog, checkpoint: Checkpoint, cache?: PageCache): ShardImage => {
   const image = Durable.empty(checkpoint.shard)
   image.offset = checkpoint.offset
   image.lastAt = checkpoint.lastAt
@@ -161,6 +177,8 @@ const restore = (catalog: Catalog, checkpoint: Checkpoint): ShardImage => {
   for (const snapshot of checkpoint.actors) {
     const record = Durable.resident(image, catalog, snapshot.actor, snapshot.key)
     record.created = snapshot.created
+    record.version = snapshot.version ?? 0
+    record.position = snapshot.position
     record.image = Actions.apply(
       record.actor,
       record.image,
@@ -168,6 +186,18 @@ const restore = (catalog: Catalog, checkpoint: Checkpoint): ShardImage => {
       [],
       snapshot.lists.map(({ field, items }) => ({ field, put: items, delete: [] })),
     )
+    const lists = new Map(record.image.lists)
+    for (const saved of snapshot.lists) {
+      if (saved.keys === undefined || saved.ordered === undefined) continue
+      const layout = Layouts.of(record.actor).lists.get(saved.field)
+      if (layout === undefined) continue
+      if (cache === undefined) throw new Error("Page-backed checkpoint requires its page cache")
+      lists.set(
+        saved.field,
+        new PagedItems(saved.keys, saved.ordered, cache, layout.ordering, layout.item),
+      )
+    }
+    record.image = { ...record.image, lists }
     Indexes.update(image.index, record)
   }
   for (const address of image.index.rows.keys())
@@ -206,6 +236,7 @@ const restore = (catalog: Catalog, checkpoint: Checkpoint): ShardImage => {
 
 /** Checkpoint bytes: UTF-8 JSON with the format version first. */
 export const Checkpoints = {
+  decodeValue: Schema.decodeUnknownResult(Checkpoint),
   capture,
   restore,
   encode: (checkpoint: Checkpoint): Uint8Array =>

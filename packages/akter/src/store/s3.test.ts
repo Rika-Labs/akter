@@ -5,6 +5,7 @@ import { describe, expect, it } from "@effect/vitest"
 import { Config, Effect, Option, Predicate, Random } from "effect"
 import { engineConformance } from "../../../../tooling/conformance/src/conformance/engine.ts"
 import { jobConformance } from "../../../../tooling/conformance/src/conformance/jobs.ts"
+import { pageConformance } from "../../../../tooling/conformance/src/conformance/pages.ts"
 import { storeConformance } from "../../../../tooling/conformance/src/conformance/store.ts"
 import { operatorConformance } from "../../../../tooling/conformance/src/conformance/operators.ts"
 import { StorageUnavailable } from "./errors.ts"
@@ -85,6 +86,7 @@ const engineBackend = {
 engineConformance(engineBackend)
 jobConformance(engineBackend)
 operatorConformance(engineBackend)
+pageConformance(engineBackend)
 
 /**
  * An S3 stand-in that answers a conditional create with 412 and then drops the

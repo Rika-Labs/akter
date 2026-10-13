@@ -1,6 +1,6 @@
 # ADR 0127: Snapshots, the page tree, lists, history and garbage collection in the store bucket
 
-Status: proposed, 2026-10-12 (rewrite/0.2).
+Status: partially implemented, 2026-10-12 (rewrite/0.2). E6 protocol evidence and limits are in [E6 pages and history](../verification/e6-pages-history.md).
 
 **Responsibility:** decide how actor state and lists are stored as immutable pages, how checkpoints reference them, how long history is kept, and how unreachable objects are deleted without ever deleting a reachable one.
 
@@ -33,6 +33,7 @@ gc/<epoch>        garbage-collection lease, created once
 - `Actor.list(Item, { key?, by })` declares a list field. Its items live in a page tree ordered by `by` (then `key`), with no size limit. Actions use `put`, `get`, `delete`, `range({ from?, to?, limit?, reverse? })` and `deleteBefore(by)`; clients read `handle.<list>.range(...)` and watch it ([ADR 0130](0130-views-sessions-events-and-rpc.md)).
 - An action that touches a list page not resident in memory stops with the internal `PageMiss(keys)`. The runtime loads the pages through a batching resolver (all pages a range needs in one batch, as far as the tree's interior nodes say) and reruns the action from the start. Nothing staged by the stopped run survives ([ADR 0125](0125-synchronous-deterministic-actions.md)).
 - A snapshot uploads only changed pages, so its cost tracks the size of the change, not of the actor.
+- Lists have two copy-on-write B+ trees: one keyed by item key and one by `(by, key)`. Interior pages carry explicit child hashes and bounds; clean nodes are cache references, while changed paths remain immutable dirty nodes until checkpoint publication. Scalar actor manifests are bounded and refreshed; unchanged list pages are reused from the current durable image.
 
 ### 3. Retained history
 
@@ -42,8 +43,9 @@ gc/<epoch>        garbage-collection lease, created once
 
 ### 4. Garbage collection
 
-- **Roots** are every checkpoint manifest still within retention, plus the newest checkpoint of each shard. Everything reachable from a root (actor manifests, list pages, index pages) is live. Forks are reachable because their `Forked` entries and manifests are in their shard's checkpoints.
+- **Roots** are every checkpoint manifest still within retention, plus the newest checkpoint of each shard and retained `Forked` manifests. A `Forked` entry beyond the newest checkpoint stays a root even after its retention expires: recovery still needs it until a newer checkpoint covers it. Everything reachable from a root (actor manifests, list pages, index pages) is live.
 - **Lease.** A collector creates `gc/<n+1>` with `If-None-Match: *` after listing the newest `gc/<n>`; holding the newest key is the lease. Before each delete batch the collector checks that no newer `gc/` key exists, under the same `T_valid` rule as a shard owner. Two releases of one store therefore never sweep at once; no Cluster `Singleton` is used.
+- **Publication exclusion.** A timestamp HEAD followed by an unconditional DELETE can race a deduplicating PUT. Checkpoints and forks therefore hold an immutable `publishing` epoch across uploads and their durable reference; each delete batch holds `deleting`. Neither phase is taken over after an unknown outcome. Only `marking` expires; successful work advances to immutable `idle`. A confirmed shard fence also ends publication once its sequential protected work has stopped; unknown errors, defects and interruptions do not. This deliberately favors safety over automatic recovery of a stranded publisher or delete request.
 - **Mark and sweep.** The collector marks from the roots, then deletes only unmarked objects under `pages/` whose last-modified time is older than the grace period (default 24 hours, and always longer than twice the longest checkpoint interval plus `T_trim`).
 - **Reuse rule.** A snapshot that references an existing page without rewriting it may only reference pages reachable from the actor's current durable manifest, which the mark protects until the new manifest is durable. Any other page is written again with plain `PUT`, refreshing its timestamp.
 - GC lists `pages/` on a slow cadence and otherwise works from the previous mark, because listing is a billed operation on every provider.

@@ -10,7 +10,9 @@
     "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
     "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. tooling/conformance/src",
     "bench:engine": "bun src/conformance/engine-benchmark.ts",
-    "bench:engine:node": "node src/conformance/engine-benchmark.ts"
+    "bench:engine:node": "node src/conformance/engine-benchmark.ts",
+    "bench:pages": "bun src/conformance/page-benchmark.ts",
+    "bench:pages:node": "node src/conformance/page-benchmark.ts"
   },
   "devDependencies": {
     "@effect/platform-bun": "catalog:",

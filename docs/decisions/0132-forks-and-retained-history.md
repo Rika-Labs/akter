@@ -1,6 +1,6 @@
 # ADR 0132: Forks and retained history
 
-Status: proposed, 2026-10-12 (rewrite/0.2).
+Status: partially implemented, 2026-10-12 (rewrite/0.2). E6 operator evidence and remaining limits are in [E6 pages and history](../verification/e6-pages-history.md).
 
 **Responsibility:** decide how long a store keeps history, how an actor is forked from it, who may fork, and what a fork copies.
 
@@ -31,6 +31,8 @@ An actor's **version** is the count of actions applied to it. A fork position is
 5. A fork of a fork works the same way; its history starts at its `Forked` entry.
 
 A position older than retention, or a source actor with no history at the position, is refused.
+
+The local operator command also accepts `--offset` together with `--index`, never a bare segment offset, and can target another directory or bucket prefix. Ids use the actor's key codec; `--json-ids` disambiguates JSON ids from literal strings. A cross-store fork copies verified page bytes, refreshing every referenced hash under the target publication barrier before its `Forked` entry is durable. The local command requires the application's separate `authorizeOperator(token)` Effect; application callers do not become operator grants. Nondefault tenants remain refused until the engine has tenant-qualified actor addresses. Whole-shard forks are not specified or implemented by this actor-fork decision.
 
 ## Supersedes and amends
 
