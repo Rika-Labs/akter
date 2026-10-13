@@ -2,6 +2,7 @@ import { Effect, Exit, Layer, Tracer } from "effect"
 import { DevTools } from "effect/devtools"
 import { OtlpMetrics, OtlpSerialization, OtlpTracer, PrometheusMetrics } from "effect/observability"
 import { FetchHttpClient } from "effect/http"
+import { RuntimeControl } from "../drain.ts"
 
 /** Minimal telemetry surfaces: OTLP export, Prometheus formatting and Effect DevTools tracing. */
 export interface TelemetryOptions {
@@ -11,6 +12,9 @@ export interface TelemetryOptions {
 
 /** The Prometheus scrape body for stable Akter metrics in the current runtime context. */
 export const prometheus = PrometheusMetrics.format
+
+/** Monotonic runner-local totals, including released shards; reading neither seals nor resets them. */
+export const usage = Effect.flatMap(RuntimeControl, (control) => control.usage)
 
 /** Build optional telemetry layers without adding a second metrics or tracing implementation. */
 export const layer = (options: TelemetryOptions): Layer.Layer<never, never, never> => {
@@ -52,4 +56,4 @@ export const redactingTracer = (tracer: Tracer.Tracer): Tracer.Tracer =>
   })
 
 /** Public runtime telemetry entry point. */
-export const Telemetry = { layer, prometheus }
+export const Telemetry = { layer, prometheus, usage }

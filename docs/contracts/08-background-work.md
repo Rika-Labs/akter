@@ -27,6 +27,15 @@ Status: partially normative (0.2), owned by ADR 0129. E5 promotes the job journa
 - Completing a job MUST retain a durable cleanup obligation until the receiver call streams have retired. A crash between `Done`, receiver `Retired` entries and `JobRetired` MUST resume cleanup without rerunning the job body or its failure action.
 - Job events are nondurable progress. They MAY repeat on a retry, MUST NOT enter the durable action-effects journal and MUST NOT be replayed to later subscribers. A final state update is an actor call, not a progress event.
 
+## Runner usage attribution
+
+- `Telemetry.usage` from the server entry MUST read monotonic totals since the runner opened, grouped by declared actor type. Reading MUST NOT reset or seal them. Shard recovery or release MUST NOT reset them; another runner starts its own totals at zero. These counters are attribution, never storage or billing authority.
+- `actions` MUST count only successful actions after their segment append is confirmed durable on this runner. Recovery/tail replay, `PageMiss` reruns, simulator double runs, deduplication answers, declared failures, defects, and appends resolved as unwritten MUST add zero. A lost response resolved by the segment identity as written MUST count once.
+- `jobSeconds` MUST count locally executed, durably admitted attempts from local execution start through settlement (success, failure, defect or timeout), with elapsed wall time rounded up separately per attempt. Queue time and retry backoff MUST NOT count. Drain or owner loss MUST settle the local interval before scope closure; resumption counts only the new owner's interval and rounds that interval independently. Active attempts MUST NOT contribute speculative elapsed totals before settlement.
+- The drain report MUST include the settled totals, including interrupted attempts and work on shards already released or lost. The wire fields are optional for legacy decoders. A process killed without finalizers or a write made durable just before process death MAY leave an attribution gap; recovery MUST NOT reconstruct counters by billing replay. The host reconciles gaps against platform-observed evidence.
+
+Evidence: [E8a usage](../verification/e8a-usage.md).
+
 ## Timers
 
 - A timer staged by `ctx.schedule` MUST become durable with its action. Firing MUST append an `Action` with `Fired` origin and run the target action under the timer's derived command id, as `System({ source: "timer", ref: <actor>, onBehalfOf })`. The pending record and checkpoint MUST retain that originating principal.

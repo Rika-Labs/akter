@@ -486,6 +486,8 @@ const layer = <const Actors extends ReadonlyArray<AnyActor>>(
                   ? "clean"
                   : "timedOut",
                 shards: reports.flatMap((report) => report.shards),
+                actions: reports.reduce((total, report) => total + (report.actions ?? 0), 0),
+                jobSeconds: reports.reduce((total, report) => total + (report.jobSeconds ?? 0), 0),
               }),
             )
           }),

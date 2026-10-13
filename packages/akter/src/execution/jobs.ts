@@ -343,6 +343,7 @@ const install = (engine: Engine, routing?: JobRouting) => {
     return "Failed"
   }
 
+  /** Only durably admitted attempts run; interruption settles local wall time before the shard scope closes. */
   const run = (
     shard: number,
     record: JobRecord,
@@ -437,8 +438,19 @@ const install = (engine: Engine, routing?: JobRouting) => {
                 }
                 const attempt = record.attempt
                 const progress = new Set<string>()
+                const started = yield* Clock.monotonicTimeNanos
                 const exit = yield* Effect.exit(
-                  attemptOnce(shard, record, owner, declaration, attempt, progress),
+                  attemptOnce(shard, record, owner, declaration, attempt, progress).pipe(
+                    Effect.ensuring(
+                      Effect.gen(function* () {
+                        const seconds = Math.ceil(
+                          Number((yield* Clock.monotonicTimeNanos) - started) / 1_000_000_000,
+                        )
+                        yield* engine.jobSeconds(owner.actor.name, seconds)
+                        yield* count(Metrics.jobSeconds, { actor_type: owner.actor.name }, seconds)
+                      }),
+                    ),
+                  ),
                 )
                 if (record.suspended !== undefined) return yield* Effect.interrupt
                 if (Exit.isSuccess(exit)) {

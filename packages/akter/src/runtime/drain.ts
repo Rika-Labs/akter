@@ -1,9 +1,12 @@
 import { Console, Context, Effect, Schema } from "effect"
 import type { Duration } from "effect"
+import type { UsageSnapshot } from "./telemetry/usage.ts"
 
 /** The shutdown and scale-to-zero handoff a host reads after the runner stops admission. */
 export const DrainReport = Schema.Struct({
   outcome: Schema.Literals(["clean", "timedOut"]),
+  actions: Schema.optionalKey(Schema.Natural),
+  jobSeconds: Schema.optionalKey(Schema.Natural),
   shards: Schema.Array(
     Schema.Struct({
       shard: Schema.Int,
@@ -28,6 +31,7 @@ export class RuntimeControl extends Context.Service<
   RuntimeControl,
   {
     readonly readiness: Effect.Effect<Readiness>
+    readonly usage: Effect.Effect<UsageSnapshot>
     readonly drain: (options: { readonly deadline: Duration.Input }) => Effect.Effect<DrainReport>
   }
 >()("@rikalabs/akter/runtime/drain/RuntimeControl") {

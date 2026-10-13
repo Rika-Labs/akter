@@ -53,6 +53,7 @@ import type { FindRow } from "../contract/find.ts"
 import { Finds } from "../contract/find.ts"
 import { Metrics, count, record as metricRecord } from "../runtime/telemetry/metrics.ts"
 import { SpanNames } from "../runtime/telemetry/spans.ts"
+import { UsageLedger } from "../runtime/telemetry/usage.ts"
 
 /** How an engine runs: its shards, replay policy, batch bound, cron catch-up and simulation hooks. */
 export interface EngineOptions {
@@ -83,6 +84,10 @@ export interface DrainedShard {
 export interface DrainReport {
   readonly outcome: "clean" | "timedOut"
   readonly shards: ReadonlyArray<DrainedShard>
+  /** Successful durable actions since this runner opened, including shards already released or lost. */
+  readonly actions?: number
+  /** Settled local attempt seconds since this runner opened, including drain interruption. */
+  readonly jobSeconds?: number
 }
 
 /**
@@ -204,6 +209,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
     const shards = new Map<number, Shard>()
     const channels = new Map<string, Channel>()
     const afterDurable: Array<(shard: number) => Effect.Effect<void>> = []
+    const usage = new UsageLedger(catalog.actors.keys())
     let route: ((command: Command) => Effect.Effect<Outcome, ActorError>) | undefined
     yield* Effect.addFinalizer(() =>
       Effect.forEach(shards.values(), (shard) => Scope.close(shard.scope, Exit.void), {
@@ -543,6 +549,9 @@ const make = (catalog: Catalog, options: EngineOptions) =>
               return
             }
             const offset = Number(appended.value)
+            for (const { entry } of entries)
+              if (Entry.guards.Action(entry) && Outcome.guards.Success(entry.effects.outcome))
+                usage.add(entry.actor, 1, 0)
             for (const [index, pending] of entries.entries()) publish(shard, pending, offset, index)
             shard.inFlight = []
             const totals = new Map<string, Map<string, number>>()
@@ -1405,15 +1414,21 @@ const make = (catalog: Catalog, options: EngineOptions) =>
           { concurrency: "unbounded", discard: true },
         ).pipe(Effect.timeoutOption(deadline))
         for (const shard of owned) if (!clean.has(shard.id)) yield* crash(shard, false)
+        const totals = usage.snapshot()
         return {
           outcome: owned.every((shard) => clean.has(shard.id)) ? "clean" : "timedOut",
           shards: owned.map(drained),
+          actions: totals.actions,
+          jobSeconds: totals.jobSeconds,
         } satisfies DrainReport
       })
 
     return {
       catalog,
       options,
+      usage: Effect.sync(() => usage.snapshot()),
+      jobSeconds: (actor: string, seconds: number) =>
+        Effect.sync(() => usage.add(actor, 0, seconds)),
       assign,
       release: (id: number) => release(shardRuntime(id)),
       drain,

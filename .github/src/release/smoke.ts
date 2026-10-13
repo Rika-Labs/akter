@@ -75,7 +75,8 @@ console.log("cloud-api contract passed")
 const consumerMain = `import assert from "node:assert/strict"
 import { Actor, ActorError, InvalidInput, User } from "@rikalabs/akter"
 import { AkterClient } from "@rikalabs/akter/client"
-import { Akter, App, ASSERTION_HEADER, Auth, requestDigest, Store } from "@rikalabs/akter/server"
+import { Akter, App, ASSERTION_HEADER, Auth, requestDigest, RuntimeControl, Store, Telemetry } from "@rikalabs/akter/server"
+import type { UsageSnapshot } from "@rikalabs/akter/server"
 import { Simulation } from "@rikalabs/akter/testing"
 import { Context, Effect, Layer, Schema } from "effect"
 import { HttpServer } from "effect/http"
@@ -137,7 +138,13 @@ const served = await Effect.runPromise(
         Effect.scoped,
         Effect.provide(AkterClient.layer({ url: \`\${scheme}://127.0.0.1:\${address.port}/rpc\`, actors: [Counter] })),
       )
-    return [yield* bump("http"), yield* bump("ws")]
+    const replies = [yield* bump("http"), yield* bump("ws")]
+    const usage: UsageSnapshot = yield* Telemetry.usage.pipe(Effect.provide(context))
+    assert.deepEqual(usage, { actions: 2, jobSeconds: 0, actors: [{ actorType: "Counter", actions: 2, jobSeconds: 0 }] })
+    const report = yield* Context.get(context, RuntimeControl).drain({ deadline: "1 second" })
+    assert.equal(report.actions, 2)
+    assert.equal(report.jobSeconds, 0)
+    return replies
   }).pipe(Effect.scoped),
 )
 assert.deepEqual(served, [1, 2])
