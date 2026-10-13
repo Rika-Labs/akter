@@ -43,6 +43,7 @@ A provider is supported only while `akter storage check` passes on it: atomic co
 
 - A segment MUST be created with `If-None-Match: *` and never overwritten. It holds `{ format, writer, open, build, entries }`.
 - A checkpoint manifest MUST be created with `If-None-Match: *` at the inverted offset it covers, only after every page it references is written. It MUST cover the shard's actor manifest pointers, timer wheel and `nextDue`, pending cross-shard sends, job table, deduplication state, open connections and index pages.
+- Independent page graphs MAY upload concurrently with a finite bound. Capture order and the captured durable prefix MUST NOT depend on completion order, and all uploads MUST finish before their shard root or checkpoint reference is published. The publication exclusion MUST cover those uploads through the durable reference.
 - A checkpoint page MAY hold both durable state and its index rows; its hash MUST appear in both manifest page lists. Index rows MUST change only with the durable transition, and recovery MUST reproject decoded state so schema evolution cannot retain stale field values.
 - When a checkpoint's pages are missing or corrupt, recovery MAY start from an older checkpoint whose following segments are all retained, and MUST report the damaged one; otherwise it MUST refuse the shard. It MUST NOT fall back to default state ([recovery](09-recovery.md)).
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Cause, Clock, Duration, Effect, Exit, Fiber, Result, Schema, Stream } from "effect"
+import { Cause, Clock, Duration, Effect, Exit, Fiber, Metric, Result, Schema, Stream } from "effect"
 import type { Scope } from "effect"
 import { TestClock } from "effect/testing"
 import {
@@ -26,6 +26,7 @@ import { Entry, EntryCodec, Origin, Outcome } from "./entries.ts"
 import type { ActionEntry } from "./entries.ts"
 import { storeOf } from "../store/service.ts"
 import { Transports } from "./transport.ts"
+import { Metrics } from "../runtime/telemetry/metrics.ts"
 
 class Refused extends Schema.TaggedError<Refused>()("Refused", { reason: Schema.String }) {}
 
@@ -389,6 +390,41 @@ describe("reads and the lease", () => {
           simulator.engine.status(simulator.engine.shardOf(Durable.addressOf("Wallet", "a")))
             .status,
         ).toBe("fenced")
+      }),
+    ))
+})
+
+describe("durable activation metrics", () => {
+  it("counts created actors once, never counts speculative residents, and rebuilds the gauge after drain and recovery", () =>
+    simulate(
+      { seed: 53, shards: 1, checkpointEvery: 0 },
+      Effect.gen(function* () {
+        const simulator = yield* SimulationService
+        const gauge = Metric.withAttributes(Metrics.activations, { actor_type: Wallet.name })
+        const success = Metric.withAttributes(Metrics.actions, {
+          actor_type: Wallet.name,
+          outcome: "success",
+        })
+        const before = (yield* Metric.value(success)).count
+        yield* Simulation.seed(Wallet, "a", { balance: 5 })
+        const a = yield* Wallet.client("a")
+        expect(yield* a.deposit(7)).toBe(12)
+        yield* Simulation.settle
+        expect((yield* Metric.value(gauge)).value).toBe(1)
+        expect((yield* Metric.value(success)).count - before).toBe(1)
+        yield* simulator.engine.durableRecord(Wallet, "unused")
+        yield* Simulation.seed(Wallet, "b", { balance: 19 })
+        yield* Simulation.settle
+        expect((yield* Metric.value(gauge)).value).toBe(2)
+        expect((yield* Simulation.drain()).outcome).toBe("clean")
+        expect((yield* Metric.value(gauge)).value).toBe(0)
+        yield* Simulation.assign(0)
+        yield* Simulation.settle
+        expect((yield* Metric.value(gauge)).value).toBe(2)
+        expect(yield* a.deposit(11)).toBe(23)
+        yield* Simulation.settle
+        expect((yield* Metric.value(gauge)).value).toBe(2)
+        expect((yield* Metric.value(success)).count - before).toBe(2)
       }),
     ))
 })

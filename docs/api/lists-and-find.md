@@ -43,4 +43,6 @@ const ids = yield * Room.find({ limit: 100 })
 
 Owners update their indexes only from durable states, persist them at checkpoints, and recover them with the tail. The gateway queries every shard and merges the results. Each shard answers at its own durable point; there is no cross-shard snapshot or `after` token. A completed action is visible to a subsequent query, but a concurrent action can appear in one shard's answer and not another's.
 
+Checkpoint upload uses up to 32 independent actor page graphs at once. This changes upload scheduling, not the snapshot: the owner captures one durable prefix first and publishes its checkpoint only after every referenced page is stored. It does not promise a fixed drain duration for an arbitrarily large actor set.
+
 The 0.2 target truncates indexed strings to a 64-byte UTF-8 prefix, so strings sharing a prefix compare equal in the index. `find` performs tenant-scoped access with request kind `find`; it does not authorize subsequent reads of returned ids. Hosted tenant isolation and production-provider index evidence require their own verification.

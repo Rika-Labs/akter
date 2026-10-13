@@ -12,6 +12,8 @@ The page-backed replay scenario requires `Replayed` and `Audit` in one segment a
 
 `snapshots/recovery.test.ts` retains the latest-checkpoint assertion and adds immutable workflow-capture and delayed-upload prefix regressions. Together with index seed 2301 and the 1,000 faulted simulator seeds, these cover checkpoint-prefix capture before asynchronous work, atomic publication of a complete segment before telemetry yields, and generation fencing of stale committer continuations.
 
+The performance pass adds a held first actor upload while two later uploads finish. The shard root must remain absent until the held page finishes, references must stay in capture order, and a concurrent action must not change that captured state or be overwritten by upload completion. This rejects serial checkpoint upload, completion-ordered roots, early root publication and stale image replacement. Local drain and throughput diagnostics are in [BENCHMARKS.md](../../BENCHMARKS.md), not evidence for a provider or an unbounded drain SLO.
+
 | Requirement                               | Evidence                                                                                    | Wrong implementation rejected                                         |
 | ----------------------------------------- | ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
 | F20 fork during writes and fork of fork   | concurrent source action and version-qualified fork; restart and independent source values  | current-state copy, incorrect lineage, copied work by default         |
