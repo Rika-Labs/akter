@@ -11,18 +11,23 @@ import { Checkpoints } from "./checkpoint.ts"
 import type { Checkpoint } from "./checkpoint.ts"
 import { pendingClocks } from "../execution/workflow.ts"
 
-/** Prepares changed list paths and actor manifests before publishing their checkpoint root. */
-const write = (image: ShardImage, store: Store["Service"], cache: PageCache) =>
-  Effect.gen(function* () {
-    const checkpoint = Checkpoints.capture(image, false)
-    const images = new Map(Array.from(image.actors, ([address, record]) => [address, record.image]))
+/** Captures one durable prefix now; its returned upload never reads later actor or index state. */
+const write = (image: ShardImage, store: Store["Service"], cache: PageCache) => {
+  const checkpoint = Checkpoints.capture(image, false)
+  const images = new Map(
+    Array.from(image.actors, ([address, record]) => [
+      address,
+      { actor: record.actor, image: record.image },
+    ]),
+  )
+  return Effect.gen(function* () {
     const replacements = new Map<string, { before: Image; after: Image }>()
     const roots: Array<string> = []
     for (const snapshot of checkpoint.actors) {
       const address = Durable.addressOf(snapshot.actor, snapshot.key)
-      const record = image.actors.get(address)!
-      const before = images.get(address)!
-      const layout = Layouts.of(record.actor)
+      const captured = images.get(address)!
+      const before = captured.image
+      const layout = Layouts.of(captured.actor)
       const lists = new Map(before.lists)
       const saved: Array<Checkpoint["actors"][number]["lists"][number]> = []
       const references: Array<string> = []
@@ -80,6 +85,7 @@ const write = (image: ShardImage, store: Store["Service"], cache: PageCache) =>
       },
     }
   })
+}
 
 /** Reads only shard metadata and actor manifests; list roots remain lazy. */
 const read = (hash: string, store: Pick<Store["Service"], "getPage">) =>

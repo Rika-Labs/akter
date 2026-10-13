@@ -517,9 +517,9 @@ const make = (catalog: Catalog, options: EngineOptions) =>
               return
             }
             const offset = Number(appended.value)
+            for (const [index, pending] of entries.entries()) publish(shard, pending, offset, index)
             shard.inFlight = []
-            for (const [index, pending] of entries.entries()) {
-              publish(shard, pending, offset, index)
+            for (const pending of entries) {
               if (Entry.guards.Action(pending.entry))
                 yield* count(
                   Metrics.actions,
@@ -545,7 +545,9 @@ const make = (catalog: Catalog, options: EngineOptions) =>
                   0,
                 ),
               )
+            if (shard.generation !== generation) return
             yield* after(shard)
+            if (shard.generation !== generation) return
             shard.sinceCheckpoint++
             if (options.checkpointEvery > 0 && shard.sinceCheckpoint >= options.checkpointEvery) {
               yield* periodicCheckpoint(shard, lease, generation)
@@ -563,11 +565,11 @@ const make = (catalog: Catalog, options: EngineOptions) =>
      * with the earliest timer as the store's wake time. A failed periodic checkpoint changes
      * nothing: the log still holds every entry, and the next one tries again.
      */
-    const checkpoint = (shard: Shard, lease: Lease) =>
-      store.gc.protect(
+    const checkpoint = (shard: Shard, lease: Lease) => {
+      const writing = PagedCheckpoints.write(shard.durable, store, pages)
+      return store.gc.protect(
         Effect.gen(function* () {
-          const image = shard.durable
-          const prepared = yield* PagedCheckpoints.write(image, store, pages)
+          const prepared = yield* writing
           yield* store.checkpoint(lease, {
             offset: BigInt(prepared.offset),
             statePages: [prepared.hash],
@@ -577,6 +579,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
           prepared.committed()
         }),
       )
+    }
 
     const periodicCheckpoint = (
       shard: Shard,
@@ -584,24 +587,35 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       generation: number,
     ): Effect.Effect<void> =>
       Effect.suspend(() => {
-        if (shard.checkpointing !== undefined) return Effect.void
+        if (
+          shard.generation !== generation ||
+          shard.status !== "open" ||
+          shard.checkpointing !== undefined
+        )
+          return Effect.void
         const completed = Deferred.makeUnsafe<void>()
         shard.checkpointing = completed
+        let upload = checkpoint(shard, lease)
+        shard.sinceCheckpoint = 0
         const writing = Effect.gen(function* () {
-          do {
-            shard.sinceCheckpoint = 0
+          while (true) {
             yield* Effect.ignore(
-              checkpoint(shard, lease).pipe(
+              upload.pipe(
                 Effect.retry({
                   while: Schema.is(PagePublicationBusy),
                   schedule: Schedule.max([Schedule.spaced("10 millis"), Schedule.recurs(1000)]),
                 }),
               ),
             )
-          } while (
-            shard.generation === generation &&
-            shard.sinceCheckpoint >= options.checkpointEvery
-          )
+            if (
+              shard.generation !== generation ||
+              shard.status !== "open" ||
+              shard.sinceCheckpoint < options.checkpointEvery
+            )
+              return
+            upload = checkpoint(shard, lease)
+            shard.sinceCheckpoint = 0
+          }
         }).pipe(
           Effect.ensuring(
             Effect.sync(() => {

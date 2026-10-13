@@ -159,7 +159,7 @@ const capture = (image: ShardImage, includeLists = true): Checkpoint => ({
     at: job.at,
     failure: job.failure,
     done: job.done,
-    workflow: job.workflow,
+    workflow: Array.from(job.workflow),
     steps: Array.from(job.steps, ([name, value]) => ({ name, value })),
   })),
 })
