@@ -22,7 +22,9 @@ import { Entry } from "../../../../packages/akter/src/execution/entries.ts"
 import { pendingClocks } from "../../../../packages/akter/src/execution/workflow.ts"
 import { Routing } from "../../../../packages/akter/src/runtime/sharding.ts"
 import { s3Bucket } from "../../../../packages/akter/src/store/s3.ts"
+import { fileSystemBucket } from "../../../../packages/akter/src/store/file-system.ts"
 import { Store, storeOf } from "../../../../packages/akter/src/store/service.ts"
+import { runnerDefaults } from "../../../../packages/akter/src/store/runners.ts"
 import {
   Autumn,
   AutumnLive,
@@ -74,16 +76,29 @@ const program = Effect.gen(function* () {
   }
   const useClock = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     Effect.provideService(effect, Clock.Clock, clock)
-  const url = new URL(options.url)
-  const bucket = yield* s3Bucket({
-    endpoint: `${url.protocol}//${url.host}`,
-    bucket: url.pathname.replace(/^\/+|\/+$/gu, ""),
-    credentials: {
-      accessKeyId: decodeURIComponent(url.username),
-      secretAccessKey: decodeURIComponent(url.password),
-    },
-    prefix: options.prefix,
-  })
+  const bucket = yield* options.directory === undefined
+    ? Effect.gen(function* () {
+        const url = new URL(options.url)
+        return yield* s3Bucket({
+          endpoint: `${url.protocol}//${url.host}`,
+          bucket: url.pathname.replace(/^\/+|\/+$/gu, ""),
+          credentials: {
+            accessKeyId: decodeURIComponent(url.username),
+            secretAccessKey: decodeURIComponent(url.password),
+          },
+          prefix: options.prefix,
+        })
+      })
+    : Effect.gen(function* () {
+        const services =
+          globalThis.Bun === undefined
+            ? (yield* Effect.promise(() => import("@effect/platform-node"))).NodeServices.layer
+            : (yield* Effect.promise(() => import("@effect/platform-bun"))).BunServices.layer
+        const context = yield* Layer.build(services)
+        return yield* fileSystemBucket(`${options.directory}/${options.prefix}`).pipe(
+          Effect.provideContext(context),
+        )
+      })
   const rawStore = yield* storeOf(bucket, {
     shards: SHARDS,
     writer: options.writer,
@@ -156,9 +171,13 @@ const program = Effect.gen(function* () {
     address: { host: "127.0.0.1", port: options.advertised },
     listenAddress: { host: "127.0.0.1", port: options.listen },
     peering: { deployment: options.deployment, credentials: Effect.succeed(credentials) },
-    shardLockExpiration: options.short ? "3 seconds" : undefined,
-    refreshAssignmentsInterval: options.short ? "100 millis" : undefined,
-    shardLockRefreshInterval: options.short ? "1 second" : undefined,
+    ...(options.short
+      ? {
+          shardLockExpiration: "3 seconds",
+          refreshAssignmentsInterval: "100 millis",
+          shardLockRefreshInterval: "1 second",
+        }
+      : runnerDefaults),
   }).pipe(Effect.provideService(Store, store), useClock)
   readiness = Effect.map(routing.readiness, (status) => status.ready)
   yield* Effect.forkScoped(

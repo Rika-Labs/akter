@@ -27,10 +27,11 @@ import { Entry, EntryCodec } from "../execution/entries.ts"
 import type { Catalog } from "../execution/durable.ts"
 import { Durable } from "../execution/durable.ts"
 import { Engine } from "../execution/engine.ts"
+import type { Bucket } from "../store/bucket.ts"
 import { memoryBucket } from "../store/memory.ts"
 import { Store, storeOf } from "../store/service.ts"
 import { RunnerAuthority } from "./peering/authority.ts"
-import { Routing } from "./sharding.ts"
+import { Routing, type RunnerOptions } from "./sharding.ts"
 
 let findChecks = 0
 const Ledger = Actor.make("Ledger", {
@@ -82,7 +83,19 @@ const port = Effect.callback<number>((resume) => {
   })
 })
 
-const setup = (requestTimeout: Duration.Input = "10 seconds", count = 2) =>
+const setup = (
+  requestTimeout: Duration.Input = "10 seconds",
+  count = 2,
+  timing: Pick<
+    RunnerOptions,
+    "shardLockExpiration" | "shardLockRefreshInterval" | "refreshAssignmentsInterval"
+  > = {
+    shardLockExpiration: "3 seconds",
+    shardLockRefreshInterval: "1 second",
+    refreshAssignmentsInterval: "100 millis",
+  },
+  wrap: (index: number, bucket: Bucket) => Bucket = (_, bucket) => bucket,
+) =>
   Effect.gen(function* () {
     const bucket = { ...memoryBucket() }
     const authority = yield* RunnerAuthority.make()
@@ -97,7 +110,7 @@ const setup = (requestTimeout: Duration.Input = "10 seconds", count = 2) =>
     const runners = []
     for (let index = 0; index < count; index++) {
       const scope = yield* Scope.fork(yield* Effect.scope)
-      const store = yield* storeOf(bucket, { shards: 4, writer: `runner-${index}` })
+      const store = yield* storeOf(wrap(index, bucket), { shards: 4, writer: `runner-${index}` })
       const engine = yield* Engine.make(catalog, {
         shards: 4,
         policy: "matching",
@@ -110,9 +123,7 @@ const setup = (requestTimeout: Duration.Input = "10 seconds", count = 2) =>
       const routing = yield* Routing.make(engine, {
         address: { host: "127.0.0.1", port: yield* port },
         peering: { deployment: "store-cluster", credentials: Effect.succeed(credentials) },
-        shardLockExpiration: "3 seconds",
-        shardLockRefreshInterval: "1 second",
-        refreshAssignmentsInterval: "100 millis",
+        ...timing,
         requestTimeout,
       }).pipe(Effect.provideService(Store, store), Effect.provideService(Scope.Scope, scope))
       runners.push({ engine, routing, scope })
@@ -142,6 +153,115 @@ const setup = (requestTimeout: Duration.Input = "10 seconds", count = 2) =>
   })
 
 describe("bucket-backed Cluster routing", () => {
+  it(
+    "T6 rejects waiting for the membership tick after durable release over real mTLS",
+    () =>
+      Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const { runners, bucket } = yield* setup("10 seconds", 2, {
+              shardLockExpiration: "30 seconds",
+              shardLockRefreshInterval: "2 seconds",
+              refreshAssignmentsInterval: "4 seconds",
+            })
+            const old = runners[0]!
+            const next = runners[1]!
+            const moved = Array.from({ length: 4 }, (_, id) => id).filter(
+              (id) => old.engine.status(id).status === "open",
+            )
+            const began = performance.now()
+            expect((yield* old.routing.drain("5 seconds")).outcome).toBe("clean")
+            for (let poll = 0; poll < 250; poll++) {
+              if (
+                Array.from({ length: 4 }, (_, id) => id).every(
+                  (id) => next.engine.status(id).status === "open",
+                ) &&
+                (yield* next.routing.readiness).ready
+              )
+                break
+              yield* Effect.sleep("10 millis")
+            }
+            expect(performance.now() - began).toBeLessThan(2500)
+            expect(Array.from({ length: 4 }, (_, id) => next.engine.status(id).status)).toEqual([
+              "open",
+              "open",
+              "open",
+              "open",
+            ])
+            expect(yield* bucket.leases.list("cluster/runners/")).toHaveLength(1)
+            const store = yield* storeOf(bucket, { shards: 4 })
+            for (const shard of moved) {
+              const segments = Array.from(yield* Stream.runCollect(store.read(shard, 0n)))
+              const opened = segments.findIndex((segment) => segment.writer === "runner-1")
+              expect(opened).toBeGreaterThan(0)
+              expect(
+                segments[opened - 1]!.entries.map((entry) =>
+                  Result.getOrThrow(EntryCodec.decode(entry)),
+                ).some(Entry.guards.Released),
+              ).toBe(true)
+            }
+          }),
+        ),
+      ),
+    15_000,
+  )
+
+  it(
+    "keeps every advisory lock and heartbeat through a drain whose Released write outlasts lock expiration",
+    () =>
+      Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            let slow = false
+            const { runners, bucket } = yield* setup("10 seconds", 2, undefined, (index, bucket) =>
+              index === 0
+                ? {
+                    ...bucket,
+                    create: (key, body) =>
+                      slow && key.includes("/log/")
+                        ? Effect.delay(bucket.create(key, body), "4 seconds")
+                        : bucket.create(key, body),
+                  }
+                : bucket,
+            )
+            const old = runners[0]!
+            const next = runners[1]!
+            const moved = Array.from({ length: 4 }, (_, id) => id).filter(
+              (id) => old.engine.status(id).status === "open",
+            )
+            slow = true
+            expect((yield* old.routing.drain("10 seconds")).outcome).toBe("clean")
+            for (let poll = 0; poll < 500; poll++) {
+              if (
+                Array.from({ length: 4 }, (_, id) => id).every(
+                  (id) => next.engine.status(id).status === "open",
+                )
+              )
+                break
+              yield* Effect.sleep("10 millis")
+            }
+            expect(Array.from({ length: 4 }, (_, id) => next.engine.status(id).status)).toEqual([
+              "open",
+              "open",
+              "open",
+              "open",
+            ])
+            const store = yield* storeOf(bucket, { shards: 4 })
+            for (const shard of moved) {
+              const segments = Array.from(yield* Stream.runCollect(store.read(shard, 0n)))
+              const last = segments.findLastIndex((segment) => segment.writer === "runner-0")
+              expect(
+                segments[last]!.entries.map((entry) =>
+                  Result.getOrThrow(EntryCodec.decode(entry)),
+                ).some(Entry.guards.Released),
+              ).toBe(true)
+            }
+          }),
+        ),
+      ),
+    20_000,
+  )
+
   it(
     "scatter-gathers ids from durable owner indexes with one access check, a global limit and id ties over real mTLS peering",
     () =>

@@ -76,6 +76,8 @@ The example's fixed user is for local development only. Production must authenti
 
 Omit `runner` for one process. A multi-runner `runner` has `address`, optional `listenAddress`, and `peering: { deployment, credentials }`. Peer addresses must be directly reachable; credential material supplies a CA, certificate, and redacted key. The store-scoped identity is shared across authorized releases, not across stores; it adds no write authority beyond the store bucket credential. See the [self-host configuration](../operations/self-host.md#stop) and [E3 security limits](../verification/e3-cluster.md).
 
+Bucket coordination defaults are `shardLockExpiration: "3 seconds"`, `refreshAssignmentsInterval: "250 millis"` and `shardLockRefreshInterval: "2 seconds"`. Effect caps lock refresh at one third of expiration, and the adapter's 1.5-second heartbeat-write floor normally produces one write every two seconds. Liveness uses heartbeat ETags and local monotonic time, not synchronized clocks. Durable release wakes peers immediately over mTLS; periodic refresh covers lost notifications. These options can be overridden, but shorter timings reduce tolerance for bucket latency and event-loop pauses, while longer expiration increases crash failover time. The advisory lock never authorizes a log write.
+
 Keep the server/store scope alive while `RuntimeControl.waitForSignal({ deadline: "15 seconds" })` waits for SIGTERM or SIGINT and drains. It makes the runner unready before release and prints `DRAINED` with final durable offsets and `nextDue`. The host must persist that report and arrange future wake-ups; the engine cannot wake a stopped process.
 
 ## RPC

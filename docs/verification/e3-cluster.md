@@ -37,11 +37,11 @@ Promotion of the release-to-store peering boundary still requires the captain's 
 - F24 stops the old release before drain, verifies the new release is still standby, then uses SIGTERM. Readiness falls before checkpointing, the host emits its drain report, and new-build ownership follows durable `Released` entries.
 - F17′/F27 jobs kills the job owner after a remote actor effect but before reply journaling. Replay preserves the outcome, a durable workflow deadline survives another drain and a no-runner interval, and completion retires both call streams. A second job runs across two live peers and cannot retire locally only. The split-owner simulator separately moves both job and receiver shards and checks exactly two actor calls, one completion and two receiver retirements.
 
-The T6 scenario writes 10,000 actions, measures clean handoff and crash takeover under unchanged defaults, and measures replay of the checkpoint tail. Neither move meets the five-second target under those defaults; tail replay meets one second. Exact local timings, host and runtime are preserved below and in the captain report rather than represented as provider performance.
+The T6 scenario writes 10,000 actions, measures clean handoff and crash takeover with `short: false` (the actual runner defaults), and measures replay of the checkpoint tail. The following historical run used the old defaults; neither move met five seconds, while tail replay met one second. These numbers are a baseline, not evidence for the current three-second expiration and 250-millisecond refresh.
 
 Receiver retirement first crosses the engine's recovered-image and lease-validity read barrier. It never treats an unopened shard as a receiver stream. The first full MinIO run exposed an extra retirement on an unopened empty shard; the engine barrier fixes that cause without weakening the exact retirement assertions.
 
-Final local MinIO measurements on `dallens-mbp.lan`, macOS arm64, with 30-second lock expiration and 15-second assignment refresh:
+Historical local MinIO measurements on `dallens-mbp.lan`, macOS arm64, with 30-second lock expiration and 15-second assignment refresh:
 
 | Runtime     |  10k write |  Clean move | Crash takeover | Tail replay | Gates                            |
 | ----------- | ---------: | ----------: | -------------: | ----------: | -------------------------------- |
@@ -50,11 +50,35 @@ Final local MinIO measurements on `dallens-mbp.lan`, macOS arm64, with 30-second
 
 The suite records failed timing gates without asserting a fabricated five-second pass. All 42 integration scenarios passed on each runtime: 35 Store/engine/jobs cases and seven Cluster process cases. Those protocol passes do not waive T6.
 
+## T6 timing mechanism (2026-10-13)
+
+The current defaults are three-second expiration, 250-millisecond membership refresh and two-second configured lock refresh. Effect's effective refresh is one second; the serialized 1.5-second floor between completed heartbeat writes normally yields one write every two seconds (0.5 writes/s/key). A peer's current heartbeat ETag is rechecked before taking an expired advisory lock. Liveness does not compare wall clocks, and a shorter expiration does not replace the log fence.
+
+The public runner protocol's mTLS Ping handler wakes a paced `RunnerStorage.getRunners` read after durable release and advisory cleanup. Cluster still computes the HashRing and takes advisory locks. A retained wake covers arrival before the next wait, and periodic reads cover lost notifications. The adapter uses only exported Effect services and RPC handlers; it does not mutate Cluster internals.
+
+Focused evidence rejects the following mistakes:
+
+| Scenario                                                                                                               | Wrong implementation rejected                                                                                                                                                           |
+| ---------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `runtime/assignment-refresh.test.ts`: wake before/during wait, repeated wake and interrupted 15-second wait            | Release wakes disappear between a membership read and its next wait, notification waits for the tick, or interruption restarts the periodic deadline forever                            |
+| `runtime/sharding.test.ts`: real mTLS handoff with a four-second membership interval                                   | A clean move depends on periodic refresh; all four shards must become ready in less than 2.5 seconds, with `Released` immediately before the new writer's first segment on moved shards |
+| `store/runners.test.ts`: 2,999/3,000-millisecond expiry boundary and skewed wall time                                  | An unchanged heartbeat expires early, or a remote wall clock authorizes takeover                                                                                                        |
+| `store/runners.test.ts`: changed heartbeat behind an expired cached ETag                                               | A live refreshed owner is taken over without checking its current ETag                                                                                                                  |
+| `store/runners.test.ts`: concurrent refresh, slow write and re-registration                                            | Overlapping heartbeats or registration reset bypasses the 1.5-second post-completion write floor                                                                                        |
+| `store/runners.test.ts`: failed advisory release then retry                                                            | A failed CAS discards the held ETag, making a later release silently succeed without releasing the lock                                                                                 |
+| `runtime/sharding.test.ts`: drain whose `Released` segment write is delayed four seconds, past three-second expiration | A draining runner stops heartbeating or releases advisory locks as soon as its own membership view disables it, so a peer fences the drain before `Released` is durable                 |
+
+These unit and in-memory-bucket mTLS checks establish the mechanism and preserve the existing routing/release assertions, not production provider performance.
+
+The default-configured multi-process `T6 measures` case ran three times per runtime on local MinIO and APFS ([BENCHMARKS.md](../../BENCHMARKS.md#t6-clean-move-crash-takeover-and-tail-replay)). On the committed code, clean moves took 1.14–3.56 seconds and tail replay 205–717 milliseconds in all 12 runs. Crash takeover met five seconds in 8 of 12 runs and took 5.17–5.91 seconds in the other four, so the crash target is not met reliably: a freshly started replacement must observe the dead owner's heartbeat unchanged for the full three seconds after its own process start. An earlier matrix exposed a drain fenced by a peer during the three-second expiration; the drain-hold row above is its regression test. A provider T6 measurement is still required before claiming provider behavior.
+
 ## Reproduction
 
 From the repository root:
 
 ```sh
+bun --bun node_modules/vitest/vitest.mjs run packages/akter/src/store/runners.test.ts packages/akter/src/runtime/assignment-refresh.test.ts packages/akter/src/runtime/sharding.test.ts --maxWorkers 1
+node node_modules/vitest/vitest.mjs run packages/akter/src/store/runners.test.ts packages/akter/src/runtime/assignment-refresh.test.ts packages/akter/src/runtime/sharding.test.ts --maxWorkers 1
 bun --bun node_modules/vitest/vitest.mjs run packages/akter/src/runtime/sharding.test.ts packages/akter/src/testing/cluster.test.ts packages/akter/src/contract/cron.test.ts packages/akter/src/execution/cron.test.ts packages/akter/src/execution/timer-wheel.test.ts
 node node_modules/vitest/vitest.mjs run packages/akter/src/runtime/sharding.test.ts packages/akter/src/testing/cluster.test.ts packages/akter/src/contract/cron.test.ts packages/akter/src/execution/cron.test.ts packages/akter/src/execution/timer-wheel.test.ts
 bun run --cwd packages/akter test
@@ -68,7 +92,7 @@ The new split-owner suite runs 1,000 faulted seeds and 50 exact byte-replay seed
 
 ## Scope and unresolved targets
 
-Defaults remain a 30-second liveness expiration and 15-second assignment refresh. Those defaults cannot promise five-second crash failover; a five-second clean handoff is a different measurement. T6 must name the move type, configuration, tail shape, runtime and host. Results are local to `dallens-mbp.lan`, Dallen's MacBook Pro, macOS arm64, with Bun 1.4.2 and Node 26.7.0, not Fly or a production storage provider.
+The three-second liveness expiration and 250-millisecond membership refresh target five-second crash takeover; immediate release notification targets clean handoff independently. T6 must name the move type, configuration, tail shape, runtime and host. Storage throttling, latency and event-loop pauses can still exhaust the remaining acquisition/recovery budget. The historical results and current measurements in [BENCHMARKS.md](../../BENCHMARKS.md) are local to `dallens-mbp.lan`, Dallen's MacBook Pro, macOS arm64, with Bun 1.4.2 and Node 26.7.0, not Fly or a production storage provider.
 
 Cloud must persist the drain report, arrange a wake from its earliest non-null `nextDue`, deliver stable store-scoped peer credentials to both rollout releases, retain and launch the matching old build after an unclean handoff, and validate the actual provider. General tenant addressing, suspend-safe clock-discontinuity detection, connection cleanup after owner loss and workflow compatibility remain their owning milestones' evidence, not passes on this page.
 

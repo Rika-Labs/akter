@@ -4,9 +4,11 @@ import {
   Config,
   Console,
   Deferred,
+  Duration,
   Effect,
   Exit,
   Fiber,
+  FileSystem,
   Layer,
   Option,
   Predicate,
@@ -39,7 +41,9 @@ import { Durable } from "../execution/durable.ts"
 import { Entry, EntryCodec, Origin } from "../execution/entries.ts"
 import { RunnerAuthority } from "./peering/authority.ts"
 import { s3Bucket } from "../store/s3.ts"
+import { fileSystemBucket } from "../store/file-system.ts"
 import { storeOf } from "../store/service.ts"
+import { runnerDefaults } from "../store/runners.ts"
 import { decodeManifest } from "../store/codec.ts"
 import { checkpointPrefix } from "../store/keys.ts"
 import { DrainReport as HostDrainReport } from "../runtime/drain.ts"
@@ -202,33 +206,60 @@ const until = <A, E, R>(
   })
 
 const cluster = Effect.gen(function* () {
-  const url = new URL(yield* Config.String("TEST_S3_URL"))
-  const credentials = {
-    accessKeyId: decodeURIComponent(url.username),
-    secretAccessKey: decodeURIComponent(url.password),
+  const adapter = yield* Config.String("BENCH_CLUSTER_ADAPTER").pipe(Config.withDefault("s3"))
+  if (!["s3", "fileSystem"].includes(adapter))
+    return yield* Effect.die(new RangeError("Cluster adapter must be s3 or fileSystem"))
+  const directory =
+    adapter === "fileSystem"
+      ? yield* Effect.flatMap(FileSystem.FileSystem, (fs) =>
+          fs.makeTempDirectoryScoped({ prefix: "akter-cluster-bench-" }),
+        )
+      : undefined
+  const target = adapter === "s3" ? yield* Config.String("TEST_S3_URL") : ""
+  const bucketAt = (prefix: string) =>
+    directory === undefined
+      ? Effect.gen(function* () {
+          const url = new URL(target)
+          return yield* s3Bucket({
+            endpoint: `${url.protocol}//${url.host}`,
+            bucket: url.pathname.replace(/^\/+|\/+$/gu, ""),
+            credentials: {
+              accessKeyId: decodeURIComponent(url.username),
+              secretAccessKey: decodeURIComponent(url.password),
+            },
+            prefix,
+          })
+        })
+      : fileSystemBucket(`${directory}/${prefix}`)
+  if (directory === undefined) {
+    const url = new URL(target)
+    const client = yield* Effect.acquireRelease(
+      Effect.sync(
+        () =>
+          new S3Client({
+            region: "us-east-1",
+            endpoint: `${url.protocol}//${url.host}`,
+            credentials: {
+              accessKeyId: decodeURIComponent(url.username),
+              secretAccessKey: decodeURIComponent(url.password),
+            },
+            forcePathStyle: true,
+          }),
+      ),
+      (client) => Effect.sync(() => client.destroy()),
+    )
+    yield* Effect.tryPromise(() =>
+      client.send(new CreateBucketCommand({ Bucket: url.pathname.replace(/^\/+|\/+$/gu, "") })),
+    ).pipe(
+      Effect.catchIf(
+        (error) =>
+          Predicate.hasProperty(error.cause, "name") &&
+          (error.cause.name === "BucketAlreadyOwnedByYou" ||
+            error.cause.name === "BucketAlreadyExists"),
+        () => Effect.void,
+      ),
+    )
   }
-  const bucketName = url.pathname.replace(/^\/+|\/+$/gu, "")
-  const client = yield* Effect.acquireRelease(
-    Effect.sync(
-      () =>
-        new S3Client({
-          region: "us-east-1",
-          endpoint: `${url.protocol}//${url.host}`,
-          credentials,
-          forcePathStyle: true,
-        }),
-    ),
-    (client) => Effect.sync(() => client.destroy()),
-  )
-  yield* Effect.tryPromise(() => client.send(new CreateBucketCommand({ Bucket: bucketName }))).pipe(
-    Effect.catchIf(
-      (error) =>
-        Predicate.hasProperty(error.cause, "name") &&
-        (error.cause.name === "BucketAlreadyOwnedByYou" ||
-          error.cause.name === "BucketAlreadyExists"),
-      () => Effect.void,
-    ),
-  )
   const number = run++
   const prefix = `cluster-process/${process.pid}-${yield* Clock.currentTimeMillis}-${number}/`
   const deployment = `process-evidence-${process.pid}-${number}`
@@ -243,7 +274,8 @@ const cluster = Effect.gen(function* () {
     const child = yield* Effect.acquireRelease(
       spawn({
         AKTER_CLUSTER_OPTIONS: yield* Schema.encodeEffect(Schema.fromJsonString(Options))({
-          url: url.toString(),
+          url: target,
+          directory,
           prefix,
           writer,
           deployment,
@@ -311,12 +343,7 @@ const cluster = Effect.gen(function* () {
   const logs = () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const bucket = yield* s3Bucket({
-          endpoint: `${url.protocol}//${url.host}`,
-          bucket: bucketName,
-          credentials,
-          prefix,
-        })
+        const bucket = yield* bucketAt(prefix)
         const store = yield* storeOf(bucket, { shards: SHARDS })
         const shards = yield* Effect.forEach(
           Array.from({ length: SHARDS }, (_, shard) => shard),
@@ -339,12 +366,7 @@ const cluster = Effect.gen(function* () {
   const tailActions = (shard: number) =>
     Effect.scoped(
       Effect.gen(function* () {
-        const bucket = yield* s3Bucket({
-          endpoint: `${url.protocol}//${url.host}`,
-          bucket: bucketName,
-          credentials,
-          prefix,
-        })
+        const bucket = yield* bucketAt(prefix)
         const key = (yield* bucket.list(checkpointPrefix(shard)))[0]!
         const manifest = yield* decodeManifest(key)(Option.getOrThrow(yield* bucket.get(key)))
         const store = yield* storeOf(bucket, { shards: SHARDS })
@@ -356,14 +378,18 @@ const cluster = Effect.gen(function* () {
           .filter(Entry.guards.Action).length
       }),
     )
-  return { start, logs, tailActions }
+  return { start, logs, tailActions, adapter }
 })
 
 type Cluster = Effect.Success<typeof cluster>
 const withCluster = <A, E, R>(scenario: (opened: Cluster) => Effect.Effect<A, E, R>) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const context = yield* Layer.build(FetchHttpClient.layer)
+      const services =
+        globalThis.Bun === undefined
+          ? (yield* Effect.promise(() => import("@effect/platform-node"))).NodeServices.layer
+          : (yield* Effect.promise(() => import("@effect/platform-bun"))).BunServices.layer
+      const context = yield* Layer.build(Layer.merge(FetchHttpClient.layer, services))
       return yield* Effect.flatMap(cluster, scenario).pipe(Effect.provide(context))
     }),
   )
@@ -831,12 +857,13 @@ describe("real MinIO multi-process Cluster", () => {
           expect(yield* state(replacement, key)).toEqual({ total: 100_000, deliveries: 0 })
           yield* Console.log({
             benchmark: "T6",
+            provider: group.adapter === "s3" ? "MinIO loopback Docker" : "filesystem macOS APFS",
             host: hostname(),
             platform: platform(),
             arch: arch(),
             runtime: globalThis.Bun === undefined ? "node" : "bun",
             version: globalThis.Bun === undefined ? process.version : Bun.version,
-            timing: "defaults: expiration 30s, assignment refresh 15s",
+            timing: `defaults: expiration ${Duration.toMillis(runnerDefaults.shardLockExpiration)}ms, assignment refresh ${Duration.toMillis(runnerDefaults.refreshAssignmentsInterval)}ms, lock refresh ${Duration.toMillis(runnerDefaults.shardLockRefreshInterval)}ms, heartbeat floor 1500ms`,
             actions: 10_000,
             writeMs: bulk.elapsedMs,
             cleanMs,
