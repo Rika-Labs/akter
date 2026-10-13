@@ -1,35 +1,7 @@
-# 07 — Deployment and ownership
+# Deployment
 
-**Responsibility:** define deployment modes and operational ownership.  
-**Authority:** product intent.  
-**Owner role:** product direction.  
-**Change policy:** a change requires product sign-off and a matching contract update when a promise shifts.
+The framework runs on Bun or Node with one durable bucket per environment. Self-hosting composes `Akter.serve`, `App.make`, and `Store.s3`; local development uses `Store.fileSystem`. There is no second database dependency in the framework.
 
-## Vision
+A release drains to durable checkpoints and `Released` segments before a new build opens. An unclean tail requires its matching build or explicit audited current-build replay. The host manages readiness, build retention, credentials, and wake-up of stopped stores.
 
-The programming model and correctness contracts remain the same in three deployment shapes.
-
-## Ways to run
-
-- **Embedded:** provide `Actors.layer` from `@rikalabs/akter/runtime` inside an Effect application and call actor handles directly.
-- **Served:** run `Actors.serve` from `@rikalabs/akter/runtime` in its own process. It exposes HTTP, WebSocket, SSE, and OpenAPI for browsers, other languages, and customer-operated runners.
-- **Hosted:** a service can operate the same served runtime, with separate authentication, ingress, database, and provider verification. Akter Cloud's implementation is outside the public framework repository.
-
-The hosted product consists of edge ingress and runners. A managed runner is the customer's served container coordinated by control-plane actors; it is not a separate framework model.
-
-## Database and placement
-
-Each deployment uses one Postgres database per region; most deployments have one region. Embedded PGlite is the alternative for one-process deployments within its support limits. A hosted deployment may add regions so remote users avoid cross-ocean round trips: every tenant has a home region, and its actors and rows live there. Tenants are rows identified by `tenant_id`, optionally reinforced with row-level security. `shardGroup` places compute and can select dedicated runner pools; all regional data remains in the region's database. Placement never replaces authorization. See [ADR 0005](../decisions/0005-turn-latency-batching-and-regional-placement.md), amended by [ADR 0112](../decisions/0112-postgres-and-pglite-only.md).
-
-## Operational ownership
-
-Self-hosting must not require the hosted control plane. Operators need standard container, Postgres, migration, backup, and telemetry practices plus visibility into:
-
-- actor generations, mailbox pressure, and activation lifecycle;
-- receipt and event retention;
-- workflow, timer, job, and dead-letter state;
-- database saturation and shard placement;
-- parked connections and replay gaps;
-- drain, restore, and reconciliation progress.
-
-Repository ownership follows the public model in [repository structure](../architecture/repository-structure.md): the framework, CLI, Cloud API contract, repo-only client tooling, and repository tooling remain here; Akter Cloud service code and provider infrastructure are separate.
+Akter Cloud is private hosted infrastructure consuming the same published framework. Each environment owns a store bucket and credentials. Preview and production storage are isolated. Provider validation, pricing, quotas, and hosted lifecycle evidence are separate release gates.

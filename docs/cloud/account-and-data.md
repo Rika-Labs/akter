@@ -1,36 +1,20 @@
 ---
-title: "Account deletion and personal export"
-description: "Export your personal records and understand organization and account cleanup."
+title: "Account deletion and data custody"
+description: "Distinguish personal records from hosted actor stores and their retirement obligations."
 ---
 
-Export any records you want to keep **before** requesting deletion. Organization deletion and personal account deletion are different operations, and neither is reversible.
+# Account deletion and data custody
 
-## Export your personal data
+Export what you need before deleting an account, organization, project, or environment. A personal-data export contains control-plane records about the user, not a backup of the application's actor store. Never expect passwords, session secrets, or storage credentials in an export.
 
-In **Settings → Account → Profile**, choose **Export my data**. The console downloads a JSON file containing the records Akter stores about the signed-in user, including retained billing and audit records. It excludes passwords, session tokens, OAuth credential values and verification secrets.
+## Environment and organization data
 
-This is a personal-data export, not a backup of your actors or any database. Store the downloaded file securely: it contains personal information.
+Akter 0.2 Cloud holds end-user actor state, lists, payloads, outcomes, and history in each environment's store bucket. Deletion is not merely removal of runners or variables. The hosted target fences the incarnation, removes access, stops credential minting, and retains a durable store-retirement obligation. After the 30-day post-deletion window it empties and deletes the bucket; failure is retried rather than reported complete.
 
-## Delete an organization
+Same-name recreation uses a new incarnation and store. The window is not a customer-facing undelete feature. Disposable closed pull-request preview stores have separately guarded immediate teardown. Provider deletion and isolation require their own hosted evidence; this page describes the target, not a validated production result.
 
-Only an unsuspended owner can request organization deletion. In **Settings → Organization**, choose **Delete organization**, type the organization's name and confirm.
+## Personal account records
 
-Acceptance immediately fences new mutations and deployments and revokes API keys and serving routes. Cleanup then runs in the background: billing cancellation, runner retirement and final organization-record removal. **Akter never deletes your Postgres databases or their data.** The organization remains listed while cleanup is pending. A failure retains the obligation for retry rather than declaring deletion complete. A suspended organization cannot accept a deletion request; contact support instead.
+Resolve sole-organization ownership before deleting a personal account. Personal cleanup removes identity credentials, sessions, memberships, settings, and user-owned keys. Billing, security, and audit retention follow the applicable policy and legal obligations; deletion is not a promise to erase every historical record immediately.
 
-Existing subscriptions are cancelled immediately without automatic proration, with a final invoice for outstanding compute usage. Existing invoices and accounting obligations remain authoritative. Your database-provider account and bill are separate: manage or delete the database with that provider only after exporting or backing up anything you need.
-
-## Delete an environment or project
-
-Deleting an environment or project removes its runners, Akter's stored variables and platform records, not your Postgres database. This does not cancel your database-provider bill, copy data or revoke credentials with the provider. Manage database access and deletion there; see [Connect your Postgres](/cloud/database#what-you-own).
-
-## Delete your account
-
-If you are an organization's sole owner, first transfer ownership to another member or wait for that organization's deletion to **complete**. Starting organization deletion alone does not satisfy this requirement.
-
-In **Settings → Account → Profile**, choose **Delete account**, type your current email address and confirm. If you are a surviving organization's billing contact, cleanup first transfers that contact to a surviving owner. Transient failures retain pending cleanup and retry; an ownership problem must be resolved before it can proceed.
-
-Completed personal cleanup removes identity credentials, sessions, memberships, personal settings and user-owned keys, and signs you out. It does not delete databases you own. Authored audit entries use an anonymized identity without your name or IP address. Pending identity mail is cancelled, but cancellation cannot recall a message already accepted by the email provider.
-
-## What is retained
-
-Deletion is not a promise to erase every historical record. Billing records and actor receipts remain for accounting obligations. Suspension and staff audit records remain for abuse prevention; personal export includes those user-scoped records. Short-lived email/IP abuse counters expire normally rather than being reset by deletion. Re-registering the same address is not blocked by an implied email denylist.
+Actor erasure also depends on retained checkpoint reachability and GC grace periods. See [storage](storage.md) and [retention](../operations/retention.md). Prices, refunds, and plan quotas belong to approved E8 policy, not this framework document.

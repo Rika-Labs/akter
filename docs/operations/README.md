@@ -1,16 +1,5 @@
 # Operations
 
-**Responsibility:** index the operations documents and their procedures.  
-**Authority:** operational.  
-**Owner role:** operations.
-**Change policy:** a change requires operator review when a procedure or limit changes.
+Akter 0.2 operates one store bucket per environment. Start with [self-hosting](self-host.md), [deployment](01-deployment.md), [upgrades](02-migrations.md), and the [support matrix](support-matrix.md).
 
-- [Deployment](01-deployment.md)
-- [Migrations](02-migrations.md)
-- [Observability](03-observability.md)
-- [Backup and restore](04-backup-restore.md)
-- [Releasing](05-releasing.md)
-- [Retention](retention.md)
-- [Inspection views](inspection-views.md)
-- [Runbooks](runbooks.md)
-- [Backend support matrix](support-matrix.md)
+[Observability](03-observability.md), [retention](retention.md), [backup and restore](04-backup-restore.md), and [runbooks](runbooks.md) distinguish durable authority from leases and caches. Operator commands use separate grants and audit-before-answer; application credentials do not grant inspection authority.

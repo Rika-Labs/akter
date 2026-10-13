@@ -1,3 +1,5 @@
+> Historical 0.1 milestone record. The body below is preserved as history and does not describe the current 0.2 API or support. See [the 0.2 milestones](0.2-rewrite.md).
+
 # M0 — Foundation
 
 **Responsibility:** establish contracts and a runnable test boundary.  

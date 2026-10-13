@@ -1,6 +1,6 @@
 # Customer runner logs API
 
-`@akter/cloud-api` exports the `RunnerLogLine`, `RunnerLogPage`, `LogCursor`, `LogLimit`, `LogWait` schemas and bounds. Its `CloudApi.deployments` group exposes two authenticated reads:
+`@rikalabs/akter-cli/cloud-api` exports the `RunnerLogLine`, `RunnerLogPage`, `LogCursor`, `LogLimit`, `LogWait` schemas and bounds. Its `CloudApi.deployments` group exposes two authenticated reads:
 
 | Client operation     | HTTP path                                                     |
 | -------------------- | ------------------------------------------------------------- |

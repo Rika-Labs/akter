@@ -1,24 +1,12 @@
 ---
 title: "API and protocol versioning"
-sidebarTitle: "Versioning"
-description: "How APIs, protocols, and stored formats stay compatible across rolling deployments."
+description: "How Akter 0.2 contracts, wire data, builds, and retained history evolve."
 ---
 
 # API and protocol versioning
 
-**Responsibility:** preserve compatibility across rolling deployments.  
-**Authority:** normative API design.  
-**Owner role:** API/reliability.
-**Change policy:** a change requires compatibility review against docs/api/versioning.md.
+Actor state is decoded from `{}` using field decoding defaults. Adding a defaulted or optional field is compatible; reshape a field with a Schema transformation. There is no actor migration hook and no `akter migrate` command.
 
-The five package entries version together: `@rikalabs/akter`, `/runtime`, `/client`, `/testing`, and `/cold-storage/s3`. S3 provider mechanics are imported separately from `@rikalabs/akter/cold-storage/s3`, but share the framework version. Published packages start at `0.1.0-alpha.0` on the `alpha` dist-tag; an alpha may change APIs and stored formats without a migration path. The launch claim is multi-runner on one host through `Runner.socket` and `Runner.mtls`, verified with three Bun processes sharing a Postgres database. Separate hosts and hosting providers need their own evidence; see the [support matrix](../operations/support-matrix.md). The compatibility rules below bind from the first non-alpha release. Persisted commands, receipts, events, keyed state, connection state, workflow records, transport frames, OpenAPI, and Promise-client contracts remain decodable during rolling deployment.
+The `/rpc` group is generated from actor contracts. WebSocket JSON and HTTP NDJSON share tags and schemas. Command ids are retained for ten minutes, and retries use the same id while the client considers a call live.
 
-Alpha upgrades require a backup and a check of the [upgrade notes](../operations/alpha-upgrades.md), including framework SQL migrations and inspection-view changes. `@akter/react` and the Python client generator are repo-only and not published at launch.
-
-The framework and CLI are one release unit. Published `effect`, `@effect/*` and `drizzle-orm` peer dependencies accept caret ranges with the exact workspace catalog versions as floors, so compatible consumer versions share one library identity. Runtime dependencies and the catalog remain exact; quickstart installs resolve current compatible releases and record them in the consumer lockfile. A compatible range is not provider or runtime-feature verification for every version it admits: check the resolved graph and run application smoke tests before upgrading dependencies.
-
-Evolution is additive by default: add schema fields with decoding defaults before requiring them, retain stable actor and member tags, and do not reuse a command identity for different semantics. Keyed state changes use a validated `Actor.migration` chain; table changes use SQL migrations.
-
-Receipts must replay both successful results and declared failures under newer code, subject to current receipt-access and external retry-horizon rules. Retained events and pending jobs decode through their declared migration chains for their full retention window, and a deploy that would strand one is refused at startup (M4.7, [ADR 0032](../decisions/0032-event-and-effect-payload-evolution.md)). Command inputs and outputs stay additive. A TypeScript-only change without runtime-schema, stored-payload, OpenAPI, and rolling-deployment review is not compatible.
-
-Command expiry is enforced from the database clock and holds across restore ([ADR 0004](../decisions/0004-receipt-access-revocation-and-expiry.md), [backup and restore](../operations/04-backup-restore.md)). Logical caller identity and receipt-access error mappings still require an explicit compatibility design before implementation. Do not silently reinterpret an existing id as fresh or add undocumented `ActorError` reasons/codes.
+Every segment records the application bundle, framework version, JavaScript engine and platform build. Replay requires a matching build unless an operator explicitly chooses current-build replay. Retained segments and checkpoints are history, not a second write authority.
