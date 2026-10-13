@@ -41,6 +41,8 @@ import type { Image } from "./layout.ts"
 import { StaleEpoch } from "../store/errors.ts"
 import type { Lease } from "../store/log.ts"
 import { Store } from "../store/service.ts"
+import { TimerWheels } from "./timer-wheel.ts"
+import type { TimerWheel } from "./timer-wheel.ts"
 
 /** How an engine runs: its shards, replay policy, batch bound, cron catch-up and simulation hooks. */
 export interface EngineOptions {
@@ -122,6 +124,7 @@ interface Shard {
   status: Status
   generation: number
   opened: Deferred.Deferred<void, ActorError>
+  ended: Deferred.Deferred<never, ActorError>
   settled: Deferred.Deferred<void>
   scope: Scope.Closeable
   lease: Lease | undefined
@@ -137,6 +140,7 @@ interface Shard {
   readonly firing: Set<string>
   readonly acked: Set<string>
   readonly armed: Set<string>
+  wheel: TimerWheel | undefined
   readonly delivering: Set<string>
   readonly flushed: Array<Deferred.Deferred<void>>
   readonly wake: Latch.Latch
@@ -185,6 +189,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
     const shards = new Map<number, Shard>()
     const channels = new Map<string, Channel>()
     const afterDurable: Array<(shard: number) => Effect.Effect<void>> = []
+    let route: ((command: Command) => Effect.Effect<Outcome, ActorError>) | undefined
     yield* Effect.addFinalizer(() =>
       Effect.forEach(shards.values(), (shard) => Scope.close(shard.scope, Exit.void), {
         discard: true,
@@ -221,6 +226,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       status: "closed",
       generation: 0,
       opened: Deferred.makeUnsafe<void, ActorError>(),
+      ended: Deferred.makeUnsafe<never, ActorError>(),
       settled: Deferred.makeUnsafe<void>(),
       scope: Scope.makeUnsafe(),
       lease: undefined,
@@ -236,6 +242,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       firing: new Set(),
       acked: new Set(),
       armed: new Set(),
+      wheel: undefined,
       delivering: new Set(),
       flushed: [],
       wake: Latch.makeUnsafe(false),
@@ -271,6 +278,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       shard.speculative.clear()
       shard.inFlight = []
       const reason = fenced ? moved() : unavailable()
+      Deferred.doneUnsafe(shard.ended, Exit.fail(reason))
       for (const waiter of waiters) Deferred.doneUnsafe(waiter.done, Exit.fail(reason))
       Deferred.doneUnsafe(shard.opened, Exit.fail(reason))
       for (const flushed of shard.flushed.splice(0)) Deferred.doneUnsafe(flushed, Exit.void)
@@ -376,16 +384,24 @@ const make = (catalog: Catalog, options: EngineOptions) =>
               shard.lastAt = recovered.success.lastAt
               shard.sinceCheckpoint = 0
               shard.scope = Scope.makeUnsafe()
+              shard.ended = Deferred.makeUnsafe<never, ActorError>()
               shard.firing.clear()
               shard.acked.clear()
               shard.armed.clear()
               shard.delivering.clear()
-              shard.status = "open"
-              Deferred.doneUnsafe(opened, Exit.void)
-              for (const address of recovered.success.actors.keys())
-                if (channels.has(address)) notify(address)
-              return Effect.forkIn(committer(shard, generation), shard.scope).pipe(
-                Effect.andThen(after(shard)),
+              return TimerWheels.make.pipe(
+                Effect.provideService(Scope.Scope, shard.scope),
+                Effect.flatMap((wheel) => {
+                  if (shard.generation !== generation) return Effect.fail(unavailable())
+                  shard.wheel = wheel
+                  shard.status = "open"
+                  Deferred.doneUnsafe(opened, Exit.void)
+                  for (const address of recovered.success.actors.keys())
+                    if (channels.has(address)) notify(address)
+                  return Effect.forkIn(committer(shard, generation), shard.scope).pipe(
+                    Effect.andThen(after(shard)),
+                  )
+                }),
               )
             }),
           ),
@@ -859,12 +875,12 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       )
 
     /** Every created instance of an actor type, across all shards. */
-    const instances = (actor: AnyActor): Effect.Effect<ReadonlyArray<ActorRecord>, ActorError> =>
+    const instances = (
+      actor: AnyActor,
+      ids: ReadonlyArray<number> = Array.from({ length: catalog.shards }, (_, id) => id),
+    ): Effect.Effect<ReadonlyArray<ActorRecord>, ActorError> =>
       Effect.map(
-        Effect.forEach(
-          Array.from({ length: catalog.shards }, (_, id) => id),
-          (id) => readable(shardRuntime(id)),
-        ),
+        Effect.forEach(ids, (id) => readable(shardRuntime(id))),
         (opened) =>
           opened.flatMap((shard) =>
             Array.from(shard.durable.actors.values()).filter(
@@ -942,15 +958,13 @@ const make = (catalog: Catalog, options: EngineOptions) =>
     }
 
     /**
-     * Sleeps until a timer is due, then fires it as a `System` action with the timer's own id. A
+     * Fires a due timer as a `System` action with the timer's own id. A
      * cron tick more than `cronSkipIfOlderThan` past due (the shard had no owner when it came due)
      * is skipped instead, so after downtime a schedule fires its pending tick at most once and
      * never replays missed ticks.
      */
     const arm = (shard: Shard, record: TimerRecord): Effect.Effect<void> =>
       Effect.gen(function* () {
-        const now = yield* Clock.currentTimeMillis
-        if (record.timer.at > now) yield* Effect.sleep(Duration.millis(record.timer.at - now))
         const owner = shard.durable.actors.get(record.address)
         if (owner === undefined) return
         const due = yield* Clock.currentTimeMillis
@@ -985,7 +999,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
           if (next === undefined) break
           const target = Durable.bound(catalog, next.send.actor).actor
           const result = yield* Effect.exit(
-            execute({
+            (route ?? execute)({
               origin: Origin.cases.Delivery.make({ stream, sequence: next.sequence }),
               commandId: next.send.commandId,
               actor: target,
@@ -1019,10 +1033,17 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       Effect.suspend(() => {
         const generation = shard.generation
         const work: Array<Effect.Effect<void>> = []
+        const wheel = shard.wheel
+        if (wheel === undefined) return Effect.void
+        for (const id of shard.armed)
+          if (!shard.durable.timers.has(id)) {
+            shard.armed.delete(id)
+            work.push(wheel.cancel(id))
+          }
         for (const timer of shard.durable.timers.values()) {
           if (shard.armed.has(timer.timer.commandId)) continue
           shard.armed.add(timer.timer.commandId)
-          work.push(fork(shard, arm(shard, timer)))
+          work.push(wheel.schedule(timer.timer.commandId, timer.timer.at, arm(shard, timer)))
         }
         for (const stream of shard.durable.outbox.keys()) {
           if (shard.delivering.has(stream)) continue
@@ -1089,6 +1110,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
         if (shard.status === "opening") yield* Effect.exit(Deferred.await(shard.opened))
         if (shard.status !== "open") return false
         shard.status = "draining"
+        Deferred.doneUnsafe(shard.ended, Exit.fail(moved()))
         const generation = shard.generation
         yield* flushed(shard)
         const lease = shard.lease
@@ -1170,6 +1192,19 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       afterDurable: (hook: (shard: number) => Effect.Effect<void>) => {
         afterDurable.push(hook)
       },
+      route: (deliver: (command: Command) => Effect.Effect<Outcome, ActorError>) => {
+        route = deliver
+      },
+      unassign: (ids: ReadonlyArray<number>) =>
+        Effect.forEach(
+          ids,
+          (id) => {
+            const shard = shardRuntime(id)
+            shard.assigned = false
+            return crash(shard, true)
+          },
+          { discard: true },
+        ),
       durableImage: (id: number): ShardImage | undefined => {
         const shard = shards.get(id)
         return shard?.status === "open" ? shard.durable : undefined
@@ -1180,6 +1215,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       },
       lease: (id: number): Lease | undefined => shards.get(id)?.lease,
       generation: (id: number): number => shardRuntime(id).generation,
+      ownerClosed: (id: number) => Deferred.await(shardRuntime(id).ended),
       fork: (id: number, effect: Effect.Effect<void>) => fork(shardRuntime(id), effect),
     }
   })

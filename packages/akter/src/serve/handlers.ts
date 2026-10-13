@@ -9,6 +9,7 @@ import { isList } from "../contract/members.ts"
 import type { Action } from "../contract/members.ts"
 import type { Engine } from "../execution/engine.ts"
 import { Transports } from "../execution/transport.ts"
+import type { Sharding } from "../runtime/sharding.ts"
 import {
   ActionFailed,
   ActionPayload,
@@ -142,9 +143,10 @@ const stream = <A, E>(
   )
 
 /** The handlers of one actor's calls, keyed by tag, over the engine. */
-const actorHandlers = (engine: Engine, actor: AnyActor) => {
+const actorHandlers = (engine: Engine, actor: AnyActor, routing?: Sharding["Service"]) => {
   const name = actor.name
-  const reads = (session: Session) => Transports.reads(engine, session.caller)
+  const reads = (session: Session) =>
+    routing?.reads(session.caller) ?? Transports.reads(engine, session.caller)
   const handlers = new Map<string, Handler>()
   handlers.set(Tags.state(name), (payload: typeof TargetPayload.Type) =>
     stream(actor, (session) =>
@@ -164,12 +166,19 @@ const actorHandlers = (engine: Engine, actor: AnyActor) => {
     handlers.set(Tags.action(name, member), (payload: typeof ActionPayload.Type) =>
       call(actor, (session) =>
         Effect.flatMap(
-          Transports.admitted(engine, session.caller, payload.commandId, {
-            actor,
-            id: payload.id,
-            member,
-            payload: payload.payload,
-          }),
+          routing === undefined
+            ? Transports.admitted(engine, session.caller, payload.commandId, {
+                actor,
+                id: payload.id,
+                member,
+                payload: payload.payload,
+              })
+            : routing.admitted(session.caller, payload.commandId, {
+                actor,
+                id: payload.id,
+                member,
+                payload: payload.payload,
+              }),
           ({ reply, replayed }) =>
             reply.kind === "Success"
               ? Effect.succeed({ value: reply.value, replayed })
@@ -227,7 +236,12 @@ const actorHandlers = (engine: Engine, actor: AnyActor) => {
 }
 
 /** Every handler of the group derived from `actors`, keyed by tag. */
-const make = (engine: Engine, actors: ReadonlyArray<AnyActor>, sessions: Sessions) => {
+const make = (
+  engine: Engine,
+  actors: ReadonlyArray<AnyActor>,
+  sessions: Sessions,
+  routing?: Sharding["Service"],
+) => {
   const handlers = new Map<string, Handler>()
   handlers.set(Tags.reauthenticate, (payload: typeof ReauthenticatePayload.Type) =>
     Effect.flatMap(CurrentSession, (session) =>
@@ -235,7 +249,7 @@ const make = (engine: Engine, actors: ReadonlyArray<AnyActor>, sessions: Session
     ),
   )
   for (const actor of actors)
-    for (const [tag, handler] of actorHandlers(engine, actor)) handlers.set(tag, handler)
+    for (const [tag, handler] of actorHandlers(engine, actor, routing)) handlers.set(tag, handler)
   return Object.fromEntries(handlers)
 }
 

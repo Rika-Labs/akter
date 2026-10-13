@@ -66,6 +66,8 @@ export interface SimulationOptions<Actors extends ReadonlyArray<AnyActor>> {
   readonly scheduler?: SeededScheduler
   /** The runners over the store's one bucket; runner 0 starts with every shard. Default: one runner. */
   readonly runners?: ReadonlyArray<RunnerOptions>
+  /** Runner index per shard for a partitioned store; defaults to runner 0 for every shard. */
+  readonly assignments?: ReadonlyArray<number>
   /** How late a cron tick may fire after downtime before it is skipped. Default 1 hour. */
   readonly cronSkipIfOlderThan?: Duration.Input
 }
@@ -107,6 +109,8 @@ interface Simulator {
   readonly waiting: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
   readonly client: (caller: Caller) => Transport
   readonly assign: (runner: number) => Effect.Effect<void>
+  readonly assignShards: (runner: number, shards: ReadonlyArray<number>) => Effect.Effect<void>
+  readonly engineFor: (actor: AnyActor, key: Schema.Json) => Engine | undefined
   readonly drain: (deadline: Duration.Input) => Effect.Effect<DrainReport>
 }
 
@@ -224,11 +228,23 @@ const layer = <const Actors extends ReadonlyArray<AnyActor>>(
       const first = runners[0]
       if (first === undefined)
         return yield* Effect.die(new RangeError("a simulation needs a runner"))
-      let owner: number | undefined = 0
-      const ownerEngine = (): Engine | undefined =>
-        owner === undefined ? undefined : runners[owner]?.engine
+      const owners: Array<number | undefined> = every.map((id) => options.assignments?.[id] ?? 0)
+      const ownerEngine = (shard = 0): Engine | undefined => {
+        const owner = owners[shard]
+        return owner === undefined ? undefined : runners[owner]?.engine
+      }
+      const engineFor = (actor: AnyActor, key: Schema.Json) =>
+        ownerEngine(Durable.shardOf(Durable.addressOf(actor.name, key), catalog.shards))
       const root = yield* Effect.scope
-      yield* first.engine.assign(every)
+      for (const runner of runners) {
+        yield* runner.engine.assign(every.filter((id) => owners[id] === runner.index))
+        runner.engine.route((command) =>
+          Effect.suspend(
+            () =>
+              engineFor(command.actor, command.keyJson)?.execute(command) ?? Effect.fail(noOwner()),
+          ),
+        )
+      }
       bucket.arm((runner, shard) =>
         Effect.asVoid(Effect.forkIn(runners[runner]?.engine.crash(shard) ?? Effect.void, root)),
       )
@@ -251,9 +267,14 @@ const layer = <const Actors extends ReadonlyArray<AnyActor>>(
         for (const runner of runners)
           for (const shard of every) {
             const { status, assigned } = runner.engine.status(shard)
-            if (runner.index === owner && status === "fenced")
+            if (runner.index === owners[shard] && status === "fenced")
               return `shard ${shard} was fenced on its owner, runner ${runner.index}`
-            if (runner.index !== owner && assigned && status !== "fenced" && status !== "refused")
+            if (
+              runner.index !== owners[shard] &&
+              assigned &&
+              status !== "fenced" &&
+              status !== "refused"
+            )
               return `runner ${runner.index} still holds shard ${shard}`
           }
         return undefined
@@ -266,9 +287,9 @@ const layer = <const Actors extends ReadonlyArray<AnyActor>>(
             for (const runner of runners)
               for (const shard of every) {
                 const { status, assigned } = runner.engine.status(shard)
-                if (runner.index === owner && status === "fenced")
+                if (runner.index === owners[shard] && status === "fenced")
                   yield* runner.engine.assign([shard])
-                else if (runner.index !== owner && assigned)
+                else if (runner.index !== owners[shard] && assigned)
                   yield* Effect.forkIn(runner.engine.release(shard), root)
               }
           }),
@@ -343,8 +364,8 @@ const layer = <const Actors extends ReadonlyArray<AnyActor>>(
        * `ShardMoved` is retried, with the same id, on the new one.
        */
       const routed = (caller: Caller): Transport => {
-        const reads = () => {
-          const engine = ownerEngine()
+        const reads = (request: { readonly actor: AnyActor; readonly id: Schema.Json }) => {
+          const engine = engineFor(request.actor, request.id)
           return engine === undefined ? undefined : Transports.reads(engine, caller)
         }
         const missing = Effect.fail(noOwner())
@@ -355,7 +376,7 @@ const layer = <const Actors extends ReadonlyArray<AnyActor>>(
                 const commandId = yield* CommandIds.mint(yield* Clock.currentTimeMillis)
                 return yield* Transports.retryWhileUnavailable(
                   Effect.suspend(() => {
-                    const engine = ownerEngine()
+                    const engine = engineFor(request.actor, request.id)
                     return engine === undefined
                       ? missing
                       : Transports.admit(engine, caller, commandId, request)
@@ -364,16 +385,31 @@ const layer = <const Actors extends ReadonlyArray<AnyActor>>(
               }),
             ),
           state: (request) =>
-            Stream.suspend(() => reads()?.state(request) ?? Stream.fromEffect(missing)),
+            Stream.suspend(() => reads(request)?.state(request) ?? Stream.fromEffect(missing)),
           view: (request) =>
-            Stream.suspend(() => reads()?.view(request) ?? Stream.fromEffect(missing)),
+            Stream.suspend(() => reads(request)?.view(request) ?? Stream.fromEffect(missing)),
           event: (request) =>
-            Stream.suspend(() => reads()?.event(request) ?? Stream.fromEffect(missing)),
-          range: (request) => Effect.suspend(() => reads()?.range(request) ?? missing),
+            Stream.suspend(() => reads(request)?.event(request) ?? Stream.fromEffect(missing)),
+          range: (request) => Effect.suspend(() => reads(request)?.range(request) ?? missing),
           watch: (request) =>
-            Stream.suspend(() => reads()?.watch(request) ?? Stream.fromEffect(missing)),
-          join: (request) => counted(Effect.suspend(() => reads()?.join(request) ?? missing)),
-          find: (request) => Effect.suspend(() => reads()?.find(request) ?? missing),
+            Stream.suspend(() => reads(request)?.watch(request) ?? Stream.fromEffect(missing)),
+          join: (request) =>
+            counted(Effect.suspend(() => reads(request)?.join(request) ?? missing)),
+          find: (request) =>
+            Transports.reads(
+              {
+                ...first.engine,
+                instances: (actor) =>
+                  Effect.map(
+                    Effect.forEach(
+                      every,
+                      (id) => ownerEngine(id)?.instances(actor, [id]) ?? missing,
+                    ),
+                    (partitions) => partitions.flat(),
+                  ),
+              },
+              caller,
+            ).find(request),
         }
       }
 
@@ -382,7 +418,7 @@ const layer = <const Actors extends ReadonlyArray<AnyActor>>(
         catalog,
         runners,
         get owner() {
-          return owner
+          return owners.every((owner) => owner === owners[0]) ? owners[0] : undefined
         },
         get engine() {
           return ownerEngine() ?? first.engine
@@ -399,28 +435,38 @@ const layer = <const Actors extends ReadonlyArray<AnyActor>>(
           return Deferred.await(settler)
         }),
         client: routed,
-        assign: (runner) =>
+        engineFor,
+        assign: (runner) => Effect.suspend(() => simulator.assignShards(runner, every)),
+        assignShards: (runner, ids) =>
           Effect.gen(function* () {
             const target = runners[runner]
             if (target === undefined)
               return yield* Effect.die(new RangeError(`there is no runner ${runner}`))
-            if (owner !== runner)
+            if (ids.some((id) => owners[id] !== runner))
               yield* Effect.forEach(
-                every,
+                ids,
                 (shard) =>
                   target.engine.status(shard).assigned ? target.engine.release(shard) : Effect.void,
                 { discard: true },
               )
-            owner = runner
-            yield* target.engine.assign(every)
+            for (const id of ids) owners[id] = runner
+            yield* target.engine.assign(ids)
           }),
         drain: (deadline) =>
           Effect.suspend(() => {
-            const engine = ownerEngine()
-            owner = undefined
-            return engine === undefined
-              ? Effect.succeed<DrainReport>({ outcome: "clean", shards: [] })
-              : engine.drain(deadline)
+            const active = new Set(owners.filter((owner) => owner !== undefined))
+            owners.fill(undefined)
+            return Effect.map(
+              Effect.forEach(active, (id) => runners[id]!.engine.drain(deadline), {
+                concurrency: "unbounded",
+              }),
+              (reports): DrainReport => ({
+                outcome: reports.every((report) => report.outcome === "clean")
+                  ? "clean"
+                  : "timedOut",
+                shards: reports.flatMap((report) => report.shards),
+              }),
+            )
           }),
       }
       return simulator
@@ -527,7 +573,12 @@ const state = <X extends AnyActor>(
     const layout = Layouts.of(actor)
     const record = yield* simulator.waiting(
       Transports.retryWhileUnavailable(
-        Effect.suspend(() => simulator.engine.durableRecord(actor, layout.key.encode(id))),
+        Effect.suspend(
+          () =>
+            simulator
+              .engineFor(actor, layout.key.encode(id))
+              ?.durableRecord(actor, layout.key.encode(id)) ?? Effect.fail(noOwner()),
+        ),
       ),
     )
     const full = { ...record.image.state }
@@ -567,7 +618,12 @@ const seed = <X extends AnyActor>(
     }
     yield* simulator.waiting(
       Transports.retryWhileUnavailable(
-        Effect.suspend(() => simulator.engine.seed(actor, layout.key.encode(id), set, lists)),
+        Effect.suspend(
+          () =>
+            simulator
+              .engineFor(actor, layout.key.encode(id))
+              ?.seed(actor, layout.key.encode(id), set, lists) ?? Effect.fail(noOwner()),
+        ),
       ),
     )
   })
@@ -590,12 +646,17 @@ const crash = (
   Effect.gen(function* () {
     const simulator = yield* SimulationService
     if (actor === undefined) {
-      for (let shard = 0; shard < simulator.catalog.shards; shard++)
-        yield* simulator.engine.crash(shard)
+      for (const runner of simulator.runners)
+        for (let shard = 0; shard < simulator.catalog.shards; shard++)
+          yield* runner.engine.crash(shard)
       return
     }
-    yield* simulator.engine.crash(
-      simulator.engine.shardOf(Durable.addressOf(actor.name, Layouts.of(actor).key.encode(id))),
+    yield* (
+      simulator
+        .engineFor(actor, Layouts.of(actor).key.encode(id))
+        ?.crash(
+          simulator.engine.shardOf(Durable.addressOf(actor.name, Layouts.of(actor).key.encode(id))),
+        ) ?? Effect.void
     )
   })
 
@@ -676,6 +737,8 @@ export const Simulation = {
   as,
   crash,
   assign,
+  assignShards: (runner: number, shards: ReadonlyArray<number>) =>
+    Effect.flatMap(SimulationService, (simulator) => simulator.assignShards(runner, shards)),
   drain,
   partition,
   pause,
