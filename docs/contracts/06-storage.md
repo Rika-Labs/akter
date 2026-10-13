@@ -1,6 +1,6 @@
 # Storage
 
-Status: partially normative (0.2), owned by ADR 0127. E7 establishes the shared checkpoint/index page and audit-before-answer boundaries in [its failure evidence](../verification/e7-find-operators.md). E2 store protocol evidence and E6 list/history/GC gates retain their stated scopes.
+Status: partially normative (0.2), owned by ADR 0127. E7 establishes the shared checkpoint/index page and audit-before-answer boundaries in [its failure evidence](../verification/e7-find-operators.md). E6 implements page-backed lists, anchored history and GC within [its evidence scope](../verification/e6-pages-history.md); production-provider and 50 GB gates remain separate.
 
 **Responsibility:** define what a store holds, how objects are written and verified, how long history is kept, and how unreachable objects are deleted.  
 **Authority:** normative target on `rewrite/0.2`.  
@@ -57,16 +57,20 @@ A provider is supported only while `akter storage check` passes on it: atomic co
 
 - An actor manifest MUST hold the encoded state without lists, at most 256 KiB, and the root of each list's page tree.
 - `Actor.list` items MUST live in page trees ordered by `by` then `key`, with no size limit. A snapshot MUST write only the pages that changed.
+- A nonresident page MUST stop a synchronous action with the internal `PageMiss` signal. Its draft and all staged effects MUST be discarded; the resolver loads the missing hashes and reruns from the same command id and admission time. An absent bucket object remains `PageCorrupt`, never an empty list.
+- The clean-page cache MUST be byte-bounded. An invocation MAY hold a larger temporary working set until its reruns finish, so eviction MUST NOT make a wide range retry forever. An owner MUST revalidate its lease after a page load before it answers or stages work.
 
 ## History
 
 - Segments and checkpoints MUST be kept for the store's retention period (default 7 days; Akter Cloud sets 7 days on Free and 30 days on paid plans).
-- Trim MUST delete only segments older than retention and covered by a checkpoint older than `T_trim` (10 minutes). Checkpoints older than retention MAY be deleted except the newest of each shard. Segments are the history archive; nothing is trimmed before it is out of retention.
+- History MUST expose the newest checkpoint at or before the first in-window segment's starting position as an anchor, together with the complete chain after it, including older boundary segments. A whole-segment checkpoint at the first segment's own offset is after its first entry, so the preceding checkpoint is required for entry-index positions within it. Requested fork positions MUST remain inside retention.
+- Trim MUST delete only segments older than retention and covered by a checkpoint older than `T_trim` (10 minutes), and MUST stop at the anchor offset. Other checkpoints older than retention MAY be deleted except each shard's newest checkpoint. The old anchor and chain MAY be released when the boundary advances. Segments are the history archive.
 
 ## Garbage collection
 
-- Roots MUST be every checkpoint within retention plus each shard's newest checkpoint. GC MUST NOT delete an object reachable from a root (I7).
+- Roots MUST be every checkpoint within retention, each shard's newest checkpoint and history anchor, and the fork/replay images referenced by the complete chain after the anchor. An image in the uncovered recovery tail MUST remain a root even after its retention expires. GC MUST NOT delete an object reachable from a root (I7).
 - A collector MUST hold the newest `gc/<epoch>` key, created with `If-None-Match: *`, and MUST confirm before every delete batch that no newer key exists, verifying under the same `T_valid` rule as a shard owner. Two collectors MUST NOT delete concurrently.
+- A checkpoint or fork publisher MUST hold a `publishing` epoch from its first page write through its durable reference. A collector MUST claim a `deleting` epoch before an unconditional DELETE. Only `marking` epochs MAY expire; an unknown publishing or deleting outcome MUST block subsequent collection and publication. Successful completion creates the next immutable `idle` epoch. A publisher whose sequential protected work has stopped with a confirmed `StaleEpoch` MAY also advance to `idle`; it MUST NOT do so after an unknown outcome, defect or interruption. Timestamp checks alone MUST NOT be treated as a fence against PUT/DELETE races.
 - GC MUST delete only unmarked objects whose last-modified time is older than the grace period (default 24 hours, and more than twice the longest checkpoint interval plus `T_trim`).
 - A snapshot MUST either write a page again with plain `PUT` or reference only pages reachable from the actor's current durable manifest.
 - History and pages MUST be expired by GC, not by provider lifecycle rules.

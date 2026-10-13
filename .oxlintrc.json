@@ -54,6 +54,10 @@
   },
   "overrides": [
     {
+      "files": ["apps/cli/src/commands/operators/fork.test.ts"],
+      "rules": { "effecttsgo/strict-effect-provide": "off" }
+    },
+    {
       "files": ["packages/akter/src/execution/workflow.test.ts"],
       "rules": { "effecttsgo/strict-effect-provide": "off" }
     },
@@ -135,6 +139,23 @@
       "files": ["packages/akter/src/contract/make.test.ts"],
       "rules": {
         "akter/synchronous-actions": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/akter/src/handlers/page-tree.ts",
+        "packages/akter/src/handlers/page-tree.test.ts",
+        "packages/akter/src/snapshots/pages.ts",
+        "packages/akter/src/snapshots/forks.ts",
+        "packages/akter/src/snapshots/pages.test.ts",
+        "packages/akter/src/store/gc.ts",
+        "packages/akter/src/store/gc.test.ts",
+        "tooling/conformance/src/conformance/pages.ts"
+      ],
+      "rules": {
+        "effecttsgo/missing-pipeable-signature": "off",
+        "effecttsgo/async-function": "off",
+        "effecttsgo/strict-effect-provide": "off"
       }
     }
   ],

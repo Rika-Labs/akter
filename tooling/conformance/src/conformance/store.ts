@@ -1,5 +1,16 @@
 import { describe, expect, it } from "@effect/vitest"
-import { DateTime, Effect, Exit, Fiber, Option, Result, Schedule, type Scope, Stream } from "effect"
+import {
+  Clock,
+  DateTime,
+  Effect,
+  Exit,
+  Fiber,
+  Option,
+  Result,
+  Schedule,
+  type Scope,
+  Stream,
+} from "effect"
 import * as Runner from "effect/cluster/Runner"
 import * as RunnerAddress from "effect/cluster/RunnerAddress"
 import * as ShardId from "effect/cluster/ShardId"
@@ -324,8 +335,9 @@ export const storeConformance = <OpenError, ClientError>(
       "trims only segments a checkpoint older than trimAfter covers (rejects trimming unchecked segments or trimming at once)",
       () =>
         Effect.gen(function* () {
+          yield* TestClock.setTime(yield* TestClock.withLive(Clock.currentTimeMillis))
           const client = yield* backend.namespace
-          const a = yield* owner(client, "a")
+          const a = yield* owner(client, "a", { retention: "1 minute" })
           const b = yield* owner(client, "b")
           const lease = yield* a.store.open(3)
           for (let batch = 1; batch <= 9; batch++) yield* a.store.append(lease, [text(`${batch}`)])
@@ -354,11 +366,92 @@ export const storeConformance = <OpenError, ClientError>(
     )
 
     it.effect(
-      "fences a stale owner whose next key was trimmed before it writes (rejects an owner that appends without re-checking after validFor)",
+      "retains history for the recorded retention and at its exact boundary (rejects trimAfter-only deletion or treating the retention boundary as expired)",
+      () =>
+        Effect.gen(function* () {
+          yield* TestClock.setTime(yield* TestClock.withLive(Clock.currentTimeMillis))
+          const client = yield* backend.namespace
+          const a = yield* owner(client, "a")
+          const raw = yield* client
+          const lease = yield* a.store.open(0)
+          yield* a.store.append(lease, [text("retained")])
+          yield* a.store.checkpoint(lease, { offset: 2n, statePages: [], indexPages: [] })
+          yield* TestClock.adjust("10 minutes")
+          expect(yield* a.store.trim(lease, 2n)).toBe(0n)
+          const modified = Option.getOrThrow(yield* raw.modified(segmentKey(0, 1n)))
+          yield* TestClock.setTime(modified + a.store.meta.retentionMillis)
+          expect(yield* a.store.trim(lease, 2n)).toBe(0n)
+          expect(yield* history(a.store, 0, 0n)).toHaveLength(2)
+          yield* TestClock.adjust("1 second")
+          expect(yield* a.store.trim(lease, 2n)).toBe(2n)
+          expect(yield* raw.list(logPrefix(0))).toEqual([])
+          expect(yield* raw.head(checkpointKey(0, 2n))).toEqual(Option.some(expect.any(Number)))
+        }),
+    )
+
+    it.effect(
+      "lists retained checkpoint history in ascending offsets with provider timestamps (rejects newest-only history, expired roots or fabricated timestamps)",
+      () =>
+        Effect.gen(function* () {
+          yield* TestClock.setTime(yield* TestClock.withLive(Clock.currentTimeMillis))
+          const client = yield* backend.namespace
+          const a = yield* owner(client, "a")
+          const raw = yield* client
+          const lease = yield* a.store.open(0)
+          yield* a.store.append(lease, [text("first")])
+          yield* a.store.checkpoint(lease, { offset: 2n, statePages: [], indexPages: [] })
+          yield* a.store.append(lease, [text("second")])
+          yield* a.store.checkpoint(lease, { offset: 3n, statePages: [], indexPages: [] })
+          const first = Option.getOrThrow(yield* raw.modified(checkpointKey(0, 2n)))
+          const second = Option.getOrThrow(yield* raw.modified(checkpointKey(0, 3n)))
+          expect(yield* a.store.history.checkpoints(0)).toEqual([
+            { offset: 2n, statePages: [], indexPages: [], modified: first },
+            { offset: 3n, statePages: [], indexPages: [], modified: second },
+          ])
+          yield* TestClock.setTime(first + a.store.meta.retentionMillis)
+          expect((yield* a.store.history.checkpoints(0)).map((cp) => cp.offset)).toEqual([2n, 3n])
+          yield* TestClock.setTime(Math.max(first, second) + a.store.meta.retentionMillis + 1)
+          expect(yield* a.store.history.checkpoints(0)).toEqual([
+            { offset: 3n, statePages: [], indexPages: [], modified: second },
+          ])
+        }),
+    )
+
+    it.effect(
+      "bounds history before later corrupt entries and refuses a missing bounded tail (rejects replaying beyond the requested position or silently truncating it)",
       () =>
         Effect.gen(function* () {
           const client = yield* backend.namespace
           const a = yield* owner(client, "a")
+          const raw = yield* client
+          const lease = yield* a.store.open(0)
+          yield* a.store.append(lease, [text("at position")])
+          yield* a.store.append(lease, [text("after position")])
+          yield* raw.put(segmentKey(0, 3n), text("corrupt later segment"))
+          expect(
+            (yield* Stream.runCollect(a.store.history.read(0, 1n, 2n))).map((segment) => [
+              segment.offset,
+              segment.entries.map((entry) => decoder.decode(entry)),
+            ]),
+          ).toEqual([[2n, ["at position"]]])
+          expect(yield* Stream.runCollect(a.store.history.read(0, 2n, 2n))).toEqual([])
+          expect(yield* failureOf(Stream.runCollect(a.store.history.read(0, 1n)))).toBeInstanceOf(
+            CorruptSegment,
+          )
+          yield* raw.delete([segmentKey(0, 2n)])
+          expect(
+            yield* failureOf(Stream.runCollect(a.store.history.read(0, 1n, 2n))),
+          ).toBeInstanceOf(CorruptSegment)
+        }),
+    )
+
+    it.effect(
+      "fences a stale owner whose next key was trimmed before it writes (rejects an owner that appends without re-checking after validFor)",
+      () =>
+        Effect.gen(function* () {
+          yield* TestClock.setTime(yield* TestClock.withLive(Clock.currentTimeMillis))
+          const client = yield* backend.namespace
+          const a = yield* owner(client, "a", { retention: "1 minute" })
           const b = yield* owner(client, "b")
           const leaseA = yield* a.store.open(0)
           yield* a.store.append(leaseA, [text("a1")])
@@ -606,8 +699,9 @@ export const storeConformance = <OpenError, ClientError>(
       "refuses a shard whose skipped checkpoint's segments were trimmed (rejects reopening at an offset whose entries are gone)",
       () =>
         Effect.gen(function* () {
+          yield* TestClock.setTime(yield* TestClock.withLive(Clock.currentTimeMillis))
           const client = yield* backend.namespace
-          const a = yield* owner(client, "a")
+          const a = yield* owner(client, "a", { retention: "1 minute" })
           const b = yield* owner(client, "b")
           const raw = yield* client
           const lease = yield* a.store.open(1)

@@ -15,7 +15,7 @@ export const AuditRecord = Schema.Struct({
     tenant: Schema.String,
     shard: Schema.optionalKey(Schema.Int),
     actorType: Schema.optionalKey(Schema.String),
-    actorId: Schema.optionalKey(Schema.String),
+    actorId: Schema.optionalKey(Schema.Json),
     commandId: Schema.optionalKey(Schema.String),
   }),
   reason: Schema.String,

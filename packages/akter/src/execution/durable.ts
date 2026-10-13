@@ -13,6 +13,8 @@ import { Layouts } from "./layout.ts"
 import type { Decoded, Image } from "./layout.ts"
 import { Indexes } from "./indexes.ts"
 import type { OwnerIndex } from "./indexes.ts"
+import { PagedItems } from "../handlers/lists.ts"
+import type { PageCache } from "../handlers/page-tree.ts"
 
 /** An actor contract with its bound handlers. */
 export interface Bound {
@@ -34,6 +36,8 @@ export interface ActorRecord {
   readonly address: string
   image: Image
   created: boolean
+  version: number
+  position: { readonly offset: number; readonly index: number; readonly at: number } | undefined
 }
 
 /** A client command id's admission record and outcome, kept until it expires. */
@@ -159,6 +163,8 @@ const resident = (
     address,
     image: layout.initial,
     created: false,
+    version: 0,
+    position: undefined,
   }
   image.actors.set(address, record)
   return record
@@ -199,6 +205,7 @@ const recordAction = (
 ): void => {
   const record = resident(image, catalog, entry.actor, entry.key)
   record.image = after
+  record.version++
   image.lastAt = Math.max(image.lastAt, entry.at)
   if (!record.created) {
     record.created = true
@@ -297,6 +304,7 @@ const record = (
   catalog: Catalog,
   entry: Entry,
   after: Image | undefined,
+  pages?: PageCache,
 ): void =>
   Entry.match(entry, {
     Replayed: () => {},
@@ -313,6 +321,42 @@ const record = (
         armCrons(image, record, image.lastAt)
       }
       Indexes.update(image.index, record)
+    },
+    Forked: (forked) => {
+      const record = resident(image, catalog, forked.actor, forked.key)
+      if (record.created) throw new Error("Fork target already exists")
+      const layout = Layouts.of(record.actor)
+      const restored = Actions.apply(record.actor, layout.initial, forked.state, [], [])
+      const lists = new Map(restored.lists)
+      for (const saved of forked.lists) {
+        const list = layout.lists.get(saved.field)
+        if (list === undefined) continue
+        if (pages === undefined) throw new Error("Fork recovery requires a page resolver")
+        lists.set(
+          saved.field,
+          new PagedItems(saved.keys, saved.ordered, pages, list.ordering, list.item),
+        )
+      }
+      record.image = after ?? { ...restored, lists }
+      record.created = true
+      record.version = 0
+      Indexes.update(image.index, record)
+      for (const timer of forked.timers)
+        image.timers.set(timer.commandId, { address: record.address, timer, onBehalfOf: undefined })
+      for (const job of forked.jobs)
+        image.jobs.set(job.jobId, {
+          ...job,
+          address: record.address,
+          key: job.key,
+          onBehalfOf: undefined,
+          attempt: 0,
+          at: forked.at,
+          failure: undefined,
+          done: undefined,
+          suspended: undefined,
+          workflow: [],
+          steps: new Map(job.steps.map(({ name, value }) => [name, value])),
+        })
     },
     Delivered: ({ stream, sequence }) => {
       const queue = image.outbox.get(stream)

@@ -526,9 +526,13 @@ const violationsNow = (simulator: Simulator) =>
       found.push(...Invariants.fenced(log))
       const live = liveImage(simulator, log)
       if (live === undefined) continue
-      found.push(
-        ...Invariants.replays(simulator.catalog, simulator.build, log, Recovery.fingerprint(live)),
-      )
+      const owner = simulator.runners.find(
+        (runner) => runner.engine.durableImage(log.shard) === live,
+      )!
+      const fingerprint = yield* owner.engine
+        .resolvePages(() => Recovery.fingerprint(live))
+        .pipe(Effect.orDie)
+      found.push(...Invariants.replays(simulator.catalog, simulator.build, log, fingerprint))
     }
     return found
   })
@@ -592,20 +596,20 @@ const state = <X extends AnyActor>(
   Effect.gen(function* () {
     const simulator = yield* SimulationService
     const layout = Layouts.of(actor)
-    const record = yield* simulator.waiting(
+    return yield* simulator.waiting(
       Transports.retryWhileUnavailable(
-        Effect.suspend(
-          () =>
-            simulator
-              .engineFor(actor, layout.key.encode(id))
-              ?.durableRecord(actor, layout.key.encode(id)) ?? Effect.fail(noOwner()),
-        ),
+        Effect.suspend(() => {
+          const owner = simulator.engineFor(actor, layout.key.encode(id))
+          if (owner === undefined) return Effect.fail(noOwner())
+          return owner.readPages(actor, layout.key.encode(id), (record) => {
+            const full = { ...record.image.state }
+            for (const [name, list] of layout.lists)
+              full[name] = Lists.all(record.image.lists.get(name) ?? Lists.empty, list.ordering)
+            return full
+          })
+        }),
       ),
     )
-    const full = { ...record.image.state }
-    for (const [name, list] of layout.lists)
-      full[name] = Lists.all(record.image.lists.get(name) ?? Lists.empty, list.ordering)
-    return full
   })
 
 /**

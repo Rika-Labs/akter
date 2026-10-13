@@ -11,6 +11,7 @@ import {
   PubSub,
   Result,
   Schema,
+  Schedule,
   Scope,
   Stream,
 } from "effect"
@@ -28,7 +29,9 @@ import type { Action } from "../contract/members.ts"
 import { Recovery, effectsText } from "../snapshots/recovery.ts"
 import { CorruptLog } from "../snapshots/recovery.ts"
 import type { RecoveryError, ReplayPolicy } from "../snapshots/recovery.ts"
-import { Checkpoints } from "../snapshots/checkpoint.ts"
+import { PagedCheckpoints } from "../snapshots/pages.ts"
+import { PageCache } from "../handlers/page-tree.ts"
+import { PagedItems } from "../handlers/lists.ts"
 import { Actions } from "./action.ts"
 import type { Ran } from "./action.ts"
 import { Durable } from "./durable.ts"
@@ -39,6 +42,7 @@ import { Layouts } from "./layout.ts"
 import { pendingClocks } from "./workflow.ts"
 import type { Image } from "./layout.ts"
 import { StaleEpoch } from "../store/errors.ts"
+import { PagePublicationBusy } from "../store/gc.ts"
 import type { Lease } from "../store/log.ts"
 import { Store } from "../store/service.ts"
 import { TimerWheels } from "./timer-wheel.ts"
@@ -60,6 +64,7 @@ export interface EngineOptions {
   readonly cronSkipIfOlderThan: number
   readonly doubleRun: boolean
   readonly observer: Observer | undefined
+  readonly pageCacheBytes?: number
 }
 
 /** One shard in a drain report: the offset its log ends at and its earliest pending timer. */
@@ -150,6 +155,8 @@ interface Shard {
   readonly delivering: Set<string>
   readonly flushed: Array<Deferred.Deferred<void>>
   readonly wake: Latch.Latch
+  checkpointing: Deferred.Deferred<void> | undefined
+  committing: Deferred.Deferred<void> | undefined
 }
 
 /** A shard rebuilt from the store: the lease that fenced earlier owners, and the image or why not. */
@@ -191,6 +198,7 @@ const nextDueOf = (image: ShardImage): number | undefined => {
 const make = (catalog: Catalog, options: EngineOptions) =>
   Effect.gen(function* () {
     const store = yield* Store
+    const pages = new PageCache(options.pageCacheBytes)
     const root = yield* Effect.scope
     const shards = new Map<number, Shard>()
     const channels = new Map<string, Channel>()
@@ -252,6 +260,8 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       delivering: new Set(),
       flushed: [],
       wake: Latch.makeUnsafe(false),
+      checkpointing: undefined,
+      committing: undefined,
     })
 
     const shardRuntime = (id: number): Shard => {
@@ -286,6 +296,10 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       const reason = fenced ? moved() : unavailable()
       Deferred.doneUnsafe(shard.ended, Exit.fail(reason))
       for (const waiter of waiters) Deferred.doneUnsafe(waiter.done, Exit.fail(reason))
+      if (shard.checkpointing !== undefined) Deferred.doneUnsafe(shard.checkpointing, Exit.void)
+      shard.checkpointing = undefined
+      if (shard.committing !== undefined) Deferred.doneUnsafe(shard.committing, Exit.void)
+      shard.committing = undefined
       Deferred.doneUnsafe(shard.opened, Exit.fail(reason))
       for (const flushed of shard.flushed.splice(0)) Deferred.doneUnsafe(flushed, Exit.void)
       const closing = Scope.close(shard.scope, Exit.void)
@@ -327,14 +341,17 @@ const make = (catalog: Catalog, options: EngineOptions) =>
         const lease = yield* store.open(id)
         const manifest = Option.getOrUndefined(lease.checkpoint)
         const page = manifest?.statePages[0]
-        const checkpoint = page === undefined ? undefined : yield* store.getPage(page)
+        const checkpoint =
+          page === undefined ? undefined : yield* PagedCheckpoints.read(page, store)
         const tail = yield* Stream.runCollect(store.read(id, manifest?.offset ?? 0n))
         const own = tail.find((segment) => segment.offset === lease.open)
         if (own === undefined)
           return yield* Effect.die(
             new Error(`Shard ${id}'s open segment ${lease.open} is missing from its log`),
           )
-        const recovered = Recovery.recover(catalog, id, checkpoint, tail, own.build, options.policy)
+        const recovered = yield* pages.resolve(store, () =>
+          Recovery.recover(catalog, id, checkpoint, tail, own.build, options.policy, pages),
+        )
         yield* count(
           Metrics.shardOpens,
           {
@@ -479,6 +496,8 @@ const make = (catalog: Catalog, options: EngineOptions) =>
             }
             const entries = groups.flat()
             shard.inFlight = entries
+            const completed = Deferred.makeUnsafe<void>()
+            shard.committing = completed
             const lease = shard.lease
             if (lease === undefined) return
             const appended = yield* Effect.exit(
@@ -498,9 +517,9 @@ const make = (catalog: Catalog, options: EngineOptions) =>
               return
             }
             const offset = Number(appended.value)
+            for (const [index, pending] of entries.entries()) publish(shard, pending, offset, index)
             shard.inFlight = []
             for (const pending of entries) {
-              publish(shard, pending, offset)
               if (Entry.guards.Action(pending.entry))
                 yield* count(
                   Metrics.actions,
@@ -526,12 +545,15 @@ const make = (catalog: Catalog, options: EngineOptions) =>
                   0,
                 ),
               )
+            if (shard.generation !== generation) return
             yield* after(shard)
+            if (shard.generation !== generation) return
             shard.sinceCheckpoint++
             if (options.checkpointEvery > 0 && shard.sinceCheckpoint >= options.checkpointEvery) {
-              shard.sinceCheckpoint = 0
-              yield* Effect.ignore(checkpoint(shard, lease))
+              yield* periodicCheckpoint(shard, lease, generation)
             }
+            Deferred.doneUnsafe(completed, Exit.void)
+            if (shard.committing === completed) shard.committing = undefined
             if (shard.batch.length === 0)
               for (const flushed of shard.flushed.splice(0)) Deferred.doneUnsafe(flushed, Exit.void)
           }
@@ -543,23 +565,81 @@ const make = (catalog: Catalog, options: EngineOptions) =>
      * with the earliest timer as the store's wake time. A failed periodic checkpoint changes
      * nothing: the log still holds every entry, and the next one tries again.
      */
-    const checkpoint = (shard: Shard, lease: Lease) =>
-      Effect.gen(function* () {
-        const image = shard.durable
-        const hash = yield* store.putPage(Checkpoints.encode(Checkpoints.capture(image)))
-        yield* store.checkpoint(lease, {
-          offset: BigInt(image.offset),
-          statePages: [hash],
-          indexPages: [hash],
-          nextDue: nextDueOf(image),
-        })
+    const checkpoint = (shard: Shard, lease: Lease) => {
+      const writing = PagedCheckpoints.write(shard.durable, store, pages)
+      return store.gc.protect(
+        Effect.gen(function* () {
+          const prepared = yield* writing
+          yield* store.checkpoint(lease, {
+            offset: BigInt(prepared.offset),
+            statePages: [prepared.hash],
+            indexPages: [prepared.hash],
+            nextDue: prepared.nextDue,
+          })
+          prepared.committed()
+        }),
+      )
+    }
+
+    const periodicCheckpoint = (
+      shard: Shard,
+      lease: Lease,
+      generation: number,
+    ): Effect.Effect<void> =>
+      Effect.suspend(() => {
+        if (
+          shard.generation !== generation ||
+          shard.status !== "open" ||
+          shard.checkpointing !== undefined
+        )
+          return Effect.void
+        const completed = Deferred.makeUnsafe<void>()
+        shard.checkpointing = completed
+        let upload = checkpoint(shard, lease)
+        shard.sinceCheckpoint = 0
+        const writing = Effect.gen(function* () {
+          while (true) {
+            yield* Effect.ignore(
+              upload.pipe(
+                Effect.retry({
+                  while: Schema.is(PagePublicationBusy),
+                  schedule: Schedule.max([Schedule.spaced("10 millis"), Schedule.recurs(1000)]),
+                }),
+              ),
+            )
+            if (
+              shard.generation !== generation ||
+              shard.status !== "open" ||
+              shard.sinceCheckpoint < options.checkpointEvery
+            )
+              return
+            upload = checkpoint(shard, lease)
+            shard.sinceCheckpoint = 0
+          }
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              Deferred.doneUnsafe(completed, Exit.void)
+              if (shard.checkpointing === completed) shard.checkpointing = undefined
+            }),
+          ),
+        )
+        return Effect.asVoid(Effect.forkIn(writing, shard.scope))
       })
 
     /** Applies one durable entry: the shard image moves, the waiter gets its outcome, streams hear of it. */
-    const publish = (shard: Shard, pending: Pending, offset: number): void => {
-      Durable.record(shard.durable, catalog, pending.entry, pending.after)
+    const publish = (shard: Shard, pending: Pending, offset: number, index: number): void => {
+      Durable.record(shard.durable, catalog, pending.entry, pending.after, pages)
       shard.durable.offset = offset
       const entry = pending.entry
+      if (Entry.guards.Action(entry) || Entry.guards.Seed(entry) || Entry.guards.Forked(entry)) {
+        const record = Durable.resident(shard.durable, catalog, entry.actor, entry.key)
+        record.position = {
+          offset,
+          index,
+          at: Entry.guards.Seed(entry) ? shard.durable.lastAt : entry.at,
+        }
+      }
       const commandId = Entry.guards.Action(entry) ? entry.commandId : undefined
       if (commandId !== undefined && shard.pending.get(commandId) === pending)
         shard.pending.delete(commandId)
@@ -577,6 +657,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
           for (const event of entry.effects.events) PubSub.publishUnsafe(events, event)
       }
       if (Entry.guards.Seed(entry) && pending.address !== undefined) notify(pending.address)
+      if (Entry.guards.Forked(entry) && pending.address !== undefined) notify(pending.address)
       Deferred.doneUnsafe(
         pending.done,
         Exit.succeed(
@@ -804,7 +885,19 @@ const make = (catalog: Catalog, options: EngineOptions) =>
         shard.firing.add(command.commandId)
       }
       const group: Array<Pending> = []
-      const staged = stage(shard, command, at, group)
+      const speculative = new Map(shard.speculative)
+      const previous = new Map(shard.pending)
+      let staged: Pending
+      try {
+        staged = stage(shard, command, at, group)
+      } catch (error) {
+        shard.speculative.clear()
+        for (const [address, image] of speculative) shard.speculative.set(address, image)
+        shard.pending.clear()
+        for (const [id, pending] of previous) shard.pending.set(id, pending)
+        if (Origin.guards.Fired(origin)) shard.firing.delete(command.commandId)
+        throw error
+      }
       shard.batch.push(group)
       Latch.openUnsafe(shard.wake)
       return { kind: "wait", pending: staged }
@@ -838,9 +931,13 @@ const make = (catalog: Catalog, options: EngineOptions) =>
         const shard = yield* readable(shardRuntime(shardOf(address)))
         const now = yield* Clock.currentTimeMillis
         const pendingBefore = shard.pending.get(command.commandId)
-        const admission = yield* Effect.sync(() =>
-          shard.status === "open" ? admit(shard, command, now) : refuse(refusal(shard)),
-        )
+        const admission = yield* pages
+          .resolve(
+            store,
+            () => (shard.status === "open" ? admit(shard, command, now) : refuse(refusal(shard))),
+            readable(shard),
+          )
+          .pipe(Effect.catchTag("StorageUnavailable", () => Effect.fail(unavailable())))
         if (admission.kind === "refused") return yield* admission.error
         if (admission.kind === "done") return { outcome: admission.outcome, replayed: true }
         const replayed = pendingBefore !== undefined && admission.pending === pendingBefore
@@ -877,6 +974,44 @@ const make = (catalog: Catalog, options: EngineOptions) =>
         })
         if (pending === undefined) return yield* refusal(shard)
         yield* Deferred.await(pending.done)
+      })
+
+    const installFork = (
+      entry: typeof Entry.cases.Forked.Type,
+      audit: typeof Entry.cases.Audit.Type,
+    ) =>
+      Effect.gen(function* () {
+        const address = Durable.addressOf(entry.actor, entry.key)
+        const shard = yield* readable(shardRuntime(shardOf(address)))
+        const done = yield* Effect.sync(() => {
+          const record = Durable.resident(shard.durable, catalog, entry.actor, entry.key)
+          if (record.created || shard.speculative.has(address))
+            throw new Error("Fork target already exists")
+          const layout = Layouts.of(record.actor)
+          const restored = Actions.apply(record.actor, layout.initial, entry.state, [], [])
+          const lists = new Map(restored.lists)
+          for (const saved of entry.lists) {
+            const list = layout.lists.get(saved.field)
+            if (list !== undefined)
+              lists.set(
+                saved.field,
+                new PagedItems(saved.keys, saved.ordered, pages, list.ordering, list.item),
+              )
+          }
+          const after = { ...restored, lists }
+          const pending: Pending = { entry, after, address, done: Deferred.makeUnsafe() }
+          const audited: Pending = {
+            entry: audit,
+            after: undefined,
+            address: undefined,
+            done: Deferred.makeUnsafe(),
+          }
+          shard.speculative.set(address, after)
+          shard.batch.push([pending, audited])
+          Latch.openUnsafe(shard.wake)
+          return audited.done
+        })
+        yield* Deferred.await(done)
       })
 
     /** Writes an operator's initial state for an instance, before its first action. */
@@ -975,6 +1110,8 @@ const make = (catalog: Catalog, options: EngineOptions) =>
         if (shard.status !== "open") continue
         if (shard.batch.length > 0 || shard.inFlight.length > 0)
           return `shard ${shard.id} has ${shard.batch.length} staged groups and ${shard.inFlight.length} entries in flight`
+        if (shard.committing !== undefined || shard.checkpointing !== undefined)
+          return `shard ${shard.id} has a checkpoint in flight`
         if (shard.pending.size > 0)
           return `shard ${shard.id} has ${shard.pending.size} actions waiting for durability`
         for (const [stream, queue] of shard.durable.outbox)
@@ -1159,11 +1296,14 @@ const make = (catalog: Catalog, options: EngineOptions) =>
 
     /** Waits until nothing staged or in flight is left on the shard, or until the shard crashes. */
     const flushed = (shard: Shard): Effect.Effect<void> =>
-      Effect.suspend(() => {
-        if (shard.batch.length === 0 && shard.inFlight.length === 0) return Effect.void
-        const done = Deferred.makeUnsafe<void>()
-        shard.flushed.push(done)
-        return Deferred.await(done)
+      Effect.gen(function* () {
+        if (shard.batch.length > 0 || shard.inFlight.length > 0) {
+          const done = Deferred.makeUnsafe<void>()
+          shard.flushed.push(done)
+          yield* Deferred.await(done)
+        }
+        if (shard.committing !== undefined) yield* Deferred.await(shard.committing)
+        if (shard.checkpointing !== undefined) yield* Deferred.await(shard.checkpointing)
       })
 
     const drained = (shard: Shard): DrainedShard => ({
@@ -1195,7 +1335,12 @@ const make = (catalog: Catalog, options: EngineOptions) =>
         if (shard.generation !== generation || lease === undefined) return false
         const writing = yield* Effect.forkIn(
           Effect.andThen(
-            checkpoint(shard, lease),
+            checkpoint(shard, lease).pipe(
+              Effect.retry({
+                while: Schema.is(PagePublicationBusy),
+                schedule: Schedule.max([Schedule.spaced("10 millis"), Schedule.recurs(1000)]),
+              }),
+            ),
             store.append(lease, [EntryCodec.encode(Entry.cases.Released.make({}))]),
           ),
           shard.scope,
@@ -1257,6 +1402,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       execute,
       admitted,
       journal,
+      installFork,
       seed,
       durableRecord,
       instances,
@@ -1290,6 +1436,21 @@ const make = (catalog: Catalog, options: EngineOptions) =>
       crash: (id: number) => crash(shardRuntime(id), false),
       shards: () => Array.from(shards.values()),
       store,
+      pages,
+      resolvePages: <A>(run: () => A) =>
+        pages.resolve(store, run).pipe(Effect.mapError(() => unavailable())),
+      readPages: <A>(actor: AnyActor, key: Schema.Json, read: (record: ActorRecord) => A) => {
+        let record: ActorRecord | undefined
+        return pages
+          .resolve(
+            store,
+            () => read(record!),
+            Effect.map(durableRecord(actor, key), (latest) => {
+              record = latest
+            }),
+          )
+          .pipe(Effect.catchTag("StorageUnavailable", () => Effect.fail(unavailable())))
+      },
       afterDurable: (hook: (shard: number) => Effect.Effect<void>) => {
         afterDurable.push(hook)
       },

@@ -82,7 +82,7 @@ Keep the server/store scope alive while `RuntimeControl.waitForSignal({ deadline
 
 The served app exposes one RPC group at `/rpc`. WebSocket clients exchange JSON and keep a session; HTTP clients use `POST` with newline-delimited JSON. Authentication runs before RPC handling and each session is rebound or reauthorized according to the server options.
 
-Operator requests use a separate `POST /operator` endpoint and never share the application RPC group. `operatorAuth` accepts `OperatorAuth.tokens([{ token: Redacted.make(token), grant: { operator, capabilities } }])` from the server entry. Each inspect, log, snapshot, and replay operation has its own capability and audit boundary. Fork is a separately granted E6 target, not yet merged. `prometheus: true` exposes `/metrics`. `Telemetry.layer` sends OTLP traces/metrics and DevTools data, but there is no OTLP logs exporter.
+Operator requests use a separate `POST /operator` endpoint and never share the application RPC group. `operatorAuth` accepts `OperatorAuth.tokens([{ token: Redacted.make(token), grant: { operator, capabilities } }])` from the server entry. Each inspect, log, snapshot, and replay operation has its own capability and audit boundary. [Actor forks](forks.md) use the separately granted server/CLI interface; they are not served by `POST /operator`. `prometheus: true` exposes `/metrics`. `Telemetry.layer` sends OTLP traces/metrics and DevTools data, but there is no OTLP logs exporter.
 
 ## Client and queries
 

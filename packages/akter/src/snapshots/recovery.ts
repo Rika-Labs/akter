@@ -11,6 +11,9 @@ import type { Build } from "../store/build.ts"
 import type { StoredSegment } from "../store/log.ts"
 import { Builds } from "./build.ts"
 import { Checkpoints } from "./checkpoint.ts"
+import { PageMiss } from "../handlers/page-tree.ts"
+import type { PageCache } from "../handlers/page-tree.ts"
+import { PagedCheckpoints } from "./pages.ts"
 
 /** A replayed action did something other than what its entry records: the shard stops. */
 export class ReplayMismatch extends Schema.TaggedError<ReplayMismatch>()("ReplayMismatch", {
@@ -89,6 +92,7 @@ const replay = (
   segments: ReadonlyArray<StoredSegment>,
   build: Build,
   policy: ReplayPolicy,
+  cache?: PageCache,
 ): Result.Result<ShardImage, RecoveryError> => {
   for (const segment of segments) {
     if (Number(segment.offset) <= image.offset) continue
@@ -111,7 +115,13 @@ const replay = (
             detail: "Replay image has no audit in its segment",
           }),
         )
-      const decoded = Checkpoints.decode(new TextEncoder().encode(entry.success.checkpoint))
+      if (entry.success.page !== undefined && cache === undefined)
+        throw new PageMiss({ hashes: [entry.success.page] })
+      const decoded = Checkpoints.decode(
+        entry.success.page === undefined
+          ? new TextEncoder().encode(entry.success.checkpoint ?? "")
+          : PagedCheckpoints.cached(entry.success.page, cache!),
+      )
       if (Result.isFailure(decoded) || decoded.success.shard !== image.shard)
         return Result.fail(
           CorruptLog.make({
@@ -121,9 +131,10 @@ const replay = (
           }),
         )
       try {
-        image = Checkpoints.restore(catalog, decoded.success)
+        image = Checkpoints.restore(catalog, decoded.success, cache)
         image.offset = Number(segment.offset)
-      } catch {
+      } catch (error) {
+        if (error instanceof PageMiss) throw error
         return Result.fail(
           CorruptLog.make({
             shard: image.shard,
@@ -156,9 +167,15 @@ const replay = (
           running: JSON.stringify(build),
         }),
       )
-    for (const entry of entries) {
+    for (const [index, entry] of entries.entries()) {
       if (!Entry.guards.Action(entry)) {
-        Durable.record(image, catalog, entry, undefined)
+        Durable.record(image, catalog, entry, undefined, cache)
+        if (Entry.guards.Seed(entry) || Entry.guards.Forked(entry))
+          Durable.resident(image, catalog, entry.actor, entry.key).position = {
+            offset,
+            index,
+            at: Entry.guards.Seed(entry) ? image.lastAt : entry.at,
+          }
         continue
       }
       const record = Durable.resident(image, catalog, entry.actor, entry.key)
@@ -175,6 +192,7 @@ const replay = (
           }),
         )
       Durable.record(image, catalog, entry, ran.image)
+      record.position = { offset, index, at: entry.at }
     }
     image.offset = offset
   }
@@ -193,21 +211,23 @@ const recover = (
   segments: ReadonlyArray<StoredSegment>,
   build: Build,
   policy: ReplayPolicy,
+  cache?: PageCache,
 ): Result.Result<ShardImage, RecoveryError> => {
   if (checkpoint === undefined)
-    return replay(catalog, Durable.empty(shard), segments, build, policy)
+    return replay(catalog, Durable.empty(shard), segments, build, policy, cache)
   const decoded = Checkpoints.decode(checkpoint)
   if (Result.isFailure(decoded))
     return Result.fail(CorruptLog.make({ shard, offset: -1, detail: decoded.failure.message }))
   let image: ShardImage
   try {
-    image = Checkpoints.restore(catalog, decoded.success)
+    image = Checkpoints.restore(catalog, decoded.success, cache)
   } catch (error) {
+    if (error instanceof PageMiss) throw error
     return Result.fail(
       CorruptLog.make({ shard, offset: decoded.success.offset, detail: String(error) }),
     )
   }
-  return replay(catalog, image, segments, build, policy)
+  return replay(catalog, image, segments, build, policy, cache)
 }
 
 const canonical = (value: Decoded): string => {

@@ -18,7 +18,7 @@ Support requires failure evidence at the actual boundary. A proposal, TypeScript
 | Self-host recipe                                   | [Local recipe evidence](../verification/self-host.md); one runner by default, not provider certification           |
 | Filesystem store                                   | Local one-host adapter for dev/tests; no distributed or power-loss guarantee inferred                              |
 | Memory store                                       | Test-only, non-durable                                                                                             |
-| Page-backed lists, retained history, GC, forks     | E6 target; schema/list reads alone do not prove races or unlimited-storage guarantees                              |
+| Page-backed lists, retained history, GC, forks     | [E6 local evidence](../verification/e6-pages-history.md); actor forks only, no production-provider or 50 GB claim  |
 | Owner-held persisted indexes and audited operators | E7 target; check the corresponding failure evidence before claiming complete support                               |
 | Hosted rollout, tenant isolation, billing, quotas  | E8 and private platform evidence; not established by framework tests                                               |
 

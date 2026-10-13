@@ -5,6 +5,7 @@ import type { Reply, StateFrame, Target, Transport } from "../contract/handle.ts
 import type { AccessRequest, AnyActor } from "../contract/make.ts"
 import type { Action, View } from "../contract/members.ts"
 import { Lists } from "../handlers/lists.ts"
+import { PageMiss } from "../handlers/page-tree.ts"
 import { CommandIds } from "./command-ids.ts"
 import { Durable } from "./durable.ts"
 import type { ActorRecord } from "./durable.ts"
@@ -186,21 +187,20 @@ const reads = (
         const params = Layouts.codec(declaration.params).decode(request.params)
         const success = Layouts.codec(declaration.success)
         return changes(engine, actor, request.id).pipe(
-          Stream.mapEffect(({ record }) =>
-            Effect.suspend(() => {
+          Stream.mapEffect(() =>
+            engine.readPages(actor, request.id, (record) => {
               try {
-                return Effect.succeed(
-                  success.encode(handler(readState(record), params, { caller, self: record.key })),
+                return success.encode(
+                  handler(readState(record), params, { caller, self: record.key }),
                 )
               } catch (thrown) {
-                return Effect.die(
-                  ActionDefect.make({
-                    kind: "Thrown",
-                    actor: actor.name,
-                    member,
-                    detail: String(thrown),
-                  }),
-                )
+                if (thrown instanceof PageMiss) throw thrown
+                throw ActionDefect.make({
+                  kind: "Thrown",
+                  actor: actor.name,
+                  member,
+                  detail: String(thrown),
+                })
               }
             }),
           ),
@@ -226,12 +226,13 @@ const reads = (
       yield* allowed(request.actor, caller, { kind: "list", member: request.member })
       const list = Layouts.of(request.actor).lists.get(request.member)
       if (list === undefined) return yield* unknownMember(request.member)
-      const record = yield* engine.durableRecord(request.actor, request.id)
-      return Lists.window(
-        record.image.lists.get(request.member) ?? Lists.empty,
-        list.ordering,
-        request.range,
-      ).map(list.item.encode)
+      return yield* engine.readPages(request.actor, request.id, (record) =>
+        Lists.window(
+          record.image.lists.get(request.member) ?? Lists.empty,
+          list.ordering,
+          request.range,
+        ).map(list.item.encode),
+      )
     }),
   watch: (request) =>
     Stream.unwrap(
@@ -240,12 +241,14 @@ const reads = (
         const list = Layouts.of(request.actor).lists.get(request.member)
         if (list === undefined) return yield* unknownMember(request.member)
         return changes(engine, request.actor, request.id).pipe(
-          Stream.map(({ record }) =>
-            Lists.window(
-              record.image.lists.get(request.member) ?? Lists.empty,
-              list.ordering,
-              request.range,
-            ).map(list.item.encode),
+          Stream.mapEffect(() =>
+            engine.readPages(request.actor, request.id, (record) =>
+              Lists.window(
+                record.image.lists.get(request.member) ?? Lists.empty,
+                list.ordering,
+                request.range,
+              ).map(list.item.encode),
+            ),
           ),
           Stream.changesWith((left, right) => JSON.stringify(left) === JSON.stringify(right)),
         )

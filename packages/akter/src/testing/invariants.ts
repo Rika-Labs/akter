@@ -13,6 +13,8 @@ import {
   segmentOffset,
 } from "../store/keys.ts"
 import type { StoredSegment } from "../store/log.ts"
+import { PagedCheckpoints } from "../snapshots/pages.ts"
+import { PageCache, PageDocuments } from "../handlers/page-tree.ts"
 
 /** A checkpoint as the simulator reads it: its offset and its state page. */
 export interface StoredCheckpoint {
@@ -25,6 +27,7 @@ export interface ShardLogContent {
   readonly shard: number
   readonly checkpoints: ReadonlyArray<StoredCheckpoint>
   readonly segments: ReadonlyArray<StoredSegment>
+  readonly pages?: PageCache
 }
 
 /** One entry the engine published, with the shard and offset it said was durable. */
@@ -52,22 +55,46 @@ const read = (bucket: Bucket, shard: number): Effect.Effect<ShardLogContent> =>
       segments.push({ ...segment, offset: offset.value })
     }
     const checkpoints: Array<StoredCheckpoint> = []
+    const pages = new PageCache(Number.MAX_SAFE_INTEGER)
+    const getPage = (hash: string) =>
+      Effect.flatMap(stored(bucket, pageKey(hash)), (bytes) =>
+        decodePage(hash)(bytes.slice()),
+      ).pipe(
+        Effect.tap((bytes) => Effect.sync(() => pages.put(hash, bytes))),
+        Effect.orDie,
+      )
     for (const key of yield* bucket.list(checkpointPrefix(shard))) {
       const offset = checkpointOffset(shard, key)
       if (Option.isNone(offset)) continue
       const manifest = yield* decodeManifest(key)(yield* stored(bucket, key))
       for (const hash of manifest.statePages) {
-        const page = yield* stored(bucket, pageKey(hash))
         checkpoints.push({
           offset: Number(offset.value),
-          bytes: yield* decodePage(hash)(page.slice()),
+          bytes: yield* PagedCheckpoints.materialize(hash, {
+            getPage,
+          }),
         })
       }
     }
+    const visited = new Set<string>()
+    const visit = (hash: string): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        if (visited.has(hash)) return
+        visited.add(hash)
+        const bytes = yield* getPage(hash)
+        for (const child of PageDocuments.references(bytes)) yield* visit(child)
+      })
+    for (const segment of segments)
+      for (const bytes of segment.entries) {
+        const entry = Result.getOrThrow(EntryCodec.decode(bytes))
+        if (Entry.guards.Forked(entry)) yield* visit(entry.manifest)
+        if (Entry.guards.Replayed(entry) && entry.page !== undefined) yield* visit(entry.page)
+      }
     return {
       shard,
       segments,
       checkpoints: checkpoints.sort((left, right) => left.offset - right.offset),
+      pages,
     }
   }).pipe(Effect.orDie)
 
@@ -159,6 +186,7 @@ const replays = (
       log.segments,
       build,
       "current",
+      log.pages,
     )
     const from =
       checkpoint === undefined ? "the empty log" : `the checkpoint at ${checkpoint.offset}`

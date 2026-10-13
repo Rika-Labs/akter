@@ -1,4 +1,8 @@
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Result } from "effect"
+import { PageDocuments } from "../handlers/page-tree.ts"
+import { Checkpoints } from "../snapshots/checkpoint.ts"
+import { Entry, EntryCodec } from "../execution/entries.ts"
+import type { GcOptions } from "./gc.ts"
 import { type CheckOptions, checkBucket } from "./check.ts"
 import { fileSystemBucket } from "./file-system.ts"
 import { memoryBucket } from "./memory.ts"
@@ -25,6 +29,27 @@ export const memory = (options: StoreOptions = {}) =>
 
 /** Runs the conformance probe against the provided store's bucket. */
 export const check = (options?: CheckOptions) => Store.use((store) => store.check(options))
+
+/** Collects engine pages and expired checkpoints with the store-wide publication barrier. */
+export const collect = (options: Omit<GcOptions, "references" | "entryReferences"> = {}) =>
+  Store.use((store) =>
+    store.gc.collect({
+      ...options,
+      references: (bytes) => {
+        try {
+          return PageDocuments.references(bytes)
+        } catch (error) {
+          if (Result.isSuccess(Checkpoints.decode(bytes))) return []
+          throw error
+        }
+      },
+      entryReferences: (bytes) => {
+        const entry = Result.getOrThrow(EntryCodec.decode(bytes))
+        if (Entry.guards.Replayed(entry) && entry.page !== undefined) return [entry.page]
+        return Entry.guards.Forked(entry) ? [entry.manifest] : []
+      },
+    }),
+  )
 
 /**
  * Runs the conformance probe against an S3-compatible bucket without opening a

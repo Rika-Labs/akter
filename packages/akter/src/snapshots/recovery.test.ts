@@ -3,8 +3,11 @@ import { Context, Effect, Layer, Result, Schema } from "effect"
 import { Actor } from "../index.ts"
 import type { AnyActor } from "../contract/make.ts"
 import type { Catalog } from "../execution/durable.ts"
+import { Durable } from "../execution/durable.ts"
 import type { Implementation } from "../handlers/registry.ts"
 import { Simulation, SimulationService } from "../testing/index.ts"
+import { Checkpoints } from "./checkpoint.ts"
+import { PagedCheckpoints } from "./pages.ts"
 import { Recovery } from "./recovery.ts"
 
 const Tally = Actor.make("Tally", {
@@ -75,6 +78,81 @@ const workload = Effect.gen(function* () {
 })
 
 describe("Recovery", () => {
+  it("captures the actor state, index and offset before a delayed upload, rejecting a checkpoint that drifts to later commits", () =>
+    Simulation.run(
+      { actors: [Tally], seed: 64, shards: 1, checkpointEvery: 0 },
+      Effect.gen(function* () {
+        const a = yield* Tally.client("a")
+        const b = yield* Tally.client("b")
+        yield* a.add(5)
+        yield* b.add(11)
+        yield* Simulation.settle
+        const simulator = yield* SimulationService
+        const engine = simulator.engine
+        const image = engine.durableImage(0)!
+        const offset = image.offset
+        const upload = PagedCheckpoints.write(image, engine.store, engine.pages)
+        yield* a.add(7)
+        yield* b.add(13)
+        yield* (yield* Tally.client("c")).add(19)
+        yield* Simulation.settle
+        const prepared = yield* engine.store.gc.protect(
+          Effect.gen(function* () {
+            const prepared = yield* upload
+            yield* engine.store.checkpoint(engine.lease(0)!, {
+              offset: BigInt(prepared.offset),
+              statePages: [prepared.hash],
+              indexPages: [prepared.hash],
+              nextDue: prepared.nextDue,
+            })
+            prepared.committed()
+            return prepared
+          }),
+        )
+        const checkpoint = Result.getOrThrow(
+          Checkpoints.decode(yield* PagedCheckpoints.materialize(prepared.hash, engine.store)),
+        )
+        expect(checkpoint.offset).toBe(offset)
+        expect(checkpoint.actors.map(({ key, state }) => [key, state.total])).toEqual([
+          ["a", 5],
+          ["b", 11],
+        ])
+        expect(checkpoint.index?.map(({ id, fields }) => [id, fields.total])).toEqual([
+          ["a", 5],
+          ["b", 11],
+        ])
+        yield* Simulation.crash()
+        const states = yield* Effect.forEach(["a", "b", "c"], (id) => Simulation.state(Tally, id))
+        expect(states.map((state) => state.total)).toEqual([12, 24, 19])
+        yield* Simulation.settle
+      }).pipe(Effect.scoped),
+      handlers(1),
+    ))
+
+  it("detaches a captured job workflow from later durable journal entries", () => {
+    const image = Durable.empty(0)
+    const workflow = [{ saved: "first" }]
+    image.jobs.set("job", {
+      jobId: "job",
+      address: 'Tally/"a"',
+      job: "work",
+      payload: null,
+      key: undefined,
+      onBehalfOf: undefined,
+      attempt: 0,
+      at: 0,
+      failure: undefined,
+      done: undefined,
+      suspended: undefined,
+      workflow,
+      steps: new Map(),
+    })
+    const checkpoint = Checkpoints.capture(image)
+    workflow.push({ saved: "second" })
+    expect(checkpoint.jobs[0]?.workflow).toEqual([{ saved: "first" }])
+    expect(image.jobs.get("job")?.workflow).toEqual([{ saved: "first" }, { saved: "second" }])
+  })
+
   it("reopens every shard after a crash and rebuilds it from its newest checkpoint and tail, to the same states, outcomes and timers", () =>
     Simulation.run(
       { actors: [Tally], seed: 61, shards: 2, checkpointEvery: 2 },

@@ -12,6 +12,7 @@ import { Durable } from "./durable.ts"
 import { Entry, EntryCodec } from "./entries.ts"
 import type { Status } from "./engine.ts"
 import { Transports } from "./transport.ts"
+import { PageDocuments } from "../handlers/page-tree.ts"
 
 const Account = Actor.make("Account", {
   state: Schema.Struct({
@@ -294,7 +295,8 @@ describe("F9: a crash while checkpointing", () => {
         yield* a.deposit(1)
         yield* Simulation.settle
         const [before] = yield* simulator.logs
-        const pages = (yield* simulator.bucket.inspect.list("pages/")).length
+        const previousPages = yield* simulator.bucket.inspect.list("pages/")
+        const pages = previousPages.length
         simulator.bucket.script({
           runner: 0,
           fault: "crashBefore",
@@ -314,8 +316,23 @@ describe("F9: a crash while checkpointing", () => {
         if (before === undefined || after === undefined) return yield* Effect.die(new Error("log"))
         expect(after.checkpoints.at(-1)?.offset).toBe(before.checkpoints.at(-1)?.offset)
         expect((yield* simulator.bucket.inspect.list("pages/")).length).toBe(
-          fault === "page" ? pages : pages + 1,
+          fault === "page" ? pages : pages + 2,
         )
+        if (fault === "pointer") {
+          const orphanKeys = (yield* simulator.bucket.inspect.list("pages/")).filter(
+            (key) => !previousPages.includes(key),
+          )
+          const orphans = yield* Effect.forEach(orphanKeys, (key) =>
+            Effect.map(
+              simulator.engine.store.getPage(key.slice("pages/".length)),
+              PageDocuments.decode,
+            ),
+          )
+          expect(orphans.map((page) => page.kind).sort()).toEqual(["actor", "checkpoint"])
+          const root = orphans.find((page) => page.kind === "checkpoint")!
+          const actor = orphanKeys[orphans.findIndex((page) => page.kind === "actor")]!
+          expect(root.references).toEqual([actor.slice("pages/".length)])
+        }
         const replayed = Recovery.recover(
           simulator.catalog,
           0,

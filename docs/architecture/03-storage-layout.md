@@ -18,6 +18,6 @@ check/<run>/                temporary protocol probe objects
 
 Segments contain format, writer, open epoch, build, and entries. Checkpoints reference actor manifests, list and index roots, deduplication state, pending sends, timers, jobs, and connection obligations. Pages are written before any manifest referencing them. SHA-256 is checked on every page read. Stored encoding is `SchemaBinary`; `/rpc` uses JSON schemas.
 
-An actor's non-list state is at most 256 KiB; list items live in ordered page trees. Default history retention is seven days. Trim must retain an old-enough covering checkpoint and every segment needed to recover; provider lifecycle rules must not delete active history or pages. GC roots include all retained checkpoints and each shard's newest checkpoint.
+An actor's non-list state is at most 256 KiB; list items live in ordered page trees. Default history retention is seven days. Trim must preserve the checkpoint anchor before the first in-window segment and its complete following chain; provider lifecycle rules must not delete active history or pages. GC roots include retained/anchor/newest checkpoints and fork/replay images in the required chain. State and owner-held index share a checkpoint root hash.
 
 The [storage contract](../contracts/06-storage.md) owns the full E2/E6 target, including interrupted uploads, grace periods, collector fencing, forks, and erasure delay. Check its section status before treating a layout description as implemented evidence.

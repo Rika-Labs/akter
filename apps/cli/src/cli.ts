@@ -14,6 +14,7 @@ import { keysCommand } from "./commands/cloud/keys.ts"
 import { storageCommand } from "./commands/storage/check.ts"
 import { inspectCommand, logCommand, replayCommand, snapshotCommand } from "./commands/operator.ts"
 import { devCommand } from "./commands/dev.ts"
+import { forkCommand } from "./commands/operators/fork.ts"
 
 /** The `akter` command tree. */
 export const akter = Command.make("akter").pipe(
@@ -34,7 +35,10 @@ export const akter = Command.make("akter").pipe(
       ],
     },
     { group: "Storage", commands: [storageCommand] },
-    { group: "Operators", commands: [inspectCommand, logCommand, snapshotCommand, replayCommand] },
+    {
+      group: "Operators",
+      commands: [inspectCommand, logCommand, snapshotCommand, forkCommand, replayCommand],
+    },
     { group: "Local", commands: [devCommand] },
   ]),
 )
