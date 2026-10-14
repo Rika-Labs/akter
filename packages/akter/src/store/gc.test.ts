@@ -64,6 +64,16 @@ const DAY = 24 * 60 * 60 * 1000
 
 const PUBLICATION_EXPIRY = 60_000
 
+/** A `publishing` epoch exactly as 0.2.0 wrote it when a publisher claimed it at {@link V020_CLAIMED_AT} and was then interrupted. */
+const V020_PUBLISHING = Uint8Array.from(
+  Buffer.from(
+    "4d2091d5b0e75c02b1e5bbd15d80897ac09f86e06c0a7075626c697368696e67a0cde9d97a28763032303a2d383931333731373130313331363334353a2d33393539393437303235313330323137",
+    "hex",
+  ),
+)
+
+const V020_CLAIMED_AT = 1_000_000
+
 const gcKey = (epoch: number) => `gc/${epoch.toString(16).padStart(16, "0")}`
 
 const backends = [
@@ -510,6 +520,31 @@ for (const backend of backends)
     )
 
     it.effect(
+      "expires a publishing epoch written by 0.2.0 sixty seconds after its claim (rejects reading a 0.2.0 record's expiresAt as its expiry, or never expiring 0.2.0 epochs)",
+      () =>
+        Effect.gen(function* () {
+          const bucket = yield* yield* backend.namespace
+          expect(yield* bucket.create(gcKey(1), V020_PUBLISHING)).toBe(true)
+          const store = yield* storeOf(bucket, { writer: "b", shards: 1, retry: RETRY })
+          yield* TestClock.setTime(V020_CLAIMED_AT + PUBLICATION_EXPIRY - 1)
+          expect(yield* store.gc.collect({ references, entryReferences })).toMatchObject({
+            outcome: "blocked",
+          })
+          expect(
+            yield* failed(
+              store.gc.protect(store.putPage(text("leaf:after-0.2.0")), () => Effect.void),
+            ),
+          ).toBeInstanceOf(PagePublicationBusy)
+          yield* TestClock.setTime(V020_CLAIMED_AT + PUBLICATION_EXPIRY)
+          yield* store.gc.protect(store.putPage(text("leaf:after-0.2.0")), () => Effect.void)
+          expect(yield* bucket.list("gc/")).toEqual([gcKey(1), gcKey(2), gcKey(3)])
+          expect(yield* store.gc.collect({ references, entryReferences })).toMatchObject({
+            outcome: "collected",
+          })
+        }),
+    )
+
+    it.effect(
       "lets concurrent publications of one process share a single publishing epoch (rejects serializing every checkpoint of a drain behind its own epoch)",
       () =>
         Effect.gen(function* () {
@@ -827,6 +862,84 @@ describe("GC timestamp and validity boundaries", () => {
         expect(yield* store.gc.collect({ references, entryReferences })).toMatchObject({
           outcome: "collected",
         })
+      }),
+  )
+
+  it.effect(
+    "claims a new epoch for a publisher arriving after the join window instead of joining the aging one (rejects joining an epoch whose claim is older than validFor)",
+    () =>
+      Effect.gen(function* () {
+        const bucket = memoryBucket()
+        const faults = Faults.plan()
+        const store = yield* storeOf(bucket, { writer: "a", shards: 1, faults, retry: RETRY })
+        const upload = yield* faults.inject(Fault.Hold(), {
+          match: ({ kind, key }) => kind === "put" && key.endsWith(sha256Of("leaf:early")),
+        })
+        const early = yield* Effect.forkChild(
+          store.gc.protect(store.putPage(text("leaf:early")), () => Effect.void),
+        )
+        yield* upload.fired
+        yield* TestClock.adjust("11 seconds")
+        const late = yield* Effect.forkChild(
+          store.gc.protect(store.putPage(text("leaf:late")), () => Effect.void),
+        )
+        for (let turn = 0; turn < 100; turn++) yield* Effect.yieldNow
+        yield* upload.release
+        yield* Fiber.join(early)
+        yield* Fiber.join(late)
+        expect(yield* bucket.list("gc/")).toEqual([gcKey(1), gcKey(2), gcKey(3), gcKey(4)])
+      }),
+  )
+
+  it.effect(
+    "retries a throttled page write whose stored copy is older than T_trim and accepts one exactly T_trim old (rejects a refresh window as long as the grace period)",
+    () =>
+      Effect.gen(function* () {
+        const bucket = memoryBucket()
+        const faults = Faults.plan()
+        const store = yield* storeOf(bucket, { writer: "a", shards: 1, faults, retry: RETRY })
+        const hash = yield* store.putPage(text("leaf:aging"))
+        yield* TestClock.adjust("10 minutes")
+        yield* faults.inject(Fault.Unavailable({ status: 429 }), {
+          match: ({ kind, key }) => kind === "put" && key === pageKey(hash),
+        })
+        expect(yield* store.putPage(text("leaf:aging"))).toBe(hash)
+        expect(yield* bucket.modified(pageKey(hash))).toEqual(Option.some(0))
+        yield* TestClock.adjust(1)
+        yield* faults.inject(Fault.Unavailable({ status: 429 }), {
+          match: ({ kind, key }) => kind === "put" && key === pageKey(hash),
+        })
+        expect(yield* store.putPage(text("leaf:aging"))).toBe(hash)
+        expect(yield* bucket.modified(pageKey(hash))).toEqual(Option.some(10 * 60 * 1000 + 1))
+      }),
+  )
+
+  it.effect(
+    "refuses the reference of a publisher whose confirmation answered later than validFor (rejects a publisher fence that ignores how old its listing is)",
+    () =>
+      Effect.gen(function* () {
+        const bucket = memoryBucket()
+        const faults = Faults.plan()
+        const store = yield* storeOf(bucket, { writer: "a", shards: 1, faults, retry: RETRY })
+        const lease = yield* store.open(0)
+        const upload = yield* faults.inject(Fault.Hold(), { match: ({ kind }) => kind === "put" })
+        const publishing = yield* Effect.forkChild(
+          store.gc.protect(store.putPage(text("leaf:slow-fence")), (page) =>
+            store.checkpoint(lease, { offset: lease.head, statePages: [page], indexPages: [] }),
+          ),
+        )
+        yield* upload.fired
+        const listing = yield* faults.inject(Fault.Hold(), {
+          match: ({ kind, key }) => kind === "list" && key === "gc/",
+        })
+        yield* upload.release
+        yield* listing.fired
+        yield* TestClock.adjust("11 seconds")
+        yield* listing.release
+        expect(
+          Option.getOrUndefined(Exit.findErrorOption(yield* Fiber.await(publishing))),
+        ).toBeInstanceOf(PagePublicationBusy)
+        expect(yield* store.history.checkpoints(0)).toEqual([])
       }),
   )
 
