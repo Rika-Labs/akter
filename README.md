@@ -2,8 +2,6 @@
 
 Akter is a typed framework for durable actors, deterministic actions, journaled Effect jobs, and realtime state. Version 0.2 runs the framework on one S3-compatible store per environment; local development uses a filesystem store.
 
-> The `rewrite/0.2` branch is a breaking preview. Its contracts and milestone evidence distinguish the target design from provider support that has not yet been established.
-
 ## The model
 
 An actor owns schema state and optional page-backed lists. Its actions are synchronous copy-on-write functions. A declared failure, defect, page miss, or lost segment discards the draft and every staged consequence. The runner publishes a reply, send, timer, job start, or event only after the shard's create-once segment is durable.
@@ -40,7 +38,7 @@ bun add @rikalabs/akter@rewrite effect @effect/platform-bun
 # Node: use @effect/platform-node instead of @effect/platform-bun
 ```
 
-The rewrite channel selects 0.2 candidates; pin one full matching framework/CLI version and keep the lockfile before deploying. Supported runtime floors are Bun 1.4.2 and Node 24. The public package entries are `@rikalabs/akter`, `@rikalabs/akter/server`, `@rikalabs/akter/client`, and `@rikalabs/akter/testing`; the client entry is the same Effect client, not a Promise facade.
+The `rewrite` channel selects branch canaries; pin one full matching framework/CLI version and keep the lockfile before deploying. Supported runtime floors are Bun 1.4.2 and Node 24. The public package entries are `@rikalabs/akter`, `@rikalabs/akter/server`, `@rikalabs/akter/client`, and `@rikalabs/akter/testing`; the client entry is the same Effect client, not a Promise facade.
 
 ## Run and deploy
 

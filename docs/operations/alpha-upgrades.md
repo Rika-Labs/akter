@@ -1,6 +1,6 @@
 ---
 title: "0.2 upgrade notes"
-description: "Redeploy alpha applications fresh and replace 0.1 contracts without converting stores."
+description: "Move 0.1 applications to fresh 0.2 stores without converting runtime records."
 ---
 
 # 0.2 upgrade notes

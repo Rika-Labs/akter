@@ -12,6 +12,8 @@ description: "Publish framework and CLI releases and main canaries through npm t
 
 ## Status
 
+The 0.2 product release waits for the framework to be complete; there is no early product release. [ADR 0138](https://github.com/Rika-Labs/akter/blob/rewrite/0.2/docs/decisions/0138-framework-release-posture.md) records this release posture without changing package channels or evidence gates.
+
 The source manifests on `rewrite/0.2` carry version `0.2.0`; branch canaries use the `rewrite` dist-tag and an immutable full prerelease version. Registry tags, bootstrap status, trusted-publisher permissions, and environment approvals must be checked at release time. `main` remains the 0.1 release line until the approved swap. Editing a workflow does not publish a package or change registry tags.
 
 ## Prerequisites

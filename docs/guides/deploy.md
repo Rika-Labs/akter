@@ -13,4 +13,4 @@ The [self-host recipe](../operations/self-host.md) builds a Bun or Node runner o
 
 For hosted deployment, [Akter Cloud](../cloud/get-started.md) provisions one store bucket per environment. It does not require `DATABASE_URL`. Pricing, quotas, and provider rollout claims require E8 evidence and approval.
 
-0.2 alpha redeployments start fresh. There is no migration or adoption tool. [Upgrade notes](../operations/alpha-upgrades.md) explain the contract and release changes.
+Upgrading from 0.1 requires a fresh 0.2 store; subsequent 0.2 redeployments reuse that store. There is no migration or adoption tool. [Upgrade notes](../operations/alpha-upgrades.md) explain the contract and release changes.
