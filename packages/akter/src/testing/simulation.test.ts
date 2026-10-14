@@ -1,5 +1,17 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Cause, Config, Context, Effect, Exit, Fiber, Layer, Random, Schema, Stream } from "effect"
+import {
+  Cause,
+  Config,
+  ConfigProvider,
+  Context,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Random,
+  Schema,
+  Stream,
+} from "effect"
 import { TestClock } from "effect/testing"
 import { Actor, ActorError, JobFailure, Unauthorized, anonymous, isUser, user } from "../index.ts"
 import { InvariantViolation, SIMULATION_SEED_BASE, Simulation, SimulationService } from "./index.ts"
@@ -800,23 +812,31 @@ const ledgerRun = (run: number, moving = false): Promise<LedgerRun> =>
   )
 
 /**
- * The fixed matrix runs 1,000 seeds; `AKTER_SIMULATION_SEEDS` raises it for a long run. A value that
- * is not a positive integer fails the file instead of quietly running the default.
+ * A seed count from `name`, or `fallback` when the variable is unset. Empty strings are kept, so a
+ * set but empty or non-integer value fails the file instead of quietly running the default.
  */
-const seedRuns = Effect.runSync(
-  Effect.gen(function* () {
-    const configured = yield* Config.String("AKTER_SIMULATION_SEEDS").pipe(
-      Config.withDefault("1000"),
-    )
-    if (!/^[1-9]\d*$/.test(configured))
-      return yield* Effect.die(
-        new Error(`AKTER_SIMULATION_SEEDS must be a positive integer, got "${configured}"`),
-      )
-    return Number(configured)
-  }),
-)
+const seedCount = (name: string, fallback: number) =>
+  Effect.runSync(
+    Effect.gen(function* () {
+      const configured = yield* Config.String(name)
+        .pipe(Config.withDefault(String(fallback)))
+        .parse(ConfigProvider.fromEnv({ preserveEmptyStrings: true }))
+      if (!/^[1-9]\d*$/.test(configured))
+        return yield* Effect.die(
+          new Error(`${name} must be a positive integer, got "${configured}"`),
+        )
+      return Number(configured)
+    }),
+  )
 
-const movingRuns = 200
+/** The single-runner matrix runs 1,000 seeds; `AKTER_SIMULATION_SEEDS` raises it for a long run. */
+const seedRuns = seedCount("AKTER_SIMULATION_SEEDS", 1_000)
+
+/** The moving-owner matrix runs 200 seeds; `AKTER_SIMULATION_MOVING_SEEDS` raises it for a long run. */
+const movingRuns = seedCount("AKTER_SIMULATION_MOVING_SEEDS", 200)
+
+/** The five minutes the default counts always had, growing per seed for a longer run. */
+const matrixTimeout = (runs: number, perSeed: number) => Math.max(300_000, runs * perSeed)
 
 interface FaultsSeen {
   readonly refused: number
@@ -871,18 +891,20 @@ describe("seed matrix", () => {
           expect(seen.outages).toBeGreaterThan(0)
         }),
       ),
-    seedRuns * 300,
+    matrixTimeout(seedRuns, 300),
   )
 
   it(
     `keeps the same totals across ${movingRuns} faulted seeds while the runner layer moves, drains, pauses and cuts off the owner`,
-    () =>
-      matrix(movingRuns, true).then((seen) => {
-        expect(seen.crashes).toBeGreaterThan(0)
-        expect(seen.partitioned).toBeGreaterThan(0)
-        expect(seen.paused).toBeGreaterThan(0)
-      }),
-    300_000,
+    ({ annotate }) =>
+      matrix(movingRuns, true).then((seen) =>
+        annotate(`faults across ${movingRuns} moving seeds: ${JSON.stringify(seen)}`).then(() => {
+          expect(seen.crashes).toBeGreaterThan(0)
+          expect(seen.partitioned).toBeGreaterThan(0)
+          expect(seen.paused).toBeGreaterThan(0)
+        }),
+      ),
+    matrixTimeout(movingRuns, 1_500),
   )
 
   it(
