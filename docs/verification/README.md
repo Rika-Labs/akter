@@ -10,6 +10,7 @@ Current evidence concerns the 0.2 bucket engine. A recorded 0.1 observation, a s
 - [E5: jobs, workflow journals, retries and durable sleep](e5-jobs.md)
 - [E6: page trees, bounded cache, history, actor forks and lease-fenced GC](e6-pages-history.md)
 - [E7: persisted owner indexes, audited operators, local dev and telemetry](e7-find-operators.md)
+- [T7: the seed matrix at 10,000 seeds on Bun and Node, 2026-10-14](history/2026-10-14-t7-10000-seeds.md)
 - [Store protocol](store-protocol.md) and [provider support matrix](store-providers.md)
 - [Framework package boundary](framework-package.md) and [self-host recipe evidence](self-host.md)
 - [Public environment API keys](environment-api-keys.md)

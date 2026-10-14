@@ -1,6 +1,6 @@
 # Error model
 
-Status: proposal (0.2), owned by ADR 0128; promoted when E1 (reasons and defects) and E4 (wire mapping) failure evidence lands, each section with its milestone. E4 wire-mapping evidence is in [E4 RPC and serving](../verification/e4-rpc-serve.md).
+Status: partially normative (0.2), owned by ADR 0128. Defects is normative for `SynchronousActionViolation`, `StateTooLarge` and `ReplayMismatch` ([E1 execution](../verification/e1-execution.md)) and for `PageCorrupt` ([E6](../verification/e6-pages-history.md), F22). Wire form is normative for the `ActorError` envelope inside the RPC exit, declared errors arriving as their own class, and the pre-handler statuses with `retry-after` in whole seconds ([E4 RPC and serving](../verification/e4-rpc-serve.md) and `serve/wire.test.ts`). Still proposal, each for want of a named scenario: One framework error (no type test of `ActorError.Of` narrowing per member); Reasons (client retry of each reason under the same command id beyond a lost reply, the ±50% jitter and the client backoff); Internal errors (each internal-to-public mapping); the decode-failure defect row; and, in Wire form, receivers deriving retry metadata from the reason and `ActorUnavailable` carrying no internal cause.
 
 **Responsibility:** define framework errors, retry metadata, defects and their wire form.  
 **Authority:** normative 0.2 target on `main`.  

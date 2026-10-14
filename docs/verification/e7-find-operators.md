@@ -1,6 +1,6 @@
 # E7 find, operators, local development and telemetry
 
-**Status:** local E7 evidence on `rewrite/e7-find-operators`; no provider or hosted support claim.
+**Status:** local E7 evidence, merged into `rewrite/0.2` in [#772](https://github.com/Rika-Labs/akter/pull/772) and now on `main`; no provider or hosted support claim.
 
 ## Index and `find`
 

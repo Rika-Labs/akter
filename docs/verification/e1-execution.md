@@ -65,7 +65,7 @@ Run `n` of a matrix uses seed `SIMULATION_SEED_BASE + n` (`0x5eed0000 + n`), and
 | Two runs of each of 50 seeds write the same log and checkpoints byte for byte                                                                                                     | `testing/simulation.test.ts`  | A simulator whose interleavings depend on host timing, so a failing seed does not reproduce                              |
 | 200 seeds over two runners move, drain, pause and partition the owner under the same faulted transfers; two runs of each of 20 moving seeds agree                                 | `testing/simulation.test.ts`  | Lost sends or timers during ownership changes, autonomous reopening of fenced shards, or host-dependent replay ordering  |
 
-The matrix also asserts that, across its 1,000 runs, transfers were refused for insufficient funds and crashes, lost responses and outages each struck, so a fault plan that silently stops firing fails it.
+`AKTER_SIMULATION_SEEDS` raises the seed count for a long run; the [10,000-seed run](history/2026-10-14-t7-10000-seeds.md) passed on Bun and Node. The matrix also asserts that, across its runs, transfers were refused for insufficient funds and crashes, lost responses and outages each struck, so a fault plan that silently stops firing fails it.
 
 ## What the matrix found
 

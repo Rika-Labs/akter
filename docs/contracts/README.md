@@ -1,6 +1,6 @@
 # Runtime contracts
 
-Status: proposal (0.2), owned by ADR 0124; promoted when every contract it indexes is promoted.
+Status: proposal (0.2), owned by ADR 0124; promoted when every contract it indexes is promoted. No indexed contract is fully promoted yet; each one's status line names its normative sections and the items still waiting for evidence.
 
 **Responsibility:** index the runtime contracts and their authority order.  
 **Authority:** normative 0.2 target on `main`; the 0.1 contracts ended with the swap from `rewrite/0.2`.  

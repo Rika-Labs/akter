@@ -1,6 +1,6 @@
 # E5: durable jobs
 
-E5 implements jobs over the owning shard's create-once bucket log on `rewrite/0.2`. It preserves E2b recovery and E4 admission. No 0.1 behavioral suite is removed. Real storage evidence is local filesystem and MinIO, not R2 or Tigris support, latency or atomicity evidence.
+E5 implements jobs over the owning shard's create-once bucket log. It preserves E2b recovery and E4 admission. No 0.1 behavioral suite is removed. Real storage evidence is local filesystem and MinIO, not R2 or Tigris support, latency or atomicity evidence.
 
 ## Failure evidence
 

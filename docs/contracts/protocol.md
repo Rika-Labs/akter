@@ -1,6 +1,6 @@
 # Wire protocol
 
-Status: proposal (0.2), owned by ADR 0130. E4 evidence for calls, same-id retries, streams, sessions, refusals and readiness is in [E4 RPC and serving](../verification/e4-rpc-serve.md); promoted when the items that page lists as open have evidence.
+Status: partially normative (0.2), owned by ADR 0130. [E4 RPC and serving](../verification/e4-rpc-serve.md) promotes One RPC group at `/rpc`, Calls, HTTP and WebSocket on Bun and Node, with `find` from [E7](../verification/e7-find-operators.md) and resubscription across an owner move from [E3](../verification/e3-cluster.md). Host drain report is normative with E3's F27 `nextDue` and the [E8a usage fields](../verification/e8a-usage.md). Still proposal, as E4 lists them open: trace propagation and action span names; `503` for `admission.requests` saturation; slow-consumer stream endings; presence `disconnect` after an owner crash; tenants other than `default`; Hosted assertions, which have unit tests but no end-to-end edge evidence; and Readiness beyond `200 { ready: true }` and `drained`, whose other reasons have no scenario.
 
 **Responsibility:** define the one client wire, its request identity, hosted assertions and readiness.  
 **Authority:** normative 0.2 API contract target on `main`.  

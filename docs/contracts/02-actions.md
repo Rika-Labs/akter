@@ -1,6 +1,6 @@
 # Actions
 
-Status: proposal (0.2), owned by ADR 0125; promoted when E1 failure evidence lands.
+Status: partially normative (0.2), owned by ADR 0125. [E1 execution](../verification/e1-execution.md) promotes Shape (synchronous handlers, declared-failure and thrown-defect discard), Context (ids, time and randomness derived from the command id and admission time, with the `akter/synchronous-actions` lint cases in `tooling/oxlint`), Determinism (`ReplayMismatch` in `snapshots/recovery.test.ts` and I9 in the seed matrix, at 10,000 seeds on Bun and Node in [T7](../verification/history/2026-10-14-t7-10000-seeds.md)), the `StateTooLarge` limit, and in Discarding staged work and Execution order and speculation the declared failure, defect and lost-append cases (F1, F2, F3, F5). Still proposal, each for want of a named scenario: Admission time (the never-decreasing clamp); the `PageMiss` rerun clause, where E6 and usage seed 8110 show a cold rerun completing once but no test asserts that nothing from the stopped run survives; the System-only rule for `cron` and `onFailure` actions; and Views.
 
 **Responsibility:** define how an action executes, what it may touch, and what happens when it fails.  
 **Authority:** normative 0.2 target on `main`.  

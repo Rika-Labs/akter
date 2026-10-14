@@ -1,6 +1,6 @@
 # E8a engine usage attribution
 
-**Status:** runner-local framework evidence on `rewrite/e8a-usage`; no hosted ingestion, billing or object-provider support claim.
+**Status:** runner-local framework evidence, merged into `rewrite/0.2` in [#775](https://github.com/Rika-Labs/akter/pull/775) and now on `main`; no hosted ingestion, billing or object-provider support claim.
 
 ## Public read and drain wire
 
