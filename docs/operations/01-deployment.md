@@ -19,6 +19,6 @@ Set a stable application bundle digest and framework version through `StoreOptio
 
 ## Drain and readiness
 
-`/ready` checks registration, assignment, peer health, store verification, and drain state. Use `RuntimeControl.waitForSignal({ deadline })` inside the live runtime scope. The runner becomes unready before flushing and releasing shards, then prints `DRAINED` with durable offsets and `nextDue`. Keep the root alive until drain completes; an abrupt scope interruption is not a clean handoff.
+`/ready` is meant to report registration, assignment, peer health, store verification, and drain state. Tests cover `200 { ready: true }`, the runner's `drained` state and peering health; the other `503` reasons have no test yet. Use `RuntimeControl.waitForSignal({ deadline })` inside the live runtime scope. The runner becomes unready before flushing and releasing shards, then prints `DRAINED` with durable offsets and `nextDue`. Keep the root alive until drain completes; an abrupt scope interruption is not a clean handoff.
 
 The host must preserve matching builds for unclean tails and restart stopped stores at their earliest due work. Local E3 measurements show roughly 15-second clean moves and 31-second crash takeover under defaults, not the five-second target. See [E3 verification](https://github.com/Rika-Labs/akter/blob/main/docs/verification/e3-cluster.md).

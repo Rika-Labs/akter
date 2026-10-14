@@ -11,7 +11,7 @@ An actor owns schema state and pending work at a typed address. `Actor.make` req
 
 ## Actions and durability
 
-A synchronous action changes a copy-on-write draft. It can stage sends, timers, jobs, and events, but performs no I/O. Declared failure, defect, page miss, or lost append discards the entire draft and every staged consequence. One shard owner groups entries into create-once segments. Replies and published consequences wait for a durable segment.
+A synchronous action changes a copy-on-write draft. It can stage sends, timers, jobs, and events, but performs no I/O. Declared failure, defect, or lost append discards the entire draft and every staged consequence. A page miss reruns the action once the page loads; that the stopped run leaves nothing behind is the [actions contract](https://github.com/Rika-Labs/akter/blob/main/docs/contracts/02-actions.md)'s target, not yet tested. One shard owner groups entries into create-once segments. Replies and published consequences wait for a durable segment.
 
 ## Command ids and epochs
 

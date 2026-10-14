@@ -4,7 +4,7 @@ Akter is a typed framework for durable actors, deterministic actions, journaled 
 
 ## The model
 
-An actor owns schema state and optional page-backed lists. Its actions are synchronous copy-on-write functions. A declared failure, defect, page miss, or lost segment discards the draft and every staged consequence. The runner publishes a reply, send, timer, job start, or event only after the shard's create-once segment is durable.
+An actor owns schema state and optional page-backed lists. Its actions are synchronous copy-on-write functions. A declared failure, defect, or lost segment discards the draft and every staged consequence. An action that touches a list page not in memory is rerun after the page loads; discarding everything the stopped run staged is the contract's target and is not yet covered by a test. The runner publishes a reply, send, timer, job start, or event only after the shard's create-once segment is durable.
 
 External I/O belongs in jobs. Named `step` results never rerun after they are durable; ambiguous provider effects still require provider idempotency keys.
 

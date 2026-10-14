@@ -15,4 +15,4 @@ Initial state is decoded from `{}`. Give every state field a decoding default, m
 
 A clean old runner stops admission, checkpoints, appends `Released`, and reports offsets and `nextDue`. A new release waits in standby. If an old build leaves an unclean tail, retain and run that matching build to recover it; do not delete the tail or default state to make rollout proceed.
 
-An audited `replay` operator can explicitly choose the current build, but outcome comparison still stops on `ReplayMismatch`. Opt-in is a diagnostic escape hatch, not a compatibility promise. Store format changes require a new accepted decision and provider-specific storage-check evidence.
+An audited `replay` operator can explicitly choose the current build, but outcome comparison still raises `ReplayMismatch` when a replayed outcome differs. Opt-in is a diagnostic escape hatch, not a compatibility promise. Store format changes require a new accepted decision and provider-specific storage-check evidence.

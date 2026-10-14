@@ -19,7 +19,7 @@ Preserve the affected objects and check the hash and retained checkpoint chain. 
 
 ## Refused build or replay mismatch
 
-Run the matching retained build first. Current-build replay requires explicit operator authorization and an audit; a mismatch still stops. Record the command id and build identities without logging payloads.
+Run the matching retained build first. Current-build replay requires explicit operator authorization and an audit; a mismatch still raises `ReplayMismatch`. Record the command id and build identities without logging payloads.
 
 ## Drain and stopped stores
 

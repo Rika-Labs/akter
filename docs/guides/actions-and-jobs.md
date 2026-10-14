@@ -33,7 +33,7 @@ const CounterLive = Counter.toLayer({
 })
 ```
 
-Returning `TooLarge` discards the draft. The same rule applies to staged sends, timers, job starts, and events, not just state. A defect, state-size violation, page miss, or lost append also publishes no speculative work. The recorded outcome is the only surviving trace of a failed action.
+Returning `TooLarge` discards the draft. The same rule applies to staged sends, timers, job starts, and events, not just state. A defect, state-size violation, or lost append also publishes no speculative work. A page miss reruns the action after loading the page; that the stopped run publishes nothing is the contract's target and has no test yet. The recorded outcome is the only surviving trace of a failed action.
 
 ## Deterministic inputs
 
