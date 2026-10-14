@@ -17,4 +17,4 @@ Restore into a separate empty destination with no active writer credentials. Ver
 
 Command ids protect retries within retained deduplication state, not across arbitrary rollback to an older backup. External providers still need idempotency keys and reconciliation. A fork is an audited actor-history branch with fresh actor identities, not a whole-store backup.
 
-Restore, provider snapshot consistency, and power-loss durability are not established by the E2/E3 local recovery suites. See the [recovery contract](../contracts/09-recovery.md) and [provider matrix](../verification/store-providers.md).
+Restore, provider snapshot consistency, and power-loss durability are not established by the E2/E3 local recovery suites. See the [recovery contract](https://github.com/Rika-Labs/akter/blob/main/docs/contracts/09-recovery.md) and [provider matrix](https://github.com/Rika-Labs/akter/blob/main/docs/verification/store-providers.md).

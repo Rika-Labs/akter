@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-09-28, Dallen, with every recommended default; proposed 2026-09-28). M4.8 builds the single-region edge; regions and tenant moves are L.1.
 
+**0.2 status:** amended (one region per environment; assertions carry); owned by [ADR 0136](0136-stores-the-bucket-is-the-store.md) and [ADR 0130](0130-views-sessions-events-and-rpc.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** decide how the hosted edge authenticates a request and hands it to a runner, where each tenant's home region is recorded and read, and how regions will work when they are built.
 
 **Authority:** design decision record.

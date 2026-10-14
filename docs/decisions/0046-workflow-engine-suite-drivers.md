@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-09-28, Dallen; proposed 2026-09-28).
 
+**0.2 status:** superseded; owned by [ADR 0129](0129-jobs-timers-and-shard-workflow-engine.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** decide how the shared workflow-engine suite of [ADR 0022](0022-workflow-engine-storage-and-version-markers.md) decision 10 drives the framework engine and `ClusterWorkflowEngine`, and record the divergences it found.
 
 **Authority:** design decision record.

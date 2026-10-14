@@ -2,6 +2,8 @@
 
 Status: implementation decision (2026-10-04), issue [#502](https://github.com/Rika-Labs/akter/issues/502).
 
+**0.2 status:** amended (inspect, log, snapshot, fork, replay replace old operator commands); owned by [ADR 0137](0137-inspection-audited-operations-telemetry.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 ## Context
 
 `akter login` and `akter deploy` are the first hosted commands in `apps/cli`. Both use `effect/cli` like every other command. The control plane already had the pieces a deploy needs from [ADR 0075](0075-deployment-and-runner-orchestration.md): the `DeploymentLifecycle` actor, the runner provider, and an `ImageBuilds` service. On a control plane configured with a builder (the local Compose stack), `ImageBuilds` turns a Docker build context into an image the runner provider starts. That builder could only build its own mounted context (`RUNNER_BUILD_CONTEXT`), so it couldn't build anything a CLI user had on their machine.

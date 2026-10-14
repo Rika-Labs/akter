@@ -13,4 +13,4 @@ description: "Move 0.1 applications to fresh 0.2 stores without converting runti
 - Replace database configuration with one store bucket per environment, or filesystem storage for local development.
 - Replace SQL inspector and repair operations with separately granted audited actor, shard, log, snapshot, fork, and replay operations.
 
-Defaulted fields and Schema transformations are the state-evolution mechanism. No migration CLI, adoption path, Promise facade, or generated Python/React client is carried forward. Read [upgrades](02-migrations.md) before a release handoff.
+Defaulted fields and Schema transformations are the state-evolution mechanism. No migration CLI, adoption path, Promise facade, or generated Python/React client is carried forward. Read [upgrades](./02-migrations.md) before a release handoff.

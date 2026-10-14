@@ -2,6 +2,8 @@
 
 **Status:** proposed (2026-09-28, issue #122); the review of its pull request decides it. It amends [ADR 0027](0027-served-protocol.md) section 3, where `Actor.auth.make` providers "declare `cookies: true`" to receive cookies, and section 6, where "the auth provider contributes its security scheme", one per provider.
 
+**0.2 status:** amended (cookie credentials apply to `/rpc` over HTTP); owned by [ADR 0130](0130-views-sessions-events-and-rpc.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** decide how a custom auth provider says which cookie carries its credential, and how the served OpenAPI document describes it.
 
 **Authority:** design decision record.

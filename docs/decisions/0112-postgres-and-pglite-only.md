@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-10-08).
 
+**0.2 status:** superseded in part: backend sentence 0136, routing-key and placement clauses 0134; Neki removal stands; owned by [ADR 0134](0134-removing-owned-tables-and-placement.md) and [ADR 0136](0136-stores-the-bucket-is-the-store.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 ## Context
 
 Launch scope is ordinary Postgres, with PGlite for embedded use within its documented limits. Neki's topology discovery, targeted sessions, transaction settings, autocommit DDL journal and inspection variants add a second runtime path without a launch requirement. Keeping them as experimental would still distribute and maintain that path.

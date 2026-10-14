@@ -34,11 +34,12 @@ The same contract serves the server and the single Effect client: `Counter.clien
 ## Install
 
 ```sh
-bun add @rikalabs/akter@rewrite effect @effect/platform-bun
+bun add @rikalabs/akter effect @effect/platform-bun
+bun add -d @rikalabs/akter-cli
 # Node: use @effect/platform-node instead of @effect/platform-bun
 ```
 
-The `rewrite` channel selects branch canaries; pin one full matching framework/CLI version and keep the lockfile before deploying. Supported runtime floors are Bun 1.4.2 and Node 24. The public package entries are `@rikalabs/akter`, `@rikalabs/akter/server`, `@rikalabs/akter/client`, and `@rikalabs/akter/testing`; the client entry is the same Effect client, not a Promise facade.
+The framework and CLI release together at one version; keep them matched and commit the lockfile before deploying. Supported runtime floors are Bun 1.4.2 and Node 24. The public package entries are `@rikalabs/akter`, `@rikalabs/akter/server`, `@rikalabs/akter/client`, and `@rikalabs/akter/testing`; the client entry is the same Effect client, not a Promise facade.
 
 ## Run and deploy
 

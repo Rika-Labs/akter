@@ -45,4 +45,4 @@ Declare `Actor.job({ payload, retry, timeout, concurrency, onFailure })` and imp
 
 Use `step("send", effect)` for JSON or void results, or `step("send", ResultSchema, effect)` for another schema value. A completed step never runs again. An interrupted external call can still have reached its provider before its result was journaled, so provider idempotency remains necessary. Put job-to-action calls that must not repeat across retry attempts inside a step, or make the action idempotent.
 
-Events emitted by an action wait for durability. Job progress events publish immediately and may repeat after retry; they are not retained history. Persist final results through an action. See [jobs](../api/jobs.md) and the [background-work contract](../contracts/08-background-work.md).
+Events emitted by an action wait for durability. Job progress events publish immediately and may repeat after retry; they are not retained history. Persist final results through an action. See [jobs](../api/jobs.md) and the [background-work contract](https://github.com/Rika-Labs/akter/blob/main/docs/contracts/08-background-work.md).

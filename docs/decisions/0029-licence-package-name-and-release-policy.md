@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-09-26). Dallen decided the licence, the `@akter` scope, and the alpha at M1 close; the licence covering `apps/*` is the delivery lead's default until Dallen says otherwise. It amends [ADR 0001](0001-repository-structure.md), which names the framework `akter` and lets it alone go unscoped.
 
+**0.2 status:** amended (entries, release line); owned by [ADR 0124](0124-engine-rewrite-and-command-log.md) and [ADR 0128](0128-constrained-actor-api.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** decide the project licence, the framework's npm name and entries, which packages publish, and how published versions are numbered.
 
 **Authority:** design decision record.

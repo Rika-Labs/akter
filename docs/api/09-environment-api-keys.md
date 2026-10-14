@@ -26,6 +26,6 @@ The already-published `projects.getEndpoints` operation returns `ProjectEndpoint
 
 Read operations declare `Unauthorized` (401), `Forbidden` (403), `NotFound` (404), `NotImplemented` (501) and `Unavailable` (503). Writes declare those plus `Conflict` (409). These use the shared tagged error schemas, not an additional environment-key error envelope.
 
-See [`akter keys`](06-cli.md#akter-keys) for CLI usage. The cloud consumption of this contract follows publication; this contract addition does not migrate the cloud routes by itself.
+See [`akter keys`](./06-cli.md#akter-keys) for CLI usage. The cloud consumption of this contract follows publication; this contract addition does not migrate the cloud routes by itself.
 
 The hosted key model permits tenant selectors, but the current framework server fails closed for tenants other than `default`. A schema-valid tenant is not proof that general tenant-scoped serving has landed.

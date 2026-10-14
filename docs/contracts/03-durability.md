@@ -3,7 +3,7 @@
 Status: partially normative (0.2), owned by ADR 0124. E2b promotes the append-before-reply/publication gate on the tested engine paths, ambiguous-append resolution and synchronous Store hashing in [E2 recovery](../verification/e2-recovery.md). E5 promotes job starts, journal durability and job-call deduplication/retirement in [E5 jobs](../verification/e5-jobs.md). The other clauses retain their milestone-specific proposal status until their evidence lands.
 
 **Responsibility:** define when an action is durable, what may be observed before that, how command identity deduplicates retries, and who may read a stored outcome.  
-**Authority:** normative target on `rewrite/0.2`.  
+**Authority:** normative 0.2 target on `main`.  
 **Owner role:** runtime architecture.  
 **Change policy:** update the failure matrix, the [error model](error-model.md) and the [protocol](protocol.md) with every change.
 

@@ -12,9 +12,9 @@ description: "Publish framework and CLI releases and main canaries through npm t
 
 ## Status
 
-The 0.2 product release waits for the framework to be complete; there is no early product release. [ADR 0138](https://github.com/Rika-Labs/akter/blob/a5b2c7dc171e9e1001b9e6f603a3051716f54461/docs/decisions/0138-framework-release-posture.md) records this release posture without changing package channels or evidence gates.
+`main` carries 0.2, and `0.2.0` is the first stable release published from it. [ADR 0138](https://github.com/Rika-Labs/akter/blob/a5b2c7dc171e9e1001b9e6f603a3051716f54461/docs/decisions/0138-framework-release-posture.md) records this release posture without changing package channels or evidence gates.
 
-The source manifests on `rewrite/0.2` carry version `0.2.0`; branch canaries use the `rewrite` dist-tag and an immutable full prerelease version. Registry tags, bootstrap status, trusted-publisher permissions, and environment approvals must be checked at release time. `main` remains the 0.1 release line until the approved swap. Editing a workflow does not publish a package or change registry tags.
+A stable version such as `0.2.0` publishes directly to `latest` from a `v<version>` tag on `main`; verified `main` pushes publish `next` canaries. The `alpha` dist-tag keeps the last 0.1 alpha and the `rewrite` dist-tag keeps the last pre-swap branch canary; neither moves with a stable release. Registry tags, trusted-publisher permissions, and environment approvals must be checked at release time. Editing a workflow does not publish a package or change registry tags.
 
 ## Prerequisites
 
@@ -67,7 +67,7 @@ npm view @rikalabs/akter dist-tags
 npm view @rikalabs/akter-cli dist-tags
 ```
 
-Check that `alpha` and `latest` both name the released alpha for both packages. Publishing and dist-tag updates are separate registry operations, not an atomic transaction. If the CLI publish or a tag update fails after the framework publishes, fix the authorization or package problem and rerun the same tagged release: already-published versions are skipped, and `latest` promotion retries without replacing an immutable version on npm. Promotion compares semantic versions so a historical rerun cannot move a newer `latest` backwards; a registry lookup failure stops promotion instead of assuming the tag is absent.
+For a stable release, check that `latest` names the released version for both packages and that `alpha`, `next` and `rewrite` are unchanged by the tagged run. For a pre-1.0 prerelease, check that its channel and `latest` both name it. Publishing and dist-tag updates are separate registry operations, not an atomic transaction. If the CLI publish or a tag update fails after the framework publishes, fix the authorization or package problem and rerun the same tagged release: already-published versions are skipped, and `latest` promotion retries without replacing an immutable version on npm. Promotion compares semantic versions so a historical rerun cannot move a newer `latest` backwards; a registry lookup failure stops promotion instead of assuming the tag is absent.
 
 ## Main canaries
 
@@ -83,7 +83,7 @@ Install with `@rikalabs/akter@next` and `@rikalabs/akter-cli@next` to try the ch
 
 ## Rewrite canaries
 
-While `rewrite/0.2` carries the 0.2 framework, a push to that branch publishes `@rikalabs/akter` and `@rikalabs/akter-cli` as `0.2.0-rewrite.<run-id>.<attempt>.g<sha12>` under the `rewrite` dist-tag. `release.yml` runs on the branch push itself, because a `workflow_run` event always executes the workflow file on the default branch (`main`), which still publishes 0.1. The job waits up to 30 minutes for a successful `push` run of `ci.yml` on the pushed SHA and fails if that run fails, then applies the same checks as a main canary against `origin/rewrite/0.2`: the commit must be on that branch and must equal `GITHUB_SHA`, the framework and CLI versions must match, and the same pack checks and both runtime smokes run. The tag is read from `version.ts --canary-branch rewrite/0.2`, so the channel can never be `latest` or `next`, and the promotion step stays off. The source manifests carry `0.2.0`; the canary replaces everything after the core version.
+Before the swap, `rewrite/0.2` carried the 0.2 framework. A push to that branch still publishes `@rikalabs/akter` and `@rikalabs/akter-cli` as `0.2.0-rewrite.<run-id>.<attempt>.g<sha12>` under the `rewrite` dist-tag. `release.yml` runs on the branch push itself, because a `workflow_run` event always executes the workflow file on the default branch (`main`). The job waits up to 30 minutes for a successful `push` run of `ci.yml` on the pushed SHA and fails if that run fails, then applies the same checks as a main canary against `origin/rewrite/0.2`: the commit must be on that branch and must equal `GITHUB_SHA`, the framework and CLI versions must match, and the same pack checks and both runtime smokes run. The tag is read from `version.ts --canary-branch rewrite/0.2`, so the channel can never be `latest` or `next`, and the promotion step stays off. The source manifests carry `0.2.0`; the canary replaces everything after the core version.
 
 ```sh
 bun .github/src/pack.ts --out .local/rewrite --cli-out .local/rewrite-cli --canary 321.1.g123456abcdef --canary-channel rewrite
@@ -95,5 +95,5 @@ Cloud deployments pin the complete same version of both packages rather than the
 
 - The workflow cannot publish a package name that does not exist on npm yet; each new package needs the bootstrap above.
 - A tag whose version is already on npm runs every check and the smoke test, then skips `npm publish`; pre-1.0 promotion still runs unless `latest` is newer. npm versions are immutable, so a changed build needs a new version, not a retag.
-- Bucket protocol, mTLS routing, and provider claims need their own current evidence in the [support matrix](support-matrix.md); local MinIO results do not certify a production provider.
+- Bucket protocol, mTLS routing, and provider claims need their own current evidence in the [support matrix](./support-matrix.md); local MinIO results do not certify a production provider.
 - React and Python clients are not part of 0.2.0. The public client is Effect-only; no removed compatibility package is published.

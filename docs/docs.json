@@ -65,21 +65,6 @@
               "operations/alpha-upgrades",
               "operations/05-releasing"
             ]
-          },
-          {
-            "group": "Vision and security",
-            "pages": [
-              "vision/01-problem",
-              "vision/02-product-model",
-              "vision/04-durable-execution",
-              "vision/05-realtime",
-              "vision/06-developer-experience",
-              "vision/07-deployment",
-              "vision/08-boundaries",
-              "security/authorization-model",
-              "security/data-classification",
-              "security/threat-model"
-            ]
           }
         ]
       },
@@ -110,7 +95,8 @@
               "api/02-context",
               "api/03-typescript-sdk",
               "api/jobs",
-              "api/lists-and-find"
+              "api/lists-and-find",
+              "api/forks"
             ]
           },
           {
@@ -126,22 +112,6 @@
           {
             "group": "Conventions",
             "pages": ["api/naming", "api/versioning"]
-          }
-        ]
-      },
-      {
-        "tab": "Architecture",
-        "groups": [
-          {
-            "group": "Design",
-            "pages": [
-              "architecture/01-topology",
-              "architecture/02-lifecycle",
-              "architecture/03-storage-layout",
-              "architecture/04-dispatch",
-              "architecture/05-adapters",
-              "architecture/repository-structure"
-            ]
           }
         ]
       }
@@ -174,31 +144,31 @@
     },
     {
       "source": "/contracts/02-command-turns",
-      "destination": "https://github.com/Rika-Labs/akter/blob/rewrite/0.2/docs/contracts/02-actions.md"
+      "destination": "https://github.com/Rika-Labs/akter/blob/main/docs/contracts/02-actions.md"
     },
     {
       "source": "/contracts/03-transactions",
-      "destination": "https://github.com/Rika-Labs/akter/blob/rewrite/0.2/docs/contracts/03-durability.md"
+      "destination": "https://github.com/Rika-Labs/akter/blob/main/docs/contracts/03-durability.md"
     },
     {
       "source": "/contracts/04-receipts",
-      "destination": "https://github.com/Rika-Labs/akter/blob/rewrite/0.2/docs/contracts/03-durability.md"
+      "destination": "https://github.com/Rika-Labs/akter/blob/main/docs/contracts/03-durability.md"
     },
     {
       "source": "/contracts/06-storage-ownership",
-      "destination": "https://github.com/Rika-Labs/akter/blob/rewrite/0.2/docs/contracts/06-storage.md"
+      "destination": "https://github.com/Rika-Labs/akter/blob/main/docs/contracts/06-storage.md"
     },
     {
       "source": "/contracts/:slug*",
-      "destination": "https://github.com/Rika-Labs/akter/blob/rewrite/0.2/docs/contracts/:slug*.md"
+      "destination": "https://github.com/Rika-Labs/akter/blob/main/docs/contracts/:slug*.md"
     },
     {
       "source": "/decisions/:slug*",
-      "destination": "https://github.com/Rika-Labs/akter/blob/rewrite/0.2/docs/decisions/:slug*.md"
+      "destination": "https://github.com/Rika-Labs/akter/blob/main/docs/decisions/:slug*.md"
     },
     {
       "source": "/milestones/:slug*",
-      "destination": "https://github.com/Rika-Labs/akter/blob/rewrite/0.2/docs/milestones/:slug*.md"
+      "destination": "https://github.com/Rika-Labs/akter/blob/main/docs/milestones/:slug*.md"
     },
     {
       "source": "/BENCHMARKS",
@@ -206,7 +176,7 @@
     },
     {
       "source": "/product/competitive-positioning",
-      "destination": "https://github.com/Rika-Labs/akter/blob/rewrite/0.2/docs/product/competitive-positioning.md"
+      "destination": "https://github.com/Rika-Labs/akter/blob/main/docs/product/competitive-positioning.md"
     },
     {
       "source": "/packages/:slug*",
@@ -226,11 +196,11 @@
     },
     {
       "source": "/architecture/data-model",
-      "destination": "/architecture/03-storage-layout"
+      "destination": "https://github.com/Rika-Labs/akter/blob/main/docs/architecture/03-storage-layout.md"
     },
     {
       "source": "/architecture/transaction-catalog",
-      "destination": "/architecture/04-dispatch"
+      "destination": "https://github.com/Rika-Labs/akter/blob/main/docs/architecture/04-dispatch.md"
     },
     {
       "source": "/cloud/choose-postgres",
@@ -246,7 +216,7 @@
     },
     {
       "source": "/vision/03-relational-data",
-      "destination": "/vision/02-product-model"
+      "destination": "https://github.com/Rika-Labs/akter/blob/main/docs/vision/02-product-model.md"
     },
     {
       "source": "/guides/effect-into-the-commit",

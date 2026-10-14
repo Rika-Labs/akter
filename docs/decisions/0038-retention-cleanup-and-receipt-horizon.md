@@ -2,6 +2,8 @@
 
 **Status:** implementation decision (2026-09-26).
 
+**0.2 status:** superseded in part (receipt horizon); owned by [ADR 0124](0124-engine-rewrite-and-command-log.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** specify how receipts and events are pruned without letting an expired command run again or a replay skip events.
 **Authority:** design.
 **Owner role:** runtime/reliability.

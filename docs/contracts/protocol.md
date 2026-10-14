@@ -3,7 +3,7 @@
 Status: proposal (0.2), owned by ADR 0130. E4 evidence for calls, same-id retries, streams, sessions, refusals and readiness is in [E4 RPC and serving](../verification/e4-rpc-serve.md); promoted when the items that page lists as open have evidence.
 
 **Responsibility:** define the one client wire, its request identity, hosted assertions and readiness.  
-**Authority:** normative API contract target on `rewrite/0.2`.  
+**Authority:** normative 0.2 API contract target on `main`.  
 **Owner role:** protocol and SDK.  
 **Change policy:** a change requires an ADR and client conformance updates on Node and Bun.
 

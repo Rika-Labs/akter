@@ -29,4 +29,4 @@ Keep the runtime scope alive until its bounded drain reports `DRAINED`. Preserve
 
 Inspect job attempts and the internal `onFailure` result with scoped authority. Completed steps must not be repeated to repair state. A sent action rejection is recorded at the target and counted in telemetry; it has no dead letter or reply to the sender. Reconcile ambiguous external I/O with the provider's idempotency record.
 
-The [CLI reference](../api/06-cli.md) names implemented checks and target operator forms; the [support matrix](support-matrix.md) bounds what these procedures have proven.
+The [CLI reference](../api/06-cli.md) names implemented checks and target operator forms; the [support matrix](./support-matrix.md) bounds what these procedures have proven.

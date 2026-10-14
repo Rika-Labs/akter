@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-09-28, Dallen, with every recommended default; proposed 2026-09-28). M4.7 builds it in `0021_payload_versions`.
 
+**0.2 status:** amended (stored event and effect versions end; state evolution carries); owned by [ADR 0128](0128-constrained-actor-api.md) and [ADR 0133](0133-build-matched-replay.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** decide how stored event values and effect payloads keep decoding after their schemas change.
 
 **Authority:** design decision record.

@@ -3,7 +3,7 @@
 Status: partially normative (0.2), owned by ADR 0126. [E3 cluster evidence](../verification/e3-cluster.md) covers durable send streams and owner routing for the currently served `default` tenant, including E5's derived job calls and receiver retirement. General tenant-address routing remains proposal; [E5 jobs](../verification/e5-jobs.md) owns the workflow guarantees.
 
 **Responsibility:** define how actors message each other and how clients and jobs call actors.  
-**Authority:** normative target on `rewrite/0.2`.  
+**Authority:** normative 0.2 target on `main`.  
 **Owner role:** runtime.  
 **Change policy:** wire changes require protocol versioning and replay tests.
 

@@ -3,7 +3,7 @@
 Status: proposal (0.2), owned by ADR 0130; promoted when E2 (store isolation) and E4 (callers, sessions, assertions and access) failure evidence lands, each section with its milestone. E4 evidence for callers, sessions, reauthorization and origin refusal is in [E4 RPC and serving](../verification/e4-rpc-serve.md); hosted assertions over `/rpc` end to end are open there.
 
 **Responsibility:** define trust boundaries, caller and tenant identity, access, store and tenant isolation, runner trust and operator authority.  
-**Authority:** normative target on `rewrite/0.2`.  
+**Authority:** normative 0.2 target on `main`.  
 **Owner role:** security and runtime.  
 **Change policy:** security review is required for changes to auth, access, sessions, assertions, store credentials, peering and operator capabilities.
 

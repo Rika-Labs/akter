@@ -40,4 +40,4 @@ When retries are spent, `onFailure` receives `{ job, declaration, key?, payload,
 
 With `Akter.serve({ runner })`, job actor calls use the receiver's shard owner over mTLS, preserving their derived command ids and original caller attribution. Job completion remains pending until every receiver's per-job call stream is durably retired; owner movement resumes that cleanup rather than rerunning completed steps.
 
-The [background-work contract](../contracts/08-background-work.md) owns the guarantees; [E5 verification](../verification/e5-jobs.md) names the failure scenarios and provider limits. Cluster delivery and the operator inspection surface are separate milestones.
+The [background-work contract](https://github.com/Rika-Labs/akter/blob/main/docs/contracts/08-background-work.md) owns the guarantees; [E5 verification](https://github.com/Rika-Labs/akter/blob/main/docs/verification/e5-jobs.md) names the failure scenarios and provider limits. Cluster delivery and the operator inspection surface are separate milestones.

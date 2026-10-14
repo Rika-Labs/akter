@@ -2,6 +2,8 @@
 
 **Status:** implementation decision (2026-10-03), for #494; amends ADR 0019's mailbox mapping.
 
+**0.2 status:** amended (bounded refusal carries; Cluster mailbox and pool details end); owned by [ADR 0126](0126-shard-ownership-on-the-bucket-log.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** keep accepted commands' latency bounded when offered load exceeds what a runner can serve.
 
 **Authority:** design decision record.

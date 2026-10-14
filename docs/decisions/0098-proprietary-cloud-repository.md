@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-10-06), decided by Dallen.
 
+**0.2 status:** amended (deferred client packages); owned by [ADR 0128](0128-constrained-actor-api.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** separate the public framework and client interfaces from the hosted platform's implementation and assets.
 
 **Authority:** recorded decision.

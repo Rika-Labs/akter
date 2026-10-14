@@ -3,7 +3,7 @@
 Status: partially normative (0.2), owned by ADR 0126. [E2 recovery](../verification/e2-recovery.md) promotes the create-once epoch fence, discard on loss, runner-only reassignment and Store-owned freshness; [E3 cluster evidence](../verification/e3-cluster.md) adds bucket-backed assignment and routed ownership for the `default` tenant. General address/tenancy and clock-discontinuity clauses remain proposal.
 
 **Responsibility:** define what an actor is, where it lives, and what may change it.  
-**Authority:** normative target on `rewrite/0.2`.  
+**Authority:** normative 0.2 target on `main`.  
 **Owner role:** runtime architecture.  
 **Change policy:** any authority change requires security review and adversarial tests.
 

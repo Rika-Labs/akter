@@ -2,6 +2,8 @@
 
 **Status:** accepted design (2026-09-21); executable conformance remains pending.
 
+**0.2 status:** amended (transaction model ends); owned by [ADR 0124](0124-engine-rewrite-and-command-log.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** resolve remaining inconsistencies between the v4 decisions and documentation.
 
 **Authority:** historical decision record.

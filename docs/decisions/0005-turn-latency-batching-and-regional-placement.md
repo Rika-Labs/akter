@@ -2,6 +2,8 @@
 
 **Status:** accepted design (2026-09-23); implementation, conformance, and benchmarks remain pending.
 
+**0.2 status:** amended (turn model, home regions); owned by [ADR 0124](0124-engine-rewrite-and-command-log.md) and [ADR 0126](0126-shard-ownership-on-the-bucket-log.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** record the owner's choices for closing the per-write latency, hot-actor, and remote-user gaps against Rivet Actors and Cloudflare Durable Objects.
 
 **Authority:** historical decision record.

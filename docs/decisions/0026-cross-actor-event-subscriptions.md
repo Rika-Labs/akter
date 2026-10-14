@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-09-26, Dallen, with every recommended default; proposed 2026-09-26). It amends [contract 04](../contracts/04-receipts.md), [contract 05](../contracts/05-messaging.md), [contract 07](../contracts/07-realtime.md), [contract 10](../contracts/10-security.md), and [retention](../operations/retention.md). It builds on the outbox ([ADR 0011](0011-direct-commands-outbox-and-performance.md)) and the multi-runner relay ([ADR 0021](0021-multi-runner-relay-singleton-and-cron.md)). The amendments listed under [Amendments](#amendments) land in the same change.
 
+**0.2 status:** superseded; owned by [ADR 0128](0128-constrained-actor-api.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** decide how one actor follows another actor's committed events and is woken durably when a new one commits, even while it sleeps, so that the build unit ([#94](https://github.com/Rika-Labs/akter/issues/94), migration `0017_subscriptions`) has no open design questions.
 
 **Authority:** design decision record.

@@ -23,4 +23,4 @@ bunx akter deploy --project PROJECT_ID --env production
 
 Approve the browser device code only when it matches the login you initiated. `--api-url` selects a preview control plane; remote endpoints require HTTPS. The saved API and session are used by later commands. Keep the credential directory private and out of your source upload.
 
-Configure other secrets through [environment variables](environment-variables.md); platform store credentials are injected separately. Read [storage](storage.md) for data custody and [deploy](deploy.md) for release handoff. `akter logout` removes the saved session but does not delete projects or data.
+Configure other secrets through [environment variables](./environment-variables.md); platform store credentials are injected separately. Read [storage](./storage.md) for data custody and [deploy](./deploy.md) for release handoff. `akter logout` removes the saved session but does not delete projects or data.

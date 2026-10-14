@@ -2,6 +2,8 @@
 
 **Status:** proposed (2026-10-03, on [#492](https://github.com/Rika-Labs/akter/issues/492)). It amends [ADR 0019](0019-runner-capacity-and-pool-size.md)'s connection budget and [ADR 0020](0020-two-round-trip-turn-pipeline.md)'s pools and lease span, and composes with [ADR 0077](0077-admission-control.md)'s pool checkout bounds, whose decision 5 it extends to the query pool.
 
+**0.2 status:** superseded; owned by [ADR 0124](0124-engine-rewrite-and-command-log.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** decide how a runner's Postgres pools hand out connections, which pool serves queries, and how long a turn holds its session.
 
 **Authority:** design decision record.

@@ -2,6 +2,8 @@
 
 **Status:** proposed (2026-09-28).
 
+**0.2 status:** superseded; owned by [ADR 0134](0134-removing-owned-tables-and-placement.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** bound how much of a shared database one actor's blobs can occupy, and decide how query reads are bounded.
 
 **Authority:** design decision record.

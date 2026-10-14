@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-09-30, Dallen). Built with M4.6 ([#226](https://github.com/Rika-Labs/akter/issues/226)). It makes concrete the operator rule of [ADR 0003](0003-failure-scoping-drain-and-hosted-trust.md) and the operator receipt access of [ADR 0004](0004-receipt-access-revocation-and-expiry.md), amends [ADR 0049](0049-observability-names-metrics-and-defect-spans.md) section 3, and uses migration `0023_operator_audit`.
 
+**0.2 status:** amended (operator grants and audited repair carry); owned by [ADR 0137](0137-inspection-audited-operations-telemetry.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** define who is an operator, what an operator may do to which resources, how each operator action is recorded, and what `durable inspect` shows.
 
 **Authority:** decision record.

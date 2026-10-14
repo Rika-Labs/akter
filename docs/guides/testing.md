@@ -33,4 +33,4 @@ await Simulation.run(
 
 Exercise declared failure and defect discard, a lost append, page misses, owner loss, retry with the same command id, restart, interrupted checkpoints, and ambiguous external steps. Assert resulting durable state and obligations, not just that execution returned. Double-run determinism and replay compare outcomes, while bucket suites validate create-once, CAS, listing, and page hashes.
 
-The repository uses MinIO for S3-compatible integration evidence on Bun and Node. Filesystem, simulator, and MinIO runs do not validate R2, Tigris, AWS S3, or power-loss behavior. Provider support needs an actual `akter storage check` record. See [verification](../verification/README.md) for current scenarios and limits.
+The repository uses MinIO for S3-compatible integration evidence on Bun and Node. Filesystem, simulator, and MinIO runs do not validate R2, Tigris, AWS S3, or power-loss behavior. Provider support needs an actual `akter storage check` record. See [verification](https://github.com/Rika-Labs/akter/blob/main/docs/verification/README.md) for current scenarios and limits.

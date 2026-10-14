@@ -2,6 +2,8 @@
 
 **Status:** accepted product direction; implementation and verification gated (2026-09-23)
 
+**0.2 status:** amended: status 0124, client reach 0128, adoption 0134; owned by [ADR 0124](0124-engine-rewrite-and-command-log.md), [ADR 0128](0128-constrained-actor-api.md) and [ADR 0134](0134-removing-owned-tables-and-placement.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** define the post-foundation adoption and developer-experience roadmap.
 
 **Authority:** product and API direction.

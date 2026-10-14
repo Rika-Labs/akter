@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-09-26, Dallen). It gates M2.7 (workflow engine) and M2.8 (workflow compatibility); no code implements it yet. Dallen chose typed step constructors for question 1; question 2 was delegated to Floppy, who took the default; questions 3–5 take their defaults ([decided questions](#decided-questions)).
 
+**0.2 status:** superseded; owned by [ADR 0129](0129-jobs-timers-and-shard-workflow-engine.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** settle the details that [ADR 0012 §1](0012-workflows-internals-effects-defects-merging-regions.md#1-workflows-run-on-our-own-engine-on-the-owner-actors-shard) left open for the framework `WorkflowEngine`, and the version markers and deploy check that [ADR 0014 item 4](0014-adoption-observation-and-client-reach.md#decision) requires before workflows ship.
 
 **Authority:** decision record. It amends contracts [01](../contracts/01-actor-authority.md), [03](../contracts/03-transactions.md), [04](../contracts/04-receipts.md), [05](../contracts/05-messaging.md) and [08](../contracts/08-background-work.md); [retention](../operations/retention.md); the [server API](../api/01-server-api.md), [context API](../api/02-context.md) and [post-foundation sketches](../api/post-foundation-sketches.md); the [data model](../architecture/data-model.md) and [transaction catalog](../architecture/transaction-catalog.md); the [glossary](../GLOSSARY.md); and the conformance ledger, [failure matrix](../verification/02-failure-matrix.md), [invariants](../verification/invariants.md) and [performance](../../BENCHMARKS.md) requirements.

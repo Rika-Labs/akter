@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-09-28, Dallen, with every recommended default below). It amends [ADR 0021](0021-multi-runner-relay-singleton-and-cron.md) section 5, where the tick key is `$cron:<canonical expression>` and expressions are evaluated in UTC. The contract and API amendments listed under [Amendments](#amendments) land in the same change. The implementation is M2.5's follow-up to [#132](https://github.com/Rika-Labs/akter/pull/132).
 
+**0.2 status:** amended (cron zones, intervals and DST carry onto the timer wheel); owned by [ADR 0129](0129-jobs-timers-and-shard-workflow-engine.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** decide how a `policy.cron` entry names a time zone or a fixed interval, what its tick key is, which instants a zoned schedule fires at across daylight-saving transitions, and how ADR 0021's catch-up rule applies to zones and intervals.
 
 **Authority:** design decision record.

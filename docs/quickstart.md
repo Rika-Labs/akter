@@ -12,11 +12,11 @@ This tutorial creates a counter actor, serves it over `/rpc`, calls it with the 
 ```sh
 mkdir akter-counter && cd akter-counter
 bun init -y
-bun add @rikalabs/akter@rewrite effect @effect/platform-bun
-bun add -d @rikalabs/akter-cli@rewrite
+bun add @rikalabs/akter effect @effect/platform-bun
+bun add -d @rikalabs/akter-cli
 ```
 
-The `rewrite` channel selects branch canaries while `main` remains on 0.1. Resolve both packages to the same complete prerelease version and keep the lockfile; do not deploy from moving tags. Node 24+ works too: install `@effect/platform-node` and use `NodeRuntime`/`NodeServices` instead of the Bun imports below.
+Both packages release together at one version, starting with 0.2.0. Keep them matched and commit the lockfile; do not deploy from moving dist-tags. Node 24+ works too: install `@effect/platform-node` and use `NodeRuntime`/`NodeServices` instead of the Bun imports below.
 
 ## 2. Declare the actor
 

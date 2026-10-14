@@ -8,7 +8,7 @@ description: "Build a Bun or Node image and run one runner on an S3-compatible b
 The runnable files are in [`apps/self-host`](https://github.com/Rika-Labs/akter/tree/main/apps/self-host). `src/server.ts` serves a counter actor with `Akter.serve` and `App.make` from `@rikalabs/akter/server`: one `add` action, a `count` view, and a bearer-token `auth`. The store is a bucket: MinIO in the compose file, or any S3-compatible service, or a directory for a single container.
 
 <Warning>
-This recipe tracks `rewrite/0.2` and defaults to one runner. Several runners require directly reachable peer addresses and mTLS credentials as described below; the compose file does not provision that fleet. Pin the checkout commit you deploy, and resolve the store-scoped peering identity before a production rollout.
+This recipe tracks `main` and defaults to one runner. Several runners require directly reachable peer addresses and mTLS credentials as described below; the compose file does not provision that fleet. Pin the checkout commit you deploy, and resolve the store-scoped peering identity before a production rollout.
 </Warning>
 
 ## Build and boot
@@ -81,7 +81,7 @@ docker compose -f apps/self-host/compose.yml stop
 
 Compose sends SIGTERM and allows 30 seconds. The recipe waits for SIGTERM or SIGINT without interrupting the runtime, makes `/ready` answer `503`, drains with a 15-second bound and prints `DRAINED {"outcome":...,"shards":[{"shard":...,"offset":...,"nextDue":...}],"actions":...,"jobSeconds":...}` before closing its server/store scope and exiting. `nextDue` is an epoch-millisecond instant or `null`. Optional `actions` and `jobSeconds` are cumulative runner-local attribution since open, not billing authority; legacy reports without them remain valid and mean unknown usage. A stopped self-host store fires overdue timers when a runner starts again; proactive scheduled startup is the host's responsibility. The `data` volume survives `stop` and `down`; never use `down --volumes` on data you keep.
 
-For several runner containers, give each a unique directly reachable `RUNNER_HOST` and a nonzero `RUNNER_PORT`; the listener binds that port on `0.0.0.0`. All runners share the same S3 bucket and `PEER_IDENTITY`, stable across releases, and mount the `peer-ca`, `peer-certificate` and `peer-key` secrets. Issue each runner's certificate from the trusted authority with only `spiffe://akter/deployment/<PEER_IDENTITY>` as its URI SAN. Do not reuse that identity or credentials in another store. See [server composition](../api/01-server-api.md#several-runners-and-graceful-shutdown-02) and the [store-scoped peering identity](../contracts/10-security.md#runner-trust); the simple compose file remains a one-runner recipe until those peer mounts and addresses are configured.
+For several runner containers, give each a unique directly reachable `RUNNER_HOST` and a nonzero `RUNNER_PORT`; the listener binds that port on `0.0.0.0`. All runners share the same S3 bucket and `PEER_IDENTITY`, stable across releases, and mount the `peer-ca`, `peer-certificate` and `peer-key` secrets. Issue each runner's certificate from the trusted authority with only `spiffe://akter/deployment/<PEER_IDENTITY>` as its URI SAN. Do not reuse that identity or credentials in another store. See [server composition](../api/01-server-api.md#several-runners-and-graceful-shutdown-0-2) and the [store-scoped peering identity](https://github.com/Rika-Labs/akter/blob/main/docs/contracts/10-security.md#runner-trust); the simple compose file remains a one-runner recipe until those peer mounts and addresses are configured.
 
 ## Reproduce the evidence
 
@@ -92,4 +92,4 @@ SELFHOST_RUNTIME=bun bash apps/self-host/verify.sh
 SELFHOST_RUNTIME=node bash apps/self-host/verify.sh
 ```
 
-It checks, over `/rpc`, that a retry with the same command id replays, that wrong and missing credentials are refused, and that state and stored outcomes survive a runner restart, first on MinIO and then on a directory. The [verification record](../verification/self-host.md) lists the evidence and its limits.
+It checks, over `/rpc`, that a retry with the same command id replays, that wrong and missing credentials are refused, and that state and stored outcomes survive a runner restart, first on MinIO and then on a directory. The [verification record](https://github.com/Rika-Labs/akter/blob/main/docs/verification/self-host.md) lists the evidence and its limits.

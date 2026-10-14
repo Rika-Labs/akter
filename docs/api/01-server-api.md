@@ -82,7 +82,7 @@ The example's fixed user is for local development only. Production must authenti
 
 ### Several runners and graceful shutdown (0.2)
 
-Omit `runner` for one process. A multi-runner `runner` has `address`, optional `listenAddress`, and `peering: { deployment, credentials }`. Peer addresses must be directly reachable; credential material supplies a CA, certificate, and redacted key. The store-scoped identity is shared across authorized releases, not across stores; it adds no write authority beyond the store bucket credential. See the [self-host configuration](../operations/self-host.md#stop) and [E3 security limits](../verification/e3-cluster.md).
+Omit `runner` for one process. A multi-runner `runner` has `address`, optional `listenAddress`, and `peering: { deployment, credentials }`. Peer addresses must be directly reachable; credential material supplies a CA, certificate, and redacted key. The store-scoped identity is shared across authorized releases, not across stores; it adds no write authority beyond the store bucket credential. See the [self-host configuration](../operations/self-host.md#stop) and [E3 security limits](https://github.com/Rika-Labs/akter/blob/main/docs/verification/e3-cluster.md).
 
 Bucket coordination defaults are `shardLockExpiration: "3 seconds"`, `refreshAssignmentsInterval: "250 millis"` and `shardLockRefreshInterval: "2 seconds"`. Effect caps lock refresh at one third of expiration, and the adapter's 1.5-second heartbeat-write floor normally produces one write every two seconds. Liveness uses heartbeat ETags and local monotonic time, not synchronized clocks. Durable release wakes peers immediately over mTLS; periodic refresh covers lost notifications. These options can be overridden, but shorter timings reduce tolerance for bucket latency and event-loop pauses, while longer expiration increases crash failover time. The advisory lock never authorizes a log write.
 
@@ -104,7 +104,7 @@ The `DrainReport` wire adds optional top-level `actions` and `jobSeconds`, with 
 
 The served app exposes one RPC group at `/rpc`. WebSocket clients exchange JSON and keep a session; HTTP clients use `POST` with newline-delimited JSON. Authentication runs before RPC handling and each session is rebound or reauthorized according to the server options.
 
-Operator requests use a separate `POST /operator` endpoint and never share the application RPC group. `operatorAuth` accepts `OperatorAuth.tokens([{ token: Redacted.make(token), grant: { operator, capabilities } }])` from the server entry. Each inspect, log, snapshot, and replay operation has its own capability and audit boundary. [Actor forks](forks.md) use the separately granted server/CLI interface; they are not served by `POST /operator`. `prometheus: true` exposes `/metrics`. `Telemetry.layer` sends OTLP traces/metrics and DevTools data, but there is no OTLP logs exporter.
+Operator requests use a separate `POST /operator` endpoint and never share the application RPC group. `operatorAuth` accepts `OperatorAuth.tokens([{ token: Redacted.make(token), grant: { operator, capabilities } }])` from the server entry. Each inspect, log, snapshot, and replay operation has its own capability and audit boundary. [Actor forks](./forks.md) use the separately granted server/CLI interface; they are not served by `POST /operator`. `prometheus: true` exposes `/metrics`. `Telemetry.layer` sends OTLP traces/metrics and DevTools data, but there is no OTLP logs exporter.
 
 ## Client and queries
 

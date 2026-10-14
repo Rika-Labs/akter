@@ -3,7 +3,7 @@
 Status: partially normative (0.2), owned by ADR 0129. E5 promotes the job journal, retries, failure delivery, concurrency, durable sleep and derived-call clauses in [E5 jobs](../verification/e5-jobs.md). E2b promotes pending-timer recovery, drain-time `nextDue` and persisted cron catch-up in [E2 recovery](../verification/e2-recovery.md). [E3 cluster evidence](../verification/e3-cluster.md) adds routed job calls and retirement, the scoped timer wheel, split-owner recovery, attribution, DST and no-runner restart. Cloud's proactive wake orchestration and the complete cross-build inspection path retain proposal status for E6/E8.
 
 **Responsibility:** define how I/O runs, how timers and recurring actions fire, and what survives crashes, owner changes, deploys and scale to zero.  
-**Authority:** normative target on `rewrite/0.2`.  
+**Authority:** normative 0.2 target on `main`.  
 **Owner role:** runtime.  
 **Change policy:** every change needs crash-point tests around journal durability and owner moves.
 

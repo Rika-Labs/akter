@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-09-28, Dallen, with every recommended default; proposed 2026-09-28). M4.11 builds it in `0022_parent_placement`.
 
+**0.2 status:** superseded; owned by [ADR 0134](0134-removing-owned-tables-and-placement.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** decide how an actor type is placed on its parent actor's shard, how a child's address yields its routing key, and what storage and API change for it.
 
 **Authority:** design decision record.

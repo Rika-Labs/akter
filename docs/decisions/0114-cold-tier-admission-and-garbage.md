@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-10-09). Amends ADR 0036 sections 3–5.
 
+**0.2 status:** superseded; owned by [ADR 0127](0127-snapshots-pages-lists-history-gc.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** reconcile cold rehydration with owner-side admission and make immutable-key reuse safe for both garbage-collection paths.
 
 **Authority:** design decision record.

@@ -1,6 +1,6 @@
 # Milestones
 
-The current rewrite is [E0–E8](0.2-rewrite.md). It replaces the 0.1 runtime in `packages/akter` on `rewrite/0.2`; `main` remains on 0.1 until the release swap.
+The current rewrite is [E0–E8](0.2-rewrite.md). It replaced the 0.1 runtime in `packages/akter` on `rewrite/0.2`, which merged into `main` for the 0.2.0 release.
 
 M0–M6 are historical plans and completion records. Their bodies are preserved as 0.1 history, not current API or support descriptions. M5/M6 are superseded by the rewrite's evidence and release gates. Historical observations do not certify 0.2 behavior.
 

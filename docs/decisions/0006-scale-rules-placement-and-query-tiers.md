@@ -2,6 +2,8 @@
 
 **Status:** accepted design (2026-09-23); implementation, conformance, and benchmarks remain pending.
 
+**0.2 status:** superseded in part: due scans 0126, query tiers 0131, placement and routing keys 0134; owned by [ADR 0126](0126-shard-ownership-on-the-bucket-log.md), [ADR 0131](0131-find-over-owner-held-index.md) and [ADR 0134](0134-removing-owned-tables-and-placement.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** record the rules that keep turn, wake, and timer cost independent of how many actors a deployment stores.
 
 **Authority:** historical decision record.

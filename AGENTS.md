@@ -13,9 +13,9 @@ Read this file before changing code or documentation.
 
 If these conflict, stop and record an ADR. Do not silently choose the easiest interpretation.
 
-## Branch authority (`rewrite/0.2`)
+## 0.2 authority
 
-On `rewrite/0.2`, ADRs 0124–0137 in `docs/decisions/` and the contracts whose status line reads "proposal (0.2)" define the target. The 0.1 code still on the branch is being replaced milestone by milestone (E1–E8); where it disagrees with a 0.2 contract, the contract is the target and the code is not evidence of support. A contract is promoted, and its status line changes, when the failure evidence of its milestone lands. A 0.1 test or conformance group is deleted only when a 0.2 contract restates its guarantee with a test that rejects the same wrong implementation, or an accepted 0.2 ADR removes the behavior; the deleting change names which. `main` stays on 0.1, with its own contracts, until the swap.
+`main` carries 0.2; the rewrite landed there from `rewrite/0.2` for the 0.2.0 release. ADRs 0124–0137 in `docs/decisions/` and the contracts whose status line reads "proposal (0.2)" define the target. Any 0.1 code that remains is replaced milestone by milestone (E1–E8); where it disagrees with a 0.2 contract, the contract is the target and the code is not evidence of support. A contract is promoted, and its status line changes, when the failure evidence of its milestone lands. A 0.1 test or conformance group is deleted only when a 0.2 contract restates its guarantee with a test that rejects the same wrong implementation, or an accepted 0.2 ADR removes the behavior; the deleting change names which.
 
 ## Repository model
 
@@ -53,5 +53,5 @@ Use the repository commands in `package.json`. Evidence for concurrency, fencing
 - Prefer a small set of integration/E2E scenarios through the real public API and storage. Exercise discarded actions (declared failure, defect, `PageMiss`, lost segment), interruption, retry, restart, stale and lost epochs, ambiguous appends, interrupted checkpoints and page uploads, replay, GC and fork races, and denied access where relevant; assert the resulting state and obligations, not just successful execution.
 - Before adding a test, name the plausible wrong implementation it must reject. Derive expected values independently; use asymmetric inputs and both sides of important boundaries.
 - Keep focused type, algebraic, protocol and packaging tests when integration/E2E cannot establish that contract. Do not mock the boundary whose behavior the test claims to prove.
-- Consolidate fixtures and duplicate scenarios first. Delete a behavioral test only after identifying surviving evidence that rejects the same mistake; preserve distinct provider and failure-path evidence. On `rewrite/0.2`, a 0.1 suite retires only under the branch-authority rule above, with its dated evidence kept as history; never delete a failing 0.2 test because old source disappeared.
+- Consolidate fixtures and duplicate scenarios first. Delete a behavioral test only after identifying surviving evidence that rejects the same mistake; preserve distinct provider and failure-path evidence. A 0.1 suite retires only under the 0.2 authority rule above, with its dated evidence kept as history; never delete a failing 0.2 test because old source disappeared.
 - Never weaken assertions, hide failures, skip cases, or change production behavior merely to make tests green. An intentional contract change needs independently justified expectations. Missing evidence is unknown, not a pass; test counts and coverage percentages are not the objective.

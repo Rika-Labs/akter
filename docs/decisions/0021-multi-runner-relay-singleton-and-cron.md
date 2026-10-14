@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-09-26; proposed 2026-09-25). It amends [ADR 0006](0006-scale-rules-placement-and-query-tiers.md) and [ADR 0011](0011-direct-commands-outbox-and-performance.md) where they say a runner scans only the buckets it owns, and it decides how [ADR 0010](0010-one-way-effect-native-api.md)'s `policy.cron` and `cronSkipIfOlderThan` work. The contract, architecture, API, and verification amendments listed under [Amendments](#amendments) land in the same change.
 
+**0.2 status:** superseded; owned by [ADR 0129](0129-jobs-timers-and-shard-workflow-engine.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** decide how the outbox relay, effect executors, singleton cron, and per-actor cron behave when several runners share one database, so that M2.4 (relay) and M2.5 (cron) have no open design questions.
 
 **Authority:** design decision record.

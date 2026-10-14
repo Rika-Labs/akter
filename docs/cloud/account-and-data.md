@@ -17,4 +17,4 @@ Same-name recreation uses a new incarnation and store. The window is not a custo
 
 Resolve sole-organization ownership before deleting a personal account. Personal cleanup removes identity credentials, sessions, memberships, settings, and user-owned keys. Billing, security, and audit retention follow the applicable policy and legal obligations; deletion is not a promise to erase every historical record immediately.
 
-Actor erasure also depends on retained checkpoint reachability and GC grace periods. See [storage](storage.md) and [retention](../operations/retention.md). Prices, refunds, and plan quotas belong to approved E8 policy, not this framework document.
+Actor erasure also depends on retained checkpoint reachability and GC grace periods. See [storage](./storage.md) and [retention](../operations/retention.md). Prices, refunds, and plan quotas belong to approved E8 policy, not this framework document.

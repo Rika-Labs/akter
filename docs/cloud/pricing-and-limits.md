@@ -13,4 +13,4 @@ Use the hosted plan catalog and account billing surface for the active offering,
 
 The non-list actor state limit is 256 KiB; list data lives in pages. `find` returns ids only and limits a query to at most 1,000. Client command ids last ten minutes. These are framework bounds, not included plan usage or service-level objectives.
 
-Durable latency includes the provider PUT. Provider atomicity, performance, hosted isolation, and quota behavior need their actual evidence. The [support matrix](../operations/support-matrix.md) and [storage guide](storage.md) explain those boundaries.
+Durable latency includes the provider PUT. Provider atomicity, performance, hosted isolation, and quota behavior need their actual evidence. The [support matrix](../operations/support-matrix.md) and [storage guide](./storage.md) explain those boundaries.

@@ -3,7 +3,7 @@
 Status: partially normative (0.2), owned by ADR 0130. [E7](../verification/e7-find-operators.md) promotes ids-only `find`, owner index durability/recovery, one access check and scatter-gather for the supported `default` tenant. General tenant addressing remains proposal. E4 evidence for streams, presence and events is in [E4 RPC and serving](../verification/e4-rpc-serve.md); its stated limits remain.
 
 **Responsibility:** define what clients read and watch, when they see changes, how presence and events behave, and what `find` promises.  
-**Authority:** normative target on `rewrite/0.2`.  
+**Authority:** normative 0.2 target on `main`.  
 **Owner role:** realtime and runtime.  
 **Change policy:** every change must be tested for the snapshot/live race, loss, owner move and revocation.
 

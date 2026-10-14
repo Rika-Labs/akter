@@ -5,7 +5,7 @@ description: "Deploy a bucket-backed Akter 0.2 app with bounded drain and mTLS r
 
 # Deployment
 
-Use one store bucket per environment and one credential scope per store. The [Compose recipe](self-host.md) starts one runner on MinIO. For local development use `Store.fileSystem`; memory is not a durable deployment.
+Use one store bucket per environment and one credential scope per store. The [Compose recipe](./self-host.md) starts one runner on MinIO. For local development use `Store.fileSystem`; memory is not a durable deployment.
 
 ## Before starting
 
@@ -21,4 +21,4 @@ Set a stable application bundle digest and framework version through `StoreOptio
 
 `/ready` checks registration, assignment, peer health, store verification, and drain state. Use `RuntimeControl.waitForSignal({ deadline })` inside the live runtime scope. The runner becomes unready before flushing and releasing shards, then prints `DRAINED` with durable offsets and `nextDue`. Keep the root alive until drain completes; an abrupt scope interruption is not a clean handoff.
 
-The host must preserve matching builds for unclean tails and restart stopped stores at their earliest due work. Local E3 measurements show roughly 15-second clean moves and 31-second crash takeover under defaults, not the five-second target. See [E3 verification](../verification/e3-cluster.md).
+The host must preserve matching builds for unclean tails and restart stopped stores at their earliest due work. Local E3 measurements show roughly 15-second clean moves and 31-second crash takeover under defaults, not the five-second target. See [E3 verification](https://github.com/Rika-Labs/akter/blob/main/docs/verification/e3-cluster.md).

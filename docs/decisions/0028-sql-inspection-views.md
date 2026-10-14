@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-09-28, Dallen, with the recommended answer to every open question; proposed 2026-09-27). It gates CR.4. Migration `0013_inspection_views` implements it; the [decided questions](#decided-questions) record the answers. [ADR 0048](0048-mint-progress-and-inspection-record-corrections.md) corrects §2's wording about `scheduled_at_ms`. [ADR 0095](0095-single-table-inspection-views.md) adds a second, single-table view set for routed Neki groups and keeps this one. [ADR 0051](0051-row-level-security.md) amends §4, §5, and question 6: with row-level security the views keep owner rights, owned by the tenant role, instead of switching to `security_invoker`.
 
+**0.2 status:** superseded; owned by [ADR 0137](0137-inspection-audited-operations-telemetry.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** define a stable, documented, read-only SQL surface for inspecting committed runtime state, which rows and columns it exposes, how it is tenant scoped, and which privileges read it.
 
 **Authority:** decision record. It amends contracts [06](../contracts/06-storage-ownership.md) and [10](../contracts/10-security.md); the [data model](../architecture/data-model.md) and [storage layout](../architecture/03-storage-layout.md); [observability](../operations/03-observability.md); the [support matrix](../operations/support-matrix.md); and the conformance ledger. The operator reference is [inspection views](../operations/inspection-views.md).

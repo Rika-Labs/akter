@@ -3,7 +3,7 @@
 Status: partially normative (0.2), owned by ADR 0127. [E8e retention evidence](../verification/e8e-retention.md) establishes mutable retention, CAS/audit atomicity, request-time admission and epoch-consistent collection. E7 establishes the shared checkpoint/index page and audit-before-answer boundaries in [its failure evidence](../verification/e7-find-operators.md). E6 implements page-backed lists, anchored history and GC within [its evidence scope](../verification/e6-pages-history.md); production-provider and 50 GB gates remain separate.
 
 **Responsibility:** define what a store holds, how objects are written and verified, how long history is kept, and how unreachable objects are deleted.  
-**Authority:** normative target on `rewrite/0.2`.  
+**Authority:** normative 0.2 target on `main`.  
 **Owner role:** storage and runtime.  
 **Change policy:** a layout or format change requires an ADR and a passing `akter storage check` run on every supported provider.
 

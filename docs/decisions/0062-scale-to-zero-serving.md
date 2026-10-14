@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-09-30, Dallen; proposed 2026-09-30). Waking a region for due work is a follow-up. It gates M6.7 and is the last item of [ADR 0014](0014-adoption-observation-and-client-reach.md)'s order. When accepted it amends [ADR 0031](0031-hosted-ingress-tenant-directory-and-regions.md) §1, whose edge refuses a region with no ready runner, and uses [ADR 0053](0053-served-readiness-route.md)'s `GET /ready` as the edge's readiness probe.
 
+**0.2 status:** amended (scale to zero needs drain-time checkpoints and `nextDue`); owned by [ADR 0126](0126-shard-ownership-on-the-bucket-log.md) and [ADR 0129](0129-jobs-timers-and-shard-workflow-engine.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** decide how a served deployment runs with no runners, how the first request starts one, and what a cold runner guarantees.
 
 **Authority:** design decision record.

@@ -1,7 +1,11 @@
 # Changelog
 
-## Unreleased (0.2)
+## 0.2.0 (2026-10-14)
 
+The CLI and framework release together at `0.2.0` on the `latest` npm dist-tag; see the [framework changelog](https://github.com/Rika-Labs/akter/blob/main/packages/akter/CHANGELOG.md). Pin both packages to the same version.
+
+- Adds `akter dev`, which serves a default-exported `App.make(...)` over a filesystem store, and `akter storage check`, which probes a directory or S3-compatible bucket for the store protocol and reports a verdict per probe.
+- Adds the audited operator commands `inspect actor`, `inspect shard`, `log tail`, `log export`, `snapshot`, `fork`, `replay` and `retention`. Each needs its own operator capability. The 0.1 SQL inspector, receipt and repair commands are removed; there is no `migrate` or `adopt` command.
 - **Breaking cloud contract:** `Environment.database` is removed from `@rikalabs/akter-cli/cloud-api`. An environment is `{ name, projectId, currentDeploymentId }`; a hosted application's data lives in its environment's store bucket, so there is no database status to report. A response that still carries `database` has the field dropped by the default decode and refused by a strict one (`onExcessProperty: "error"`). `ProjectRegion.database` is unchanged.
 - `akter deploy` no longer reads the environment after the rollout is live or prints the database report (the p50 latency warning and `Database runner cap`). Its last output is `Deployment <id> is live in <environment>`.
 - `DATABASE_URL` is an ordinary customer variable with no platform meaning; removing it refuses no deployment.

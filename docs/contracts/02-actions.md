@@ -3,7 +3,7 @@
 Status: proposal (0.2), owned by ADR 0125; promoted when E1 failure evidence lands.
 
 **Responsibility:** define how an action executes, what it may touch, and what happens when it fails.  
-**Authority:** normative target on `rewrite/0.2`.  
+**Authority:** normative 0.2 target on `main`.  
 **Owner role:** runtime architecture.  
 **Change policy:** update the failure matrix and the [durability contract](03-durability.md) with every execution change.
 

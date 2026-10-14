@@ -2,6 +2,8 @@
 
 **Status:** accepted design (2026-09-23); implementation and conformance remain pending.
 
+**0.2 status:** superseded in part: §1 and §3 0129, §2 0128, §5 0134, §6 0124; §4 amended by 0125; §7 amended by 0136; owned by [ADR 0124](0124-engine-rewrite-and-command-log.md), [ADR 0125](0125-synchronous-deterministic-actions.md), [ADR 0128](0128-constrained-actor-api.md), [ADR 0129](0129-jobs-timers-and-shard-workflow-engine.md), [ADR 0134](0134-removing-owned-tables-and-placement.md) and [ADR 0136](0136-stores-the-bucket-is-the-store.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** settle the seven decisions left open by [ADR 0010](0010-one-way-effect-native-api.md) and [ADR 0011](0011-direct-commands-outbox-and-performance.md).
 
 **Authority:** historical decision record.

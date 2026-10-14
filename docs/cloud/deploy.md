@@ -23,4 +23,4 @@ A new release starts in standby. The old release becomes unready, drains to chec
 
 The CLI follows for 900 seconds by default; `--timeout` changes the wait, not the platform's execution lifetime. A timeout does not cancel a rollout. Inspect the existing deployment before retrying. Failed provisioning, refused recovery, and failed builds must remain visible and leave the previous live release intact.
 
-Variable changes apply to the next capture. Rollback selects code/configuration, not an earlier copy of actor data. See [storage](storage.md), [upgrade notes](../operations/alpha-upgrades.md), and [runner logs](logs.md). No prices, quotas, or production-provider support are promised by this procedure.
+Variable changes apply to the next capture. Rollback selects code/configuration, not an earlier copy of actor data. See [storage](./storage.md), [upgrade notes](../operations/alpha-upgrades.md), and [runner logs](./logs.md). No prices, quotas, or production-provider support are promised by this procedure.

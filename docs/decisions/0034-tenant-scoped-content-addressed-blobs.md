@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-09-28, Dallen, with every recommended default; proposed 2026-09-28). M4.13 builds it in `0020_content_blobs`.
 
+**0.2 status:** superseded; owned by [ADR 0134](0134-removing-owned-tables-and-placement.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** decide how identical bytes are stored once per tenant and shared across that tenant's actors: how access is granted, how unreferenced content is collected, where rows live, and how long unreferenced content is kept.
 
 **Authority:** design decision record.

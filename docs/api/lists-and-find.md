@@ -31,7 +31,7 @@ The key and order fields must be strings or numbers. When `key` is omitted, it d
 
 List writes are part of the action draft and disappear with a discarded action. Pages are loaded outside the synchronous handler. A missing cached page causes the handler to rerun with the same recorded inputs after loading, not to leak partial changes. Clients use `handle.messages.range(...)` for reads and `handle.messages.watch(...)` for live windows; lists do not appear in `handle.state`.
 
-E6 implements two copy-on-write list trees, a byte-bounded clean-page cache and invocation-local page resolution. [E6 evidence](../verification/e6-pages-history.md) covers discarded `PageMiss` attempts, corrupt leaves, owner moves and GC races on the named local backends. Production-provider and 50 GB measurements are not inferred from those passes.
+E6 implements two copy-on-write list trees, a byte-bounded clean-page cache and invocation-local page resolution. [E6 evidence](https://github.com/Rika-Labs/akter/blob/main/docs/verification/e6-pages-history.md) covers discarded `PageMiss` attempts, corrupt leaves, owner moves and GC races on the named local backends. Production-provider and 50 GB measurements are not inferred from those passes.
 
 ## Find
 

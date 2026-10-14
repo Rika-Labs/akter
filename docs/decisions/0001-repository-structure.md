@@ -8,6 +8,8 @@
 **Status:** accepted (2026-09-21)  
 **Supersedes:** `docs/architecture/package-boundaries.md` (thirteen skeleton packages)
 
+**0.2 status:** amended (tree); owned by [ADR 0124](0124-engine-rewrite-and-command-log.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 ## Context
 
 The template layout split the actor runtime into `protocol runtime drizzle sdk gateway work realtime blobs testing`, plus `apps/server` and `apps/worker`. Research decision 151 settled one npm distribution, `akter`, with four subpath entries, and decision 155 settled three ways to run (embedded, served, hosted). Thirteen internal packages cannot express a four-entry public surface, and every one of them was an `export {}` scaffold. The monorepo also needed the naming and boundary contract from the Whorl restructure so a tree checker can enforce it.

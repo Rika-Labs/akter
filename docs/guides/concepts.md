@@ -27,4 +27,4 @@ Jobs run Effects after durable start. Completed `step` results never repeat; int
 
 ## Store and hosting
 
-One environment has one bucket store containing log, checkpoints, pages, indexes, leases, and audits. Development uses a filesystem directory; memory is test-only. A provider is supported only with its own passing protocol evidence. The [contracts](../contracts/README.md) state guarantees and the [support matrix](../operations/support-matrix.md) bounds support.
+One environment has one bucket store containing log, checkpoints, pages, indexes, leases, and audits. Development uses a filesystem directory; memory is test-only. A provider is supported only with its own passing protocol evidence. The [contracts](https://github.com/Rika-Labs/akter/blob/main/docs/contracts/README.md) state guarantees and the [support matrix](../operations/support-matrix.md) bounds support.

@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-09-30, Dallen; proposed 2026-09-28).
 
+**0.2 status:** superseded; owned by [ADR 0128](0128-constrained-actor-api.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** decide where M3.6's billing example lives and what it may claim.
 
 **Authority:** design decision record.

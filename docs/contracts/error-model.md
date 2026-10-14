@@ -3,7 +3,7 @@
 Status: proposal (0.2), owned by ADR 0128; promoted when E1 (reasons and defects) and E4 (wire mapping) failure evidence lands, each section with its milestone. E4 wire-mapping evidence is in [E4 RPC and serving](../verification/e4-rpc-serve.md).
 
 **Responsibility:** define framework errors, retry metadata, defects and their wire form.  
-**Authority:** normative target on `rewrite/0.2`.  
+**Authority:** normative 0.2 target on `main`.  
 **Owner role:** API and runtime.  
 **Change policy:** a reason or code change requires client compatibility review.
 

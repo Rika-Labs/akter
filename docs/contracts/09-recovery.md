@@ -3,7 +3,7 @@
 Status: partially normative (0.2), owned by ADR 0126. E2b promotes checkpoint-plus-tail recovery, unknown outcomes, engine drain/report, fenced reassignment and same-runtime build matching in [E2 recovery](../verification/e2-recovery.md). [E3 cluster evidence](../verification/e3-cluster.md) adds assignment, routed ownership, readiness and host drain. Store-scoped peering is the accepted transport identity; cross-runtime recovery, lazy paging, jobs, connection cleanup, clock discontinuities, restore and Cloud rollout orchestration remain proposal.
 
 **Responsibility:** define how shards open and recover, how unknown outcomes resolve, how runners drain and hand off, which build replays a tail, and how a store is restored.  
-**Authority:** normative target on `rewrite/0.2`.  
+**Authority:** normative 0.2 target on `main`.  
 **Owner role:** runtime and reliability.  
 **Change policy:** every change needs crash-point evidence on the simulator and on a real bucket.
 

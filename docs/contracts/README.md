@@ -3,11 +3,11 @@
 Status: proposal (0.2), owned by ADR 0124; promoted when every contract it indexes is promoted.
 
 **Responsibility:** index the runtime contracts and their authority order.  
-**Authority:** normative target on `rewrite/0.2`; `main` keeps the 0.1 contracts until the swap.  
+**Authority:** normative 0.2 target on `main`; the 0.1 contracts ended with the swap from `rewrite/0.2`.  
 **Owner role:** runtime architecture.  
 **Change policy:** a contract change requires an ADR, updated failure evidence, and an API and versioning review.
 
-On the `rewrite/0.2` branch these documents define the 0.2 guarantees. Each starts as a proposal owned by one of [ADRs 0124–0137](../decisions/README.md#02-rewrite-proposed) and is promoted, section by section where its status line says so, when the failure evidence of its milestone lands. Until a clause is promoted, code on the branch may still implement 0.1 behavior that the clause replaces; the clause is the target, not a claim of support. Where a clause and an accepted ADR disagree, stop and record an ADR.
+These documents define the 0.2 guarantees. Each starts as a proposal owned by one of [ADRs 0124–0137](../decisions/README.md#02-rewrite-proposed) and is promoted, section by section where its status line says so, when the failure evidence of its milestone lands. Until a clause is promoted, code may still implement 0.1 behavior that the clause replaces; the clause is the target, not a claim of support. Where a clause and an accepted ADR disagree, stop and record an ADR.
 
 The public distribution is `@rikalabs/akter` with three entries:
 

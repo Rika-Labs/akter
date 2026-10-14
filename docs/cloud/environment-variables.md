@@ -22,4 +22,4 @@ Names use letters, digits, and underscores with a letter or underscore first. Th
 
 Names beginning with `AKTER_`, `ASSERTION_`, or `RUNNER_`, plus platform identity/provider names, are reserved. The 0.2 platform injects the store id, endpoint, bucket, temporary credentials, and refresh configuration. These values are not captured customer secrets and are not listed or editable.
 
-`DATABASE_URL` is not required by Akter 0.2. If an application's own job uses an unrelated database, that is application configuration and not framework authority or a hosted storage substitute. See [environment storage](storage.md).
+`DATABASE_URL` is not required by Akter 0.2. If an application's own job uses an unrelated database, that is application configuration and not framework authority or a hosted storage substitute. See [environment storage](./storage.md).
