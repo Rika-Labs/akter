@@ -2,6 +2,8 @@
 
 **Status:** accepted design (2026-09-23); a type spike, implementation, and migration of the M0 code remain pending.
 
+**0.2 status:** superseded; owned by [ADR 0128](0128-constrained-actor-api.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** fix the public API shape so each task has exactly one spelling.
 
 **Authority:** historical decision record.

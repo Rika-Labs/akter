@@ -2,6 +2,7 @@ name: Release
 on:
   push:
     tags: ["v*"]
+    branches: [rewrite/0.2]
   workflow_run:
     workflows: [Verify]
     branches: [main]
@@ -27,7 +28,7 @@ jobs:
        github.event.workflow_run.head_sha == github.sha &&
        github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     environment: npm
     permissions:
       contents: read
@@ -38,11 +39,12 @@ jobs:
       prerelease: ${{ steps.release.outputs.prerelease }}
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-      CANARY: ${{ github.event_name == 'workflow_run' }}
+      CANARY: ${{ github.event_name == 'workflow_run' || (github.event_name == 'push' && github.ref_type == 'branch') }}
+      CANARY_BRANCH: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || (github.event_name == 'push' && github.ref_type == 'branch' && github.ref_name) || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ github.event.workflow_run.head_sha || format('refs/tags/{0}', github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name) }}
+          ref: ${{ github.event.workflow_run.head_sha || (github.event_name == 'push' && github.ref_type == 'branch' && github.sha) || format('refs/tags/{0}', github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name) }}
           fetch-depth: 0
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
@@ -60,18 +62,23 @@ jobs:
           test "$npm" = 12.2.0
           echo "node $(node --version), npm $npm"
       - run: bun install --frozen-lockfile --ignore-scripts
-      - name: Select a verified main canary or tagged release
+      - name: Select a verified canary or tagged release
         id: release
         run: |
           set -euo pipefail
           commit="$(git rev-parse HEAD)"
-          git merge-base --is-ancestor "$commit" origin/main || { echo "$commit is not on main"; exit 1; }
-          test "$commit" = "$GITHUB_SHA" || { echo "Checkout does not match the provenance SHA; dispatch on the matching tag ref"; exit 1; }
-          bun .github/src/release/version.ts > "$RUNNER_TEMP/release-channel"
+          branch=main
+          channel=()
           if [ "$CANARY" = true ]; then
-            echo "tag=next" >> "$GITHUB_OUTPUT"
-            echo "promote_latest=false" >> "$GITHUB_OUTPUT"
-            echo "Publishing a next canary from verified commit $commit"
+            branch="$CANARY_BRANCH"
+            channel=(--canary-branch "$branch")
+          fi
+          bun .github/src/release/version.ts "${channel[@]}" > "$RUNNER_TEMP/release-channel"
+          git merge-base --is-ancestor "$commit" "origin/$branch" || { echo "$commit is not on $branch"; exit 1; }
+          test "$commit" = "$GITHUB_SHA" || { echo "Checkout does not match the provenance SHA; dispatch on the matching tag ref"; exit 1; }
+          if [ "$CANARY" = true ]; then
+            cat "$RUNNER_TEMP/release-channel" >> "$GITHUB_OUTPUT"
+            echo "Publishing a $(sed -n 's/^tag=//p' "$RUNNER_TEMP/release-channel") canary from verified commit $commit on $branch"
             exit 0
           fi
           [[ "$RELEASE_TAG" =~ ^v[0-9] ]] || { echo "$RELEASE_TAG is not a v<version> tag"; exit 1; }
@@ -84,6 +91,31 @@ jobs:
           echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           if [[ "$core" == *-* ]]; then prerelease=true; else prerelease=false; fi
           echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+      - name: Wait for a successful Verify run on the pushed commit
+        if: github.event_name == 'push' && github.ref_type == 'branch'
+        timeout-minutes: 30
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse HEAD)"
+          for _ in $(seq 1 120); do
+            states="$(gh api --paginate \
+              -H 'Accept: application/vnd.github+json' \
+              "/repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${commit}&event=push&branch=${CANARY_BRANCH}&per_page=100" \
+              --jq '.workflow_runs[] | if .status != "completed" then "pending" elif .conclusion == "success" then "success" else "failed" end')"
+            if grep -qx success <<<"$states"; then
+              echo "Verify succeeded for $commit on $CANARY_BRANCH"
+              exit 0
+            fi
+            if [ -n "$states" ] && ! grep -qx pending <<<"$states"; then
+              echo "Verify did not succeed for $commit" >&2
+              exit 1
+            fi
+            sleep 15
+          done
+          echo "No finished Verify run for $commit within the wait" >&2
+          exit 1
       - name: Require a successful Verify run for the tagged commit
         if: env.CANARY != 'true'
         env:
@@ -109,7 +141,7 @@ jobs:
           canary=()
           if [ "$CANARY" = true ]; then
             commit="$(git rev-parse HEAD)"
-            canary=(--canary "$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT.g${commit:0:12}")
+            canary=(--canary "$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT.g${commit:0:12}" --canary-channel "$DIST_TAG")
           else
             bun .github/src/release/notes.ts "$(jq -r .version packages/akter/package.json)" > "$RUNNER_TEMP/release-notes.md"
           fi
@@ -159,7 +191,7 @@ jobs:
           retention-days: 14
   github-release:
     needs: publish
-    if: github.event_name != 'workflow_run'
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_type == 'tag')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

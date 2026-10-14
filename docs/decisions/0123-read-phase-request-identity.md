@@ -2,6 +2,8 @@
 
 Status: accepted, 2026-10-12.
 
+**0.2 status:** amended (request identity carries onto views and sessions); owned by [ADR 0130](0130-views-sessions-events-and-rpc.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 ## Context
 
 Query and stream handlers receive a correctly scoped `X.Read`, but they may also use public `CurrentCaller` and `Tenant` references in application services. A query omitted request bindings, and a stream's bindings were outside a provided handler context that could overwrite them with layer-builder identities. Real public HTTP over local Postgres reproduced an authenticated tenant `a` query observing ambient tenant `default` and caller `Anonymous` while `X.Read` correctly named `a` and `alice`.

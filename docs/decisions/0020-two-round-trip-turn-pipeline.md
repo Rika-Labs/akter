@@ -4,6 +4,8 @@
 
 **Status:** accepted (2026-09-26, Dallen, on [#54](https://github.com/Rika-Labs/akter/issues/54)). Dallen set the target on 2026-09-25: two SQL round trips per turn, and no one-round-trip fast path. On acceptance, he also approved the connection split (`maxConnections` 50 plus `offTurnConnections` 10) and the narrower batch allowance. Implementation (P4) and its evidence remain pending.
 
+**0.2 status:** superseded; owned by [ADR 0124](0124-engine-rewrite-and-command-log.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** decide how the runtime issues a command turn in two database round trips, as [ADR 0005](0005-turn-latency-batching-and-regional-placement.md) requires, and what the implementation must prove.
 
 **Authority:** historical decision record.

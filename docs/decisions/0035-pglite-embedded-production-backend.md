@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-09-28, Dallen, with every recommended default; proposed 2026-09-28). M4.14 builds it; it needs no migration.
 
+**0.2 status:** superseded in part (production backend claim); owned by [ADR 0136](0136-stores-the-bucket-is-the-store.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** decide when file-backed PGlite is a supported production backend, what the framework enforces for it, and which limits it states.
 
 **Authority:** design decision record.

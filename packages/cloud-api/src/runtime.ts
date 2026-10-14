@@ -1,5 +1,5 @@
-import * as Framework from "@rikalabs/akter/client"
-import { Schema, Struct } from "effect"
+import * as Framework from "@rikalabs/akter"
+import { Schema } from "effect"
 
 import { DeploymentSummary } from "./deployments.ts"
 import {
@@ -376,12 +376,20 @@ export class CommandFailed extends Schema.TaggedError<CommandFailed>()(
 
 /**
  * The organization reached one of its plan's hard caps, named by `cap`;
- * answered 429. It carries the framework's `QuotaExceeded` payload, including
- * when the period resets as `retryAfterMs`.
+ * answered 429, with when the period resets as `retryAfterMs`. The plan cap
+ * is the cloud's own payload: the framework's `QuotaExceeded` reason carries
+ * only the refused limit and an optional `retryAfter`.
  */
 export class QuotaExceeded extends Schema.TaggedError<QuotaExceeded>()(
   "QuotaExceeded",
-  Struct.omit(Framework.QuotaExceeded.fields, ["_tag"]),
+  {
+    organizationId: Schema.String,
+    period: Schema.String,
+    cap: Schema.Literals(["compute", "connections", "spend"]),
+    limit: Schema.Finite,
+    used: Schema.Finite,
+    retryAfterMs: Schema.Finite,
+  },
   { httpApiStatus: 429 },
 ) {}
 

@@ -2,6 +2,8 @@
 
 **Status:** implementation decision (2026-10-04), for [#495](https://github.com/Rika-Labs/akter/issues/495); amends [ADR 0005](0005-turn-latency-batching-and-regional-placement.md)'s one-transaction-per-actor batch, [ADR 0020](0020-two-round-trip-turn-pipeline.md)'s turn-owned session and [ADR 0071](0071-fair-pools-query-pool-and-early-turn-release.md)'s per-turn lease, and composes with [ADR 0072](0072-served-command-in-two-round-trips.md) and [ADR 0077](0077-admission-control.md).
 
+**0.2 status:** superseded; owned by [ADR 0124](0124-engine-rewrite-and-command-log.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** let warm turns of different actors share one transaction, one `COMMIT` and one WAL flush, without letting one turn's outcome depend on another's.
 
 **Authority:** design decision record.

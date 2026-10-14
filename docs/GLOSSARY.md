@@ -1,46 +1,60 @@
 # Glossary
 
-**Responsibility:** keep vocabulary consistent across agents and packages.  
-**Authority:** normative terminology.  
-**Owner role:** product/runtime architecture.
-**Change policy:** a term change requires a consistency pass over every document that uses it.
+These are the 0.2 terms. They describe the contract target; a term is not evidence that its milestone or production-provider gate has passed.
 
-- **Actor:** durable application boundary around an identity and its mutation authority.
-- **ActorRef:** serializable actor address containing actor name, tenant, and actor ID.
-- **Activation:** disposable in-memory process representation of an actor.
-- **Actor definition:** the one data object passed to `Actor.make`, with sections `key`, `placement`, `state`, `tables`, `blobs`, `events`, `feeds`, `api`, `internal`, `createdBy`, `schedules`, `jobs`, `subscriptions`, `policy`, and `access`.
-- **Named actor:** actor whose `key` is an id schema, resolved with `X.get(id)`.
-- **Minted actor:** actor with no `key`; `X.create()` mints its id outside a turn, or `turn.mint` derives it inside the parent's turn (ADR 0025), and no row is written until its first turn. A parent-placed minted child's id wraps that UUIDv8 as `c1.<len>.<parent>.<uuid>`, and it has no `X.create()` (ADR 0033).
-- **Singleton:** actor with `key: Actor.singleton`, resolved with `X.get()`, and active at most once cluster-wide.
-- **Generation:** fenced authority epoch for an activation.
-- **Turn:** one bounded command execution and its transaction, which a turn batch shares.
-- **Turn batch:** consecutive turns for one actor, already waiting in its mailbox, committed in one transaction; each command keeps its own receipt and failure isolation.
-- **Placement key:** the value whose rows share a shard: the tenant by default, the actor, or under `placement: { parent: P }`, the actor-placed root of the parent chain, whose id each child id carries as `c1.<len>.<parent id>.<local id>` (ADR 0033).
-- **Routing key:** framework-computed 64-bit hash of a placement key, stored on every actor-owned row and used for shard placement.
-- **Home region:** the deployment region whose database holds a tenant's actors and rows; assigned only by an operator.
-- **Query tier:** local (one actor), group (one placement key, one shard), or fleet (declared `Fleet.view`, eventually consistent, outside turns).
-- **Command:** authenticated request addressed to one actor, delivered directly and implemented by a server handler.
-- **Subscription:** an `Actor.subscription` member through which an actor follows another actor type's committed events, delivered as System command turns in source cursor order; routed by the event, or dynamic per source id.
-- **Reducer:** pure state transition declared in the contract; runs optimistically in browser handles, and a batched reducer folds queued calls in order with `batch.combine`.
-- **Context service:** the typed per-phase context (`X.Turn`, `X.Read`, `X.Connection`, `X.Workflow`, `X.Executor`) a handler obtains with `yield*`.
-- **Receipt:** durable record of one logical command identity and outcome; the only durable admission record of a direct command.
-- **Command ID:** client-minted idempotency identity reused across delivery retries.
-- **Event:** committed fact available for delivery or replay.
-- **Intent:** durable actor message, timer, workflow start, or job obligation written to `actor_outbox` by a turn and delivered after commit.
-- **Outbox:** the actor-shard `actor_outbox` table that carries every intent; its relay delivers due rows as direct commands.
-- **Job:** external I/O declared with `Actor.job`, bound by an actor in `jobs`, staged by `turn.enqueue`, persisted with the turn, and executed after commit by `X.toJobLayer`; its result and dead letter reach the actor through the binding's `onSuccess` and `onDeadLetter` routes, and a cancelled keyed job's outcome through `onCancelled` (ADR 0024, M2.13). It is at least once, keyed for providers by its stable `jobId`.
-- **Internal command:** a command in the `internal` section, callable only by System callers.
-- **Workflow:** durable orchestration declared as an actor member with `Actor.workflow`.
-- **WorkflowRun:** handle returned by a workflow start, exposing identity, result, polling, and interruption.
-- **Version marker:** a named integer declared in `Actor.workflow`'s `versions`, recorded when an execution starts and read with `wf.version(name)`, so in-flight executions keep their branch across deploys.
-- **Keyed state:** schema-defined actor state loaded and written inside fenced turns.
-- **Activation-local value:** a value such as a `Ref` created in a layer's build Effect; discarded on hibernation.
-- **Owned table:** Drizzle table scoped by `tenant_id` and `actor_id`.
-- **Connection:** typed session member (`Actor.connection`) with an optional per-connection `session` that survives parking; its socket is held by a runner's transport (in-process in M2, WebSocket in M3).
-- **Holder:** the runner whose transport holds a connection's socket, identified by runner address and an epoch minted when the transport starts.
-- **Caller:** `User`, `System`, or `Anonymous` attribution carried to an actor operation.
-- **Principal:** authenticated application subject, available as an option inside actor contexts.
-- **ActorError:** the single framework error whose `reason` identifies availability, capacity, timeout, conflict, creation, authorization, input, or transport failure.
-- **Hibernation:** removal of activation-local resources while identity and gateway state remain durable.
-- **Shard group:** compute placement choice; it does not route database rows and is not a tenant database.
-- **Conformance harness:** unpublished framework-maintainer behavioral suite run against PGlite and Postgres.
+## Identity and authority
+
+- **Store:** one bucket or prefix containing all actor durable bytes, including log, checkpoints, pages, indexes, leases, and audits.
+- **Actor:** an addressable contract and durable state, not a resident process.
+- **Tenant:** an authenticated application partition; general served tenant addresses remain incomplete and the server currently accepts `default` only.
+- **Shard:** a fixed partition of the store whose log groups many actors.
+- **Owner:** the runner holding the newest valid open epoch, not merely an advisory lock.
+- **Epoch:** the offset of the create-once open segment that fences prior writers.
+- **Release:** one application build running against an existing store.
+- **Build:** bundle/framework/runtime/engine/platform and locale-version identity recorded with a segment.
+- **Activation:** disposable resident actor state; never authority.
+
+## Durable storage
+
+- **Segment:** an immutable, create-once batch in a gapless shard log.
+- **Durable prefix:** the stored segment chain from which observable results derive.
+- **Speculative state:** results not yet in that prefix; never published.
+- **Checkpoint:** a manifest covering state and obligations at one durable offset.
+- **Manifest:** encoded state and references to page-tree roots.
+- **Page:** SHA-256-addressed bytes, verified on every read.
+- **Ambiguous append:** a lost write response resolved by segment identity rather than guessing.
+- **Retention:** time for which segments/checkpoints stay recoverable; framework default seven days.
+- **GC:** fenced collection of unreachable pages after the grace period.
+- **Fork:** separately authorized branch from an actor's retained history, with new actor/work identities; E6 supplies the guarantee.
+
+## Application surface
+
+- **State:** a schema struct decoded from `{}` with defaults, optional fields, or list fields; non-list bytes are capped at 256 KiB.
+- **Action:** synchronous deterministic draft mutation with a recorded outcome.
+- **Draft:** copy-on-write state and staged consequences discarded as one unit on failure.
+- **List:** `Actor.list(Item, { key?, by })`, with items in ordered pages.
+- **View:** optional synchronous derived read of durable state.
+- **Event:** a live, non-persisted value; action publication waits for durability.
+- **Presence:** contract schema plus `connect`/`disconnect` and scoped client `join`.
+- **Session:** authenticated transport lifetime at `/rpc`.
+- **Job:** Effect I/O started durably by an action and journaled on the shard.
+- **Step:** named journaled success that never runs again once durable.
+- **Send:** staged fire-and-forget action call to another actor.
+- **Timer:** staged action call to the same actor at a recorded due time.
+- **Cron:** an action option arming each instance's recurring timer.
+- **Index:** owner-held durable scalar-state query structures, persisted at checkpoints.
+- **Find:** static `X.find` returning ids only, merged across shards without a global snapshot.
+- **Client:** scoped `X.client(id)` with Effect actions and Stream reads; one flat handle.
+- **Operator:** separate scoped grant holder, never an application `Caller`.
+- **Audit:** metadata recorded before operator read answers or atomically with mutations.
+
+## Recovery
+
+- **Stored outcome replay:** answering a duplicate command without rerunning its handler.
+- **Log replay:** applying retained entries to reconstruct and compare outcomes.
+- **Build-matched replay:** recovering a tail using the build that wrote it.
+- **Released:** final durable handoff record after bounded drain.
+- **`nextDue`:** earliest pending due time reported for host wake scheduling.
+- **Page miss:** internal pause/load/rerun with identical recorded action inputs.
+
+The [contracts](contracts/README.md) define the exact obligations and their promotion status.

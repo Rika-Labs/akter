@@ -2,6 +2,8 @@
 
 **Status:** proposed (2026-09-30). It gates M6.6 ([#337](https://github.com/Rika-Labs/akter/issues/337)) and is the fifth item of [ADR 0014](0014-adoption-observation-and-client-reach.md)'s order. It builds on [ADR 0027](0027-served-protocol.md) without changing its wire. When accepted it amends rule 41, the [server API](../api/01-server-api.md), [generating clients](../api/05-generated-clients.md), and the [post-foundation sketch](../api/post-foundation-sketches.md).
 
+**0.2 status:** superseded (closed as not accepted for 0.2); owned by [ADR 0130](0130-views-sessions-events-and-rpc.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** decide how an MCP endpoint and a Python client are derived from a served application, so that they agree with HTTP and OpenAPI on schemas, member names, errors, and command identity.
 
 **Authority:** design decision record.

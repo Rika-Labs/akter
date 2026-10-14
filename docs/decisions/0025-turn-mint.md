@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-09-28, Dallen, with every proposed default; proposed 2026-09-26). M2.15 implemented it before acceptance. The amendments listed under [behaviour changes](#behaviour-changes-against-existing-contracts) have landed; the [decided questions](#decided-questions) record the defaults. [ADR 0048](0048-mint-progress-and-inspection-record-corrections.md) amends the creation check, keyed and delayed creating intents, where the runtime rejects an actor that cannot be minted, and the returned id type to match the shipped code.
 
+**0.2 status:** superseded (public mint and `createdBy`); deterministic child ids carry in 0125; owned by [ADR 0128](0128-constrained-actor-api.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 ## Context
 
 A minted actor has no `key`; the framework issues its id. Today the only way to mint is `X.create()`, which returns a UUIDv7 handle outside a turn ([ADR 0010](0010-one-way-effect-native-api.md), [ADR 0013](0013-m0-reconciliation.md), [contract 01](../contracts/01-actor-authority.md), the glossary's "Minted actor", and the [server API](../api/01-server-api.md)). No row is written until the actor's first turn.

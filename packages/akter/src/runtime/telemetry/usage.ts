@@ -1,65 +1,41 @@
-import { Context, Effect } from "effect"
-import type { SqlClient, SqlError } from "effect/sql"
-import type { ActorRef } from "../../identity/caller.ts"
-
-/** Commands whose receipts one turn commit newly inserted. */
-export interface UsageCommands {
-  readonly ref: ActorRef
-  readonly commandIds: ReadonlyArray<string>
-  /** The runtime's client for this turn: its statement reaches the turn's own transaction. */
-  readonly sql: SqlClient.SqlClient
+/** Runner-local attribution, never storage or billing authority. */
+export interface UsageTotals {
+  readonly actions: number
+  readonly jobSeconds: number
 }
 
-/** A query's answer the runtime is about to return. */
-export interface UsageRead {
-  readonly ref: ActorRef
-  /**
-   * Identifies one read attempt across a watch's reruns. A watch without one
-   * is not recorded.
-   */
-  readonly requestToken?: string | undefined
-  readonly watch: boolean
-  /** The primary database's client. */
-  readonly sql: SqlClient.SqlClient
+/** One actor type's attribution since this runner opened. */
+export interface ActorUsage extends UsageTotals {
+  readonly actorType: string
 }
 
-/** The hooks of `UsageAccounting`. */
-export interface UsageAccountingService {
-  readonly commands: (input: UsageCommands) => Effect.Effect<void, SqlError.SqlError>
-  readonly read: (input: UsageRead) => Effect.Effect<void, SqlError.SqlError>
+/** A detached, monotonic snapshot; active attempts enter it only when they settle or are interrupted. */
+export interface UsageSnapshot extends UsageTotals {
+  readonly actors: ReadonlyArray<ActorUsage>
 }
 
-const noUsageAccounting: UsageAccountingService = {
-  commands: () => Effect.void,
-  read: () => Effect.void,
+/** Attribution stays with the runner across shard recovery and reassignment, not with checkpoint state. */
+export class UsageLedger {
+  private readonly actors: Map<string, UsageTotals>
+
+  constructor(actors: Iterable<string>) {
+    this.actors = new Map(Array.from(actors, (actor) => [actor, { actions: 0, jobSeconds: 0 }]))
+  }
+
+  add(actor: string, actions: number, jobSeconds: number): void {
+    const previous = this.actors.get(actor) ?? { actions: 0, jobSeconds: 0 }
+    this.actors.set(actor, {
+      actions: previous.actions + actions,
+      jobSeconds: previous.jobSeconds + jobSeconds,
+    })
+  }
+
+  snapshot(): UsageSnapshot {
+    const actors = Array.from(this.actors, ([actorType, totals]) => ({ actorType, ...totals }))
+    return {
+      actions: actors.reduce((total, actor) => total + actor.actions, 0),
+      jobSeconds: actors.reduce((total, actor) => total + actor.jobSeconds, 0),
+      actors,
+    }
+  }
 }
-
-/**
- * Whether `service` is a host's hook rather than the default. The runtime
- * recognizes the default by identity and never invokes it, so a runtime
- * without a host hook allocates, forks and awaits nothing for accounting.
- */
-export const accountsUsage = (service: UsageAccountingService) => service !== noUsageAccounting
-
-/**
- * An optional hook that lets a host account for the work its actors do
- * without the framework owning any accounting tables. The default is a
- * single no-op value the runtime skips, so a self-hosted runtime pays no
- * cost; a host that provides any other service, even one doing nothing, is
- * invoked.
- *
- * `commands` is queued in the turn's commit group directly after the
- * receipt insert, so its rows commit or roll back with the receipts. The
- * group is pipelined: the returned effect must issue exactly one statement on
- * the given `sql`, because a second one could be sent after the group's
- * `COMMIT`. It sees only commands whose receipts are new; a replay never
- * reaches it.
- *
- * `read` runs on the primary after the query's final access check and before
- * a non-defect outcome is returned. A failure of either hook fails the work
- * it accounts for.
- */
-export const UsageAccounting = Context.Reference<UsageAccountingService>(
-  "@rikalabs/akter/runtime/telemetry/usage/UsageAccounting",
-  { defaultValue: () => noUsageAccounting },
-)

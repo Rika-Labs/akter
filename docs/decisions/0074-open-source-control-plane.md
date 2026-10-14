@@ -2,6 +2,8 @@
 
 **Status:** superseded for licensing by [ADR 0098](0098-proprietary-cloud-repository.md) (2026-10-06). Item 1 is superseded; the other decisions remain recorded. Originally accepted (2026-10-03). Records Dallen's decisions of 2026-10-02 and 2026-10-03 for the Akter Cloud control plane. It supersedes the `apps/*` licensing caveat in [ADR 0029](0029-licence-package-name-and-release-policy.md) and amends [ADR 0031](0031-hosted-ingress-tenant-directory-and-regions.md) with the control plane's own access path. Its compute decision (item 5) is superseded by ADR 0089 (a hosted-platform record, private) and ADR 0090 (a hosted-platform record, private): hosted runners and platform services run on Fly Machines in `iad`, not AWS ECS on Fargate.
 
+**0.2 status:** amended (Cloud successors own hosted decisions); owned by [ADR 0136](0136-stores-the-bucket-is-the-store.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** decide who owns the control plane's records, how they are verified, where customer code runs, and how the control plane reaches it.
 
 **Authority:** design decision record.

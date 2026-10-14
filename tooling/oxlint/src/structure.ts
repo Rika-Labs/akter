@@ -1,5 +1,6 @@
 import { eslintCompatPlugin } from "@oxlint/plugins"
 
+import { synchronousActionsRule } from "./actors/synchronous-actions.ts"
 import { filenameKebabCaseRule } from "./rules/filename-kebab-case.ts"
 import { noDecisionReferencesRule } from "./comments/no-decision-references.ts"
 import { noInlineCommentsRule } from "./comments/no-inline-comments.ts"
@@ -18,6 +19,7 @@ const repoStructurePlugin = eslintCompatPlugin({
     "no-runtime-import-outside-runtime": noRuntimeImportOutsideRuntimeRule,
     "no-decision-references": noDecisionReferencesRule,
     "no-inline-comments": noInlineCommentsRule,
+    "synchronous-actions": synchronousActionsRule,
   },
 })
 

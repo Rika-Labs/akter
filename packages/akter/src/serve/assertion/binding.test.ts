@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { Effect } from "effect"
 import { describe, expect, it } from "vitest"
 import {
@@ -10,8 +11,7 @@ import {
 } from "./binding.ts"
 
 /** An independent SHA-256, so the digests aren't checked against themselves. */
-const sha256 = (value: string | Uint8Array) =>
-  new Bun.CryptoHasher("sha256").update(value).digest("hex")
+const sha256 = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex")
 
 const body = new TextEncoder().encode('{"reason":"late"}')
 

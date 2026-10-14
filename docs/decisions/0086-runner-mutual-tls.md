@@ -2,6 +2,8 @@
 
 **Status:** implementation decision (2026-10-04), for [#541](https://github.com/Rika-Labs/akter/issues/541); amends [ADR 0068](0068-production-multi-runner.md)'s trusted-peer transport and the runner-to-runner clause of [contract 10](../contracts/10-security.md); the hosted provisioning path below is a proposal that [ADR 0075](0075-deployment-and-runner-orchestration.md)'s gate on hosted peering still covers, and ADR 0090 (a hosted-platform record, private) withdraws its AWS Private CA, Secrets Manager and KMS design.
 
+**0.2 status:** amended (SAN names store and release); owned by [ADR 0130](0130-views-sessions-events-and-rpc.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** authenticate and encrypt runner-to-runner traffic, so runners of one deployment accept messages only from each other, on a network other deployments share.
 
 **Authority:** design decision record.

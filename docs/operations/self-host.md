@@ -1,14 +1,14 @@
 ---
 title: "Self-host with Docker Compose"
-description: "Build Bun or Node images and run two mutually authenticated runners on one host."
+description: "Build a Bun or Node image and run one runner on an S3-compatible bucket or a directory."
 ---
 
 # Self-host with Docker Compose
 
-The runnable files are in [`apps/self-host`](https://github.com/Rika-Labs/akter/tree/main/apps/self-host). They run a real counter actor with one `Increment` command and one `GetCount` read, two runner processes, and a persistent Postgres server 18.6.
+The runnable files are in [`apps/self-host`](https://github.com/Rika-Labs/akter/tree/main/apps/self-host). `src/server.ts` serves a counter actor with `Akter.serve` and `App.make` from `@rikalabs/akter/server`: one `add` action, a `count` view, and a bearer-token `auth`. The store is a bucket: MinIO in the compose file, or any S3-compatible service, or a directory for a single container.
 
 <Warning>
-Published npm versions lag main until alpha.2. Build this recipe from a reviewed checkout of main, not the published alpha.1 package. Pin the checkout commit for your deployment; don't silently deploy a moving branch.
+This recipe tracks `main` and defaults to one runner. Several runners require directly reachable peer addresses and mTLS credentials as described below; the compose file does not provision that fleet. Pin the checkout commit you deploy, and resolve the store-scoped peering identity before a production rollout.
 </Warning>
 
 ## Build and boot
@@ -21,81 +21,75 @@ export SELFHOST_SECRETS_DIR="$PWD/.local/self-host-secrets"
 bash apps/self-host/credentials.sh "$SELFHOST_SECRETS_DIR"
 
 export SELFHOST_RUNTIME=bun
-docker compose -f apps/self-host/compose.yml build runner-a
-docker compose -f apps/self-host/compose.yml up -d --wait
+docker compose -f apps/self-host/compose.yml build runner
+docker compose -f apps/self-host/compose.yml up -d --wait runner
 ```
 
-For Node 24, set `SELFHOST_RUNTIME=node` before the build and startup commands. `Dockerfile.bun` uses Bun 1.4.2 on Debian; `Dockerfile.node` uses Node 24.18.0 on Debian. Both build the framework's JavaScript distribution from this checkout and resolve only its public exports. Dependencies come from `bun.lock`.
+For Node, set `SELFHOST_RUNTIME=node`. `Dockerfile.bun` uses Bun 1.4.2 and `Dockerfile.node` Node 24.18.0, both on Debian; both build the framework's JavaScript distribution from this checkout and resolve only its public exports, with dependencies from `bun.lock`.
 
-The generator refuses a nonempty directory. It creates a database password, a bearer token, a local signing authority, and separate runner private keys. The directory is owner-only; files mounted into non-root containers are readable within that private directory. Compose mounts them as read-only secrets. Never commit this directory or copy the signing key into an image. For production, replace the generated short-lived development credentials with your managed certificate and secret lifecycle; keep backups of the database credentials separate from database backups.
+The generator refuses a nonempty directory. It writes a bearer token (`api-token`) and the bucket's secret key (`s3-secret-access-key`) into an owner-only directory, which Compose mounts as read-only secrets. Never commit it.
 
-The compose project and containers are named `akter-selfhost-*`. The two HTTP listeners are `127.0.0.1:18081` and `127.0.0.1:18082`; the Postgres server binds `127.0.0.1:55477`. A project-local Docker bridge connects the runners and the Postgres server. Peer port 9000 is not published to the host, and mTLS authenticates every peer connection. This bridge is not an outbound firewall.
+Compose starts MinIO, a one-shot `bucket` container that creates the `akter-store` bucket, and the runner, which listens on `127.0.0.1:18080`. MinIO is not published to the host; its data is the named `data` volume.
 
-## Health, readiness and migrations
+## Configuration
+
+`src/server.ts` reads:
+
+| Setting            | Meaning                                                                                                  |
+| ------------------ | -------------------------------------------------------------------------------------------------------- |
+| `S3_BUCKET`        | Use `Store.s3` on this bucket. Without it the store is a directory.                                      |
+| `S3_ENDPOINT`      | An S3-compatible endpoint such as MinIO, R2 or Tigris; path-style addressing is used with it.            |
+| `S3_REGION`        | Default `us-east-1`.                                                                                     |
+| `S3_ACCESS_KEY_ID` | The access key; the secret key is the `s3-secret-access-key` secret.                                     |
+| `STORE_DIRECTORY`  | The `Store.fileSystem` directory when `S3_BUCKET` is unset; default `/data/store`, which the image owns. |
+| `api-token` secret | The one bearer token the example's `auth` accepts, as `self-host-client` in the `default` tenant.        |
+
+Replace the bearer provider with your application's own `Auth.jwt` or `Auth.make` before exposing an ingress, and serve it behind TLS.
+
+## Ready and call
 
 ```sh
-curl --fail http://127.0.0.1:18081/health
-curl --fail http://127.0.0.1:18081/ready
-curl --fail http://127.0.0.1:18082/ready
+curl --fail http://127.0.0.1:18080/ready
 ```
 
-`/health` answers `alive` once application routes install; it is not a database or routing check. Container health uses `/ready`, not a listening port. Startup may refuse connections or return 404 while routes are installing; treat every response other than readiness 200 as unready.
+`/ready` answers `200 { ready: true }` while the server runs and `503` once it starts shutting down. Container health uses it.
 
-Each runner builds `Actors.layer`, which runs missing framework migrations under database coordination before registering actors. Two concurrent first starts share one migration history; there is no separate migration command in this example. Readiness becomes green only after migrations, actor registration, healthy runner registration and acquisition of the runner's currently assigned shards. It becomes red during drain. [Migration operations](/operations/02-migrations) covers application-owned schema migrations and expand/contract upgrades; don't replace this with arbitrary startup DDL.
-
-Each runner uses pools of 10 turn, 5 off-turn and 5 query connections. Two runners therefore budget 40 connections plus operator, migration and monitoring headroom on the Postgres server. [Deployment operations](/operations/01-deployment) explains the budget and the settings that every runner must share.
-
-## Call either runner
-
-The example's provider authenticates a single bearer credential as `self-host-client` in the `default` tenant. Missing or wrong credentials are denied. Replace it with your application's authentication and access policy before exposing an ingress. The actor's public access policy is still behind this provider.
-
-This containerized Promise-client check reads the mounted token without printing it, sends increments of 3 and 7 through different runners, and checks that both read 10. Run it once against a fresh example database:
-
-```sh
-docker compose -f apps/self-host/compose.yml exec -T runner-a \
-  "$SELFHOST_RUNTIME" apps/self-host/src/check.ts
-```
-
-Your application can use the same public client shape:
+Call the counter with the Effect client:
 
 ```ts
-const counter = Counter.client({ baseUrl, headers: { authorization: `Bearer ${token}` } }).get(
-  "visits",
+import { AkterClient } from "@rikalabs/akter/client"
+
+const program = Effect.flatMap(Counter.client("visits"), (counter) => counter.add(3)).pipe(
+  Effect.scoped,
+  Effect.provide(
+    AkterClient.layer({
+      url: "http://127.0.0.1:18080/rpc",
+      actors: [Counter],
+      headers: { authorization: `Bearer ${token}` },
+    }),
+  ),
 )
-await counter.Increment(3)
-const count = await counter.GetCount()
 ```
 
-The client's command ID is reused during delivery retries. If a request loses its reply during shutdown, preserve that ID when retrying against a ready runner; a committed receipt replays rather than incrementing again. A timeout is an unknown outcome, not proof of rollback.
+The client mints the command id and keeps it across retries; a retry after a lost reply returns the stored outcome instead of adding again.
 
-## Authenticated peers
-
-`Runner.socket` advertises `runner-a:9000` or `runner-b:9000`, not the HTTP proxy address. `Runner.mtls` requires TLS 1.3, a trusted certificate chain, and exactly `spiffe://akter/deployment/self-host` as the peer certificate's URI identity. The authority is valid for 30 days and generated runner certificates for seven days. Replace them before expiry. The transport reloads mounted credentials on its regular refresh; replacement strategy and certificate rotation are your operational responsibility.
-
-```sh
-docker compose -f apps/self-host/compose.yml exec -T runner-a \
-  "$SELFHOST_RUNTIME" apps/self-host/src/peers.ts
-```
-
-This check completes an authenticated TLS 1.3 handshake and then sends plaintext to the same live peer listener. It fails unless the plaintext connection closes without application bytes. An unreachable port or a timeout is a failure, not evidence of mTLS.
-
-## Stop and drain
+## Stop
 
 ```sh
 docker compose -f apps/self-host/compose.yml stop
 ```
 
-Compose sends SIGTERM. The entry point keeps its runtime scope alive while `RuntimeControl.drain({ deadline: "15 seconds" })` makes readiness red, refuses new turns and stops claims. An admitted turn gets time to commit; after the deadline an interrupted turn rolls back or resolves through its durable receipt on retry. The scope then closes to release shards. Compose allows 30 seconds before SIGKILL. Stop ingress first and preserve client command IDs; the two stopping runners are not a destination for new traffic.
+Compose sends SIGTERM and allows 30 seconds. The recipe waits for SIGTERM or SIGINT without interrupting the runtime, makes `/ready` answer `503`, drains with a 15-second bound and prints `DRAINED {"outcome":...,"shards":[{"shard":...,"offset":...,"nextDue":...}],"actions":...,"jobSeconds":...}` before closing its server/store scope and exiting. `nextDue` is an epoch-millisecond instant or `null`. Optional `actions` and `jobSeconds` are cumulative runner-local attribution since open, not billing authority; legacy reports without them remain valid and mean unknown usage. A stopped self-host store fires overdue timers when a runner starts again; proactive scheduled startup is the host's responsibility. The `data` volume survives `stop` and `down`; never use `down --volumes` on data you keep.
 
-The named `data` volume survives `stop` and `down`. Never use `down --volumes` on production data. Back up and restore using the [backup procedure](/operations/04-backup-restore). This single Postgres server is not high availability, and this recipe has no public TLS ingress, automated certificate renewal or backup scheduler.
+For several runner containers, give each a unique directly reachable `RUNNER_HOST` and a nonzero `RUNNER_PORT`; the listener binds that port on `0.0.0.0`. All runners share the same S3 bucket and `PEER_IDENTITY`, stable across releases, and mount the `peer-ca`, `peer-certificate` and `peer-key` secrets. Issue each runner's certificate from the trusted authority with only `spiffe://akter/deployment/<PEER_IDENTITY>` as its URI SAN. Do not reuse that identity or credentials in another store. See [server composition](../api/01-server-api.md#several-runners-and-graceful-shutdown-0-2) and the [store-scoped peering identity](https://github.com/Rika-Labs/akter/blob/main/docs/contracts/10-security.md#runner-trust); the simple compose file remains a one-runner recipe until those peer mounts and addresses are configured.
 
 ## Reproduce the evidence
 
-The verification command owns and removes a temporary database volume and all `akter-selfhost-*` test containers. It refuses to run if its named containers or volume already exist. Do not run it alongside your deployment:
+`verify.sh` creates its own credentials, builds the image, runs the stack and removes its containers, volume and credentials afterwards. It refuses to run while any `akter-selfhost-*` container exists, so don't run it alongside a deployment:
 
 ```sh
 SELFHOST_RUNTIME=bun bash apps/self-host/verify.sh
 SELFHOST_RUNTIME=node bash apps/self-host/verify.sh
 ```
 
-It holds the first migration's history-table creation open, starts both runners concurrently, checks readiness and registration, sends real client commands, and checks mTLS. It overlaps an admitted command with runner-only SIGTERM, observes red readiness before completion, restarts the runners and checks the receipt and unchanged migration history. A second admitted command overlaps a full `compose stop`, including the Postgres server, and must finish or retry with the same ID after restart; its receipt must replay without another increment. `COMMAND_DELAY_MS=3000` is used only by this drill; normal startup leaves it at zero. The [verification record](https://github.com/Rika-Labs/akter/blob/main/docs/verification/self-host.md) defines the exact evidence and its limits. CI runs this in the optional `self-host-recipe` job, outside the required `verify` aggregate.
+It checks, over `/rpc`, that a retry with the same command id replays, that wrong and missing credentials are refused, and that state and stored outcomes survive a runner restart, first on MinIO and then on a directory. The [verification record](https://github.com/Rika-Labs/akter/blob/main/docs/verification/self-host.md) lists the evidence and its limits.

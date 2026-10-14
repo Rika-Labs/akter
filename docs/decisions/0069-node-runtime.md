@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-10-03), implementing #490's requested Node support.
 
+**0.2 status:** amended (Node and Bun carry for every new layer); owned by [ADR 0135](0135-effect-primitive-inventory.md) and [ADR 0136](0136-stores-the-bucket-is-the-store.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 ## Context
 
 #490 requires the framework and served applications to run on Node as well as Bun. Bun-only synchronous codecs and an eager FFI import previously made even a Postgres runtime fail to import under Node. The served API already accepts an Effect HTTP server, so a second actor execution engine would duplicate authority and recovery logic unnecessarily.

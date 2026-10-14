@@ -13,7 +13,30 @@ Use an ADR when a choice changes an interface, invariant, data model, deployment
 
 Decisions do not override newer accepted requirements. When a decision is superseded, preserve it and link the replacement.
 
+- [ADR 0138: Framework release posture](0138-framework-release-posture.md) (accepted 2026-10-13) requires a complete framework before the 0.2 product release and separates product copy from technical package channels and evidence status.
+
 **Superseded backend decisions:** ADRs 0057, 0070, 0091–0097 and 0110 are superseded by [ADR 0112](0112-postgres-and-pglite-only.md). Their descriptions below record historical decisions, not current backend support or configuration. Provider-specific clauses in the earlier generic ADRs, including 0066 and 0067, are also superseded; their engine-independent ownership, scheduling and coordination mechanisms remain.
+
+## 0.2 rewrite (proposed)
+
+These records are proposed on the `rewrite/0.2` branch, where they define the 0.2 target; `main` keeps the 0.1 records as authoritative until the swap. [ADR 0124](0124-engine-rewrite-and-command-log.md) carries the registry of every earlier record's 0.2 fate. Older records keep their bodies and status lines until the swap.
+
+- [ADR 0124: Engine rewrite, the clean 0.2 break and the command log](0124-engine-rewrite-and-command-log.md) (proposed 2026-10-12) introduces the store, makes each shard's log in the store's bucket the source of truth, publishes nothing before durability, breaks cleanly from 0.1, states branch authority and retirement of 0.1 evidence, and registers every earlier ADR's fate.
+- [ADR 0125: Synchronous deterministic actions and the action context](0125-synchronous-deterministic-actions.md) (proposed 2026-10-12) makes actions synchronous functions on a copy-on-write draft with recorded `now`, `id` and `random`, defines `ctx`, and enforces determinism with the `akter/synchronous-actions` lint, replay outcome checks and double runs.
+- [ADR 0126: Shard ownership on the bucket log](0126-shard-ownership-on-the-bucket-log.md) (proposed 2026-10-12) fences writers with create-once segments, makes the open offset the epoch, resolves ambiguous appends by segment header, adds `T_valid` and `T_trim`, bounds admission, keeps runner leases advisory and hands shards between releases by drain-then-open.
+- [ADR 0127: Snapshots, the page tree, lists, history and garbage collection](0127-snapshots-pages-lists-history-gc.md) (proposed 2026-10-12) stores state and lists in content-addressed pages written with plain `PUT`, keeps segments as history for the retention period, and collects garbage under a `gc/<epoch>` lease from retained checkpoints.
+- [ADR 0128: The constrained API](0128-constrained-actor-api.md) (proposed 2026-10-12) fixes the 0.2.0 interface (state plus actions; views, events, jobs, presence and access only when used), the three package entries, the caller shape and the public error set.
+- [ADR 0129: Jobs, the timer wheel and `ShardWorkflowEngine`](0129-jobs-timers-and-shard-workflow-engine.md) (proposed 2026-10-12) makes jobs the only place for I/O with journaled steps, derived ids for job calls and a required `onFailure`, removes cancellation in 0.2.0, and runs timers and cron on the shard's timer wheel.
+- [ADR 0130: Views, sessions, presence, events and the RPC transport](0130-views-sessions-events-and-rpc.md) (proposed 2026-10-12) serves one RPC group over WebSocket and HTTP at `/rpc`, streams state, lists and views from durable state, defines presence and events, binds socket calls to the session caller, and keeps readiness.
+- [ADR 0131: `find` over the owner-held index](0131-find-over-owner-held-index.md) (proposed 2026-10-12) indexes top-level scalar state on each shard owner and answers `find` by scatter-gather with a per-shard freshness guarantee.
+- [ADR 0132: Forks and retained history](0132-forks-and-retained-history.md) (proposed 2026-10-12) keeps history for 7 days by default (Cloud: 7 Free, 30 paid) and makes fork a CLI and operator operation over actor versions.
+- [ADR 0133: Build-matched replay, engine identity and deploy versioning](0133-build-matched-replay.md) (proposed 2026-10-12) records the build on every segment, replays crash tails with the build that wrote them, refuses cross-engine replay by default and states schema evolution.
+- [ADR 0134: Removing owned tables, adoption, blobs, content, placement and subscriptions](0134-removing-owned-tables-and-placement.md) (proposed 2026-10-12) removes the 0.1 features that assume actor data in Postgres and names each need's 0.2 replacement.
+- [ADR 0135: Effect primitive inventory](0135-effect-primitive-inventory.md) (proposed 2026-10-12) records which Effect 4.0.3 modules the engine uses (Cluster for routing, membership, transport and tests behind Akter's `Sharding`) and which it does not, the `effect/eventlog` evaluation, and the exact pin.
+- [ADR 0136: Stores: the bucket is the log, the pages, the index and the runner leases](0136-stores-the-bucket-is-the-store.md) (proposed 2026-10-12) makes one bucket the whole store, defines support as passing `akter storage check`, sets the development, self-host and Cloud recipes and one region per store.
+- [ADR 0137: Log and snapshot inspection, audited operator operations and stable telemetry](0137-inspection-audited-operations-telemetry.md) (proposed 2026-10-12) restates operator grants and audit over the log, checkpoints and pages and fixes the 0.2 span and metric names.
+
+## Earlier decisions
 
 - [ADR 0069: Node and Bun runtime portability](0069-node-runtime.md) adds Node 24+ platform layers while preserving routing keys, zstd state and file-backed PGlite kernel locks.
 - [ADR 0066: Authoritative coordination, independent of actor-data placement](0066-authoritative-coordination.md) replaces per-type advisory locks with transaction-owned authoritative rows plus local data fences, makes capped job claims lock their actor's generation row, and adds an optional coordination pool for Cluster and fleet ownership. Its Neki clauses are superseded by ADR 0112.

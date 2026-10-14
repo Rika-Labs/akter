@@ -1,0 +1,22 @@
+# MinIO for the framework's integration suites:
+# TEST_S3_URL=http://project:project-minio@127.0.0.1:9000/akter-store bun run --cwd packages/akter test:integration
+services:
+  minio:
+    image: cgr.dev/chainguard/minio@sha256:4b862594d23cb20ae0fbeb93311ed312a5b566ecba2293220b204c89ef3c1fe2
+    entrypoint: ["/usr/bin/minio"]
+    command: ["server", "/data"]
+    user: "0"
+    environment:
+      MINIO_ROOT_USER: project
+      MINIO_ROOT_PASSWORD: project-minio
+    ports:
+      - "127.0.0.1:9000:9000"
+    volumes:
+      - minio:/data
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:9000/minio/health/ready"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+volumes:
+  minio:

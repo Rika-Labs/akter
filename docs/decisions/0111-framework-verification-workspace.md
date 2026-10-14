@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-10-08).
 
+**0.2 status:** amended (verification workspace); owned by [ADR 0124](0124-engine-rewrite-and-command-log.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 ## Context
 
 The framework's app-testing entry also exported the complete conformance corpus, workflow-engine fixtures, and seeded single-runner and cluster simulations. Those framework-maintainer tools accounted for most of its testing source and increased every npm install. `ActorTest` imported the simulations and cluster directly, so removing barrel exports alone would not remove their compiled files.

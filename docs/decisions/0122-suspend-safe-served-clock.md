@@ -2,6 +2,8 @@
 
 Status: accepted, 2026-10-12.
 
+**0.2 status:** amended (suspend-safe time carries onto owner validity); owned by [ADR 0126](0126-shard-ownership-on-the-bucket-log.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 ## Context
 
 The served clock estimates database time from a cached offset to `performance.now()`. A suspended process can resume with a paused or discontinuous monotonic clock. A shorter pre-suspend round trip can remain preferred even after a newer sample observes the changed offset. Publishing that estimate through `/protocol` and `durable-now` corrupts locally minted SDK identities without changing the database's admission clock. Server-side command-ID minting already reads database time directly.

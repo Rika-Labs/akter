@@ -2,6 +2,8 @@
 
 **Status:** implementation decision (2026-10-09, launch orchestration). Amended 2026-10-11: the committed-snapshot query cache is disabled for correctness; only warm commands remain.
 
+**0.2 status:** superseded; owned by [ADR 0124](0124-engine-rewrite-and-command-log.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** remove the admission flight for eligible warm commands without weakening durable fencing or receipts. Queries always read the database.
 
 **Authority:** design decision record.

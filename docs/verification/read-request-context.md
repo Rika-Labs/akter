@@ -1,5 +1,7 @@
 # Read-phase request identity
 
+> Historical 0.1 verification, retained as of 2026-10-12. Recorded observations below are unchanged; they do not establish support for the 0.2 bucket engine. See [current verification](README.md).
+
 `packages/akter/src/actor/reads.test.ts` rejects a query, watch or stream handler that observes its layer-builder's ambient caller or tenant while `X.Read` exposes the authenticated request. It constructs the layer under a deliberately different user and tenant, then uses asymmetric users and tenants with the same actor id. The ordinary query and watch paths are tested separately because only the ordinary path restores the handler layer's services.
 
 The regressions were reproduced before the fix: ordinary queries and watch reads returned the layer-builder identity; the stream case still returned that identity after an initial query-only fix. Binding the request identity into the provided handler context makes those references override captured services rather than be overwritten by them. `X.Read` and external authorization were already correctly scoped; this change does not add a query capability or certify application raw SQL predicates.

@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-09-28, Dallen, with every proposed default; proposed 2026-09-27). The executor side is implemented; delivery to owners, holders, connections, and streams is M2.18. The amendments listed under [behaviour changes](#behaviour-changes-against-existing-contracts) have landed as labelled targets, and the [decided questions](#decided-questions) record the defaults. [ADR 0048](0048-mint-progress-and-inspection-record-corrections.md) amends the close bound, the final frame under the runner-wide cap, and what `seq` counts.
 
+**0.2 status:** superseded; owned by [ADR 0130](0130-views-sessions-events-and-rpc.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 ## Context
 
 An effect executor can run for minutes: a video transcode, a bulk import, a report build. Until its result commits through `onSuccess`, the actor and its clients see nothing. Applications want to show "40% done" or "12,000 of 50,000 rows" while the call runs, and today they have two bad options:

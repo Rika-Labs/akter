@@ -1,72 +1,61 @@
 name: akter-selfhost
 
-x-runner: &runner
+x-image: &image
   image: akter-selfhost-${SELFHOST_RUNTIME:-bun}:local
   build:
     context: ../..
     dockerfile: apps/self-host/Dockerfile.${SELFHOST_RUNTIME:-bun}
-  restart: unless-stopped
-  stop_grace_period: 30s
-  depends_on:
-    postgres:
-      condition: service_healthy
-  environment:
-    COMMAND_DELAY_MS: ${COMMAND_DELAY_MS:-0}
-  secrets:
-    - database-password
-    - api-token
-    - ca.pem
-  networks: [private]
+
+x-bucket: &bucket
+  S3_BUCKET: akter-store
+  S3_ENDPOINT: http://minio:9000
+  S3_ACCESS_KEY_ID: project
 
 services:
-  postgres:
-    image: postgres:18.6-bookworm
-    container_name: akter-selfhost-pg
+  minio:
+    image: cgr.dev/chainguard/minio@sha256:4b862594d23cb20ae0fbeb93311ed312a5b566ecba2293220b204c89ef3c1fe2
+    container_name: akter-selfhost-minio
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      [
+        "MINIO_ROOT_PASSWORD=$$(cat /run/secrets/s3-secret-access-key) exec /usr/bin/minio server /data",
+      ]
+    user: "0"
     environment:
-      POSTGRES_USER: project
-      POSTGRES_DB: project
-      POSTGRES_PASSWORD_FILE: /run/secrets/database-password
-    secrets: [database-password]
-    volumes: [data:/var/lib/postgresql]
-    ports: ["127.0.0.1:55477:5432"]
+      MINIO_ROOT_USER: project
+    secrets: [s3-secret-access-key]
+    volumes: [data:/data]
     networks: [private]
     healthcheck:
-      test: [CMD-SHELL, pg_isready -U project -d project]
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:9000/minio/health/ready"]
       interval: 2s
       timeout: 3s
       retries: 30
 
-  runner-a:
-    <<: *runner
-    container_name: akter-selfhost-runner-a
-    environment:
-      RUNNER_HOST: runner-a
-      COMMAND_DELAY_MS: ${COMMAND_DELAY_MS:-0}
-    ports: ["127.0.0.1:18081:8080"]
-    secrets:
-      - database-password
-      - api-token
-      - ca.pem
-      - source: runner-a-certificate
-        target: certificate.pem
-      - source: runner-a-key
-        target: key.pem
+  bucket:
+    <<: *image
+    container_name: akter-selfhost-bucket
+    command: ["${SELFHOST_RUNTIME:-bun}", "apps/self-host/src/bucket.ts"]
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment: *bucket
+    secrets: [s3-secret-access-key]
+    networks: [private]
 
-  runner-b:
-    <<: *runner
-    container_name: akter-selfhost-runner-b
-    environment:
-      RUNNER_HOST: runner-b
-      COMMAND_DELAY_MS: ${COMMAND_DELAY_MS:-0}
-    ports: ["127.0.0.1:18082:8080"]
-    secrets:
-      - database-password
-      - api-token
-      - ca.pem
-      - source: runner-b-certificate
-        target: certificate.pem
-      - source: runner-b-key
-        target: key.pem
+  runner:
+    <<: *image
+    container_name: akter-selfhost-runner
+    restart: unless-stopped
+    stop_grace_period: 30s
+    depends_on:
+      bucket:
+        condition: service_completed_successfully
+    environment: *bucket
+    ports: ["127.0.0.1:18080:8080"]
+    secrets: [api-token, s3-secret-access-key]
+    networks: [private]
 
 networks:
   private: {}
@@ -75,17 +64,7 @@ volumes:
   data:
 
 secrets:
-  database-password:
-    file: ${SELFHOST_SECRETS_DIR:?set SELFHOST_SECRETS_DIR}/database-password
   api-token:
-    file: ${SELFHOST_SECRETS_DIR}/api-token
-  ca.pem:
-    file: ${SELFHOST_SECRETS_DIR}/ca.pem
-  runner-a-certificate:
-    file: ${SELFHOST_SECRETS_DIR}/runner-a.pem
-  runner-a-key:
-    file: ${SELFHOST_SECRETS_DIR}/runner-a-key.pem
-  runner-b-certificate:
-    file: ${SELFHOST_SECRETS_DIR}/runner-b.pem
-  runner-b-key:
-    file: ${SELFHOST_SECRETS_DIR}/runner-b-key.pem
+    file: ${SELFHOST_SECRETS_DIR:?set SELFHOST_SECRETS_DIR}/api-token
+  s3-secret-access-key:
+    file: ${SELFHOST_SECRETS_DIR}/s3-secret-access-key

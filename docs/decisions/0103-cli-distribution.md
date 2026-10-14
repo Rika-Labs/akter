@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-10-06).
 
+**0.2 status:** amended (removed client surfaces); owned by [ADR 0128](0128-constrained-actor-api.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** decide the CLI package name, runtime support, release unit, and local development defaults.
 
 This amends [ADR 0029](0029-licence-package-name-and-release-policy.md)'s package-location rule: `apps/cli` is a publishable application package, while `@akter/cloud-api` remains private and is bundled into it.

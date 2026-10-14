@@ -2,6 +2,8 @@
 
 **Status:** accepted design (2026-09-23); implementation, conformance, and benchmarks remain pending.
 
+**0.2 status:** superseded; owned by [ADR 0124](0124-engine-rewrite-and-command-log.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** record the owner's choices for command delivery, durable intents, turn pipelining, reducers, reads, storage, and operations, each with one mechanism.
 
 **Authority:** historical decision record.

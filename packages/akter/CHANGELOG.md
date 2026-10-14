@@ -1,8 +1,27 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 (2026-10-14)
 
-- **Breaking:** the S3-compatible cold-storage adapter moves from `ColdStorage.s3` in `@rikalabs/akter/runtime` to `S3ColdStorage.make` in `@rikalabs/akter/cold-storage/s3`. Import `S3ColdStorageOptions` from the new subpath too. Cold storage first shipped in alpha.6; its object format, options and storage behavior are unchanged. Root/runtime bundles without the S3 adapter no longer include AWS/Smithy modules, including Bun builds with splitting disabled.
+Akter 0.2 is a new engine: actors run on one S3-compatible store per environment, with no database. The framework and CLI release together at `0.2.0` on the `latest` npm dist-tag. 0.2 starts with fresh stores; there is no migration from 0.1 data. Read the [0.2 upgrade notes](https://docs.akter.dev/operations/alpha-upgrades) before moving an application.
+
+### Breaking changes from 0.1
+
+- Postgres, PGlite, Drizzle, `Database.postgres`, owned tables (`Actor.table`), cold storage, adoption, placement and every SQL migration are removed. The `@rikalabs/akter/runtime` and `@rikalabs/akter/cold-storage/s3` entries are gone; the unreleased S3 cold-storage move recorded after alpha.6 is superseded by this removal.
+- Command handlers become synchronous, deterministic actions that edit a copy of the state. I/O moves into journaled jobs declared in the same `toLayer`. There is no `X.self`, `toJobLayer`, reducer or Promise facade.
+- The only client is the Effect client exported from `@rikalabs/akter` and `@rikalabs/akter/client`: `X.client(id)` and id-only `X.find`, over one `/rpc` group with WebSocket JSON and HTTP NDJSON. React and Python clients are not part of 0.2.0.
+- Package entries are `@rikalabs/akter`, `@rikalabs/akter/server`, `@rikalabs/akter/client` and `@rikalabs/akter/testing`. Peer dependencies are `effect`, `@effect/platform-bun` and `@effect/platform-node` at `^4.0.3`.
+
+### The 0.2 engine
+
+- Every shard writes a create-once segment chain in the bucket; epochs fence writers, and no reply, event, view update, send, timer or job start is published before its segment is durable. A declared failure, defect or lost segment discards the action and everything it staged; an action that misses a list page is rerun after the page loads.
+- `Store.s3`, `Store.fileSystem` (local development) and `Store.memory` (tests) implement one store protocol. Checkpoints plus log tail drive recovery; build-matched replay, retained history with checkpoint anchors, fenced GC, actor forks and store-wide retention (`Store.setRetention`) are built in.
+- Actors have schema state and page-backed `Actor.list` collections. Durable scalar indexes back `X.find`. Jobs journal named steps, retries, deadlines and durable sleep; timers and cron run on a shard timer wheel.
+- Several runners share a store with mTLS peering, shard ownership moves on the bucket log, and `Akter.serve` adds readiness, drain, Prometheus and OTLP telemetry. Separately granted operator requests on `POST /operator` inspect, read logs and snapshots, replay and set retention, each with a create-once audit record.
+- `Simulation` in `@rikalabs/akter/testing` runs the engine over a seeded bucket with controlled time, scheduling and faults; the seed identifies a failing schedule.
+
+### Evidence boundaries
+
+Guarantees are bounded by the [support matrix](https://docs.akter.dev/operations/support-matrix). Local MinIO, filesystem and simulator runs do not certify R2, Tigris, AWS S3 or another provider; run `akter storage check` against the provider before deploying, and record its result.
 
 ## 0.1.0-alpha.6 (2026-10-11)
 

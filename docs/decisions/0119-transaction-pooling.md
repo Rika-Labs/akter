@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-10-10), narrow implementation of [ADR 0117](0117-pooler-safe-locking.md).
 
+**0.2 status:** superseded (transaction pooling for turns); owned by [ADR 0126](0126-shard-ownership-on-the-bucket-log.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 ## Decision
 
 Add `Database.postgres({ pooling: "transaction" })`. Do not infer a pooler's behavior from a hostname, URL or connection count. The mode supports public `Runner.socket` table leases on one primary database. It rejects embedded/advisory runners, fleet, cold storage, replicas and separate coordination before runtime migrations or registration. Existing direct configuration and the four-logical-client low-connection preset keep their defaults and bounds.

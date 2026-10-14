@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-09-28, Dallen). It amends [ADR 0025](0025-turn-mint.md), [ADR 0030](0030-executor-progress-frames.md), and [ADR 0028](0028-sql-inspection-views.md), which stay unedited apart from a status link to this record.
 
+**0.2 status:** amended (mint, progress and inspection corrections are historical); owned by [ADR 0125](0125-synchronous-deterministic-actions.md), [ADR 0130](0130-views-sessions-events-and-rpc.md) and [ADR 0137](0137-inspection-audited-operations-telemetry.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** make the accepted text of ADRs 0025, 0028, and 0030 match the shipped code where the two differed at acceptance, and record the one code change made instead.
 
 **Authority:** decision record.

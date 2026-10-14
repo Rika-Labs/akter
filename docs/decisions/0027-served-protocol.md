@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-09-26, Dallen, with every recommended default; proposed 2026-09-26)
 
+**0.2 status:** superseded in part (wire and routes); auth and readiness carry; owned by [ADR 0130](0130-views-sessions-events-and-rpc.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 ## Context
 
 `Actor.serve` and `Actor.auth` are named in the [server API](../api/01-server-api.md) and required by [contract 10](../contracts/10-security.md), but nothing says what goes over the wire. The [protocol contract](../contracts/protocol.md) lists what a request must carry (actor identity, edge-derived tenant, a client-minted command id, caller attribution, trace context, and encoded input) and one concrete rule, that HTTP echoes the command id as `x-request-id`. The rest is open:

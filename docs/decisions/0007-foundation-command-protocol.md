@@ -2,6 +2,8 @@
 
 **Status:** implementation decision (2026-09-22); evidence is tracked separately.
 
+**0.2 status:** amended (command-id shape carries); owned by [ADR 0124](0124-engine-rewrite-and-command-log.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** specify the first embedded command, identity, receipt, and transaction implementation.
 **Authority:** design.
 **Owner role:** runtime architecture.

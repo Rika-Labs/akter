@@ -1,18 +1,36 @@
 # Actor identity and authority
 
-**Responsibility:** define what an actor is allowed to do.  
-**Authority:** normative.  
+Status: partially normative (0.2), owned by ADR 0126. [E2 recovery](../verification/e2-recovery.md) promotes the create-once epoch fence, discard on loss, runner-only reassignment and Store-owned freshness; [E3 cluster evidence](../verification/e3-cluster.md) adds bucket-backed assignment and routed ownership for the `default` tenant. General address/tenancy and clock-discontinuity clauses remain proposal.
+
+**Responsibility:** define what an actor is, where it lives, and what may change it.  
+**Authority:** normative 0.2 target on `main`.  
 **Owner role:** runtime architecture.  
 **Change policy:** any authority change requires security review and adversarial tests.
 
-An actor is addressed by `(tenant, actor, id)` within one deployment. Named actors use the declared id schema, minted actors use a framework-issued UUIDv7 from `X.create()` or a UUIDv8 derived by `turn.mint` inside the parent's turn from the tenant, parent identity, command id, call ordinal, and child type; `key: Actor.singleton` actors use `X.get()` without an id. Under [ADR 0033](../decisions/0033-parent-actor-placement.md), a parent-placed child's id is `c1.<byte length of the parent id>.<parent id>.<local id>`, so its routing key comes from its address alone; its key validates the local part, a minted one's local part is the UUIDv8 its parent's turn derived and its creating intent must come from the parent its id names, and parent placement is placement, not authority.
+## Address
 
-Under [ADR 0025](../decisions/0025-turn-mint.md), amended by [ADR 0048](../decisions/0048-mint-progress-and-inspection-record-corrections.md#amendment-child-local-creating-intent-proof-485-2026-10-03), a child minted by `turn.mint` MUST be created only by the relay delivering its parent's same-turn committed creating intent. The relay MUST copy the committed row's sender, target, caller, intent id, command, and payload into the trusted internal delivery. External admission MUST reject a presented mint proof or intent provenance, including before receipt replay. The creating turn MUST require provenance whose sender and tenant match the minting caller, and a mint proof deriving the target id; a missing or mismatched proof fails `Unauthorized` without a receipt. It MUST NOT read the parent's outbox or placement registry: its per-actor statements touch only the child's routing key. The parent's outbox row stays until the delivery commits and retention never prunes it.
+An actor is addressed by `(tenant, type, id)` inside one store. The store is implicit: a runner MUST serve exactly one store. `type` is the name given to `Actor.make`; `id` MUST decode with the contract's `key` schema (default `Schema.String`); `tenant` MUST come from the transport ([security](10-security.md)) and is `"default"` for in-process code.
 
-Exactly one generation MAY commit for an actor at a time. Every command turn MUST lock the generation row with `SELECT ... FOR UPDATE` in its transaction. A lease, process memory, TypeScript types, or routing ownership alone MUST NOT authorize a commit.
+An actor's shard is `hash(tenant, type, id) mod shards`, where `shards` is fixed in the store's `meta/store` at creation. A shard holds actors of many tenants and types; membership in a shard MUST NOT be treated as a tenant boundary.
 
-Command mutation MUST occur only through the `X.Turn` service. Query and activation read contexts expose read-only state/table capabilities, not command authority. Workflow bodies access actors through workflow handles rather than direct state/table capabilities; [ADR 0022](../decisions/0022-workflow-engine-storage-and-version-markers.md) confines those handle calls to activities. Only contexts that expose intent handles MAY schedule commands or workflow intents; queries do not acquire those capabilities merely by being read-only. See the [context capability matrix](../api/02-context.md).
+An actor exists once it has a durable action. An action on an id with no history runs against the decode of `{}` under the state schema. Reading the state, lists or views of an actor with no history MUST return that default state and MUST NOT write anything. There is no creation proof, `createdBy` gate or `NotCreated` failure.
 
-A request/reply handle called inside a turn, including a handle captured before the turn, MUST die with `Request/reply inside a turn`; the transaction MUST roll back. Cross-actor work from a turn MUST use durable intents from `X.intents(id)`.
+## One writer per shard
 
-Authority tests are specified by conformance, [failure cases](../verification/02-failure-matrix.md), and invariants A1–A3 in [invariants](../verification/invariants.md).
+- At most one owner MAY append to a shard at a time (I1). Ownership is established only by creating the shard's next log segment with a create-once write; the open offset is the owner's epoch ([storage](06-storage.md), [recovery](09-recovery.md)).
+- A lease object, an Effect Cluster shard assignment, process memory, TypeScript types or routing ownership alone MUST NOT authorize an append, a reply or a publication.
+- An owner whose append finds the next segment written by another owner MUST stop: drop every activation of the shard, publish nothing pending, and answer waiting callers with retryable `ShardMoved`.
+- A fenced shard MUST remain closed to callers and autonomous restart. It MAY reopen on this runner only after the runner layer's `engine.assign` operation assigns the shard back; a caller touch, read, retry, or engine restart MUST NOT reopen it.
+- An owner that has neither appended successfully nor verified within `T_valid` (10 seconds of elapsed time on its own clock) MUST verify before it appends or answers a read. After a detected clock discontinuity it MUST verify every owned shard before serving.
+- Store MUST own the validity interval (`validFor`, default 10 seconds) and the lease's freshness. The engine MUST use Store freshness for reads and admission, including stored outcomes, and MUST verify an expired lease before using its cached state. It MUST NOT keep a second, independent validity interval.
+
+## What may change an actor
+
+- Actor state and lists MUST change only through a durable action entry in the actor's shard log: an `Action`, a fired timer or cron tick, a received send, a job's call, or an operator `Forked` entry.
+- An action MUST NOT perform request/reply with another actor; it stages sends, timers, job starts and events ([actions](02-actions.md)). `X.client` MUST NOT be available inside an action, by type and at runtime.
+- Views, state reads and list reads MUST NOT change state or stage effects.
+- Jobs MUST change actor state only by calling actions ([background work](08-background-work.md)).
+
+## Verification
+
+I1 (one epoch appends), I2 (only the durable prefix is visible) and I8b (no action, read, send, `find` or fork crosses tenants); failures F7 (stale append after a move) and F8 (two runners believe they own a shard). [E3 cluster evidence](../verification/e3-cluster.md) complements E2b's fenced-shard scenarios with real ownership routing and readiness. This does not promote multi-tenant addressing beyond the currently served `default` tenant.

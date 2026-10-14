@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-09-30, Dallen). Built with M4.3 ([#225](https://github.com/Rika-Labs/akter/issues/225)). It amends [observability](../operations/03-observability.md) and adds the metrics [ADR 0021](0021-multi-runner-relay-singleton-and-cron.md), [ADR 0022](0022-workflow-engine-storage-and-version-markers.md), and [ADR 0026](0026-cross-actor-event-subscriptions.md) left to M4.3.
 
+**0.2 status:** amended (stable names carry where meaningful); owned by [ADR 0137](0137-inspection-audited-operations-telemetry.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** name the spans and metrics the runtime reports, say where each value comes from, and say where `durable defects list` reads defect spans.
 
 **Authority:** decision record.

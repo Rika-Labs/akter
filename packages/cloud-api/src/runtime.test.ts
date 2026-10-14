@@ -1,4 +1,4 @@
-import * as Framework from "@rikalabs/akter/client"
+import * as Framework from "@rikalabs/akter"
 import { Effect, Exit, Predicate, Schema } from "effect"
 import { describe, expect, it } from "vitest"
 
@@ -251,8 +251,8 @@ describe("runtime models", () => {
 
     declared(
       QuotaExceeded,
-      Framework.QuotaExceeded,
-      Framework.QuotaExceeded.make({
+      QuotaExceeded,
+      QuotaExceeded.make({
         organizationId: "org_1",
         period: "2026-10",
         cap: "compute",

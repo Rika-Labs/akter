@@ -1,5 +1,7 @@
 # Explicit unrouted Neki verification
 
+> Historical 0.1 verification, retained as of 2026-10-12. Recorded observations below are unchanged; they do not establish support for the 0.2 bucket engine. See [current verification](README.md).
+
 **Retired:** historical evidence for the backend removed by [ADR 0112](../decisions/0112-postgres-and-pglite-only.md). The tests and options named below no longer exist. Do not use this record as configuration guidance or a current support claim; see [removal verification](neki-removal.md).
 
 **Responsibility:** distinguish local runtime evidence from Neki provider evidence for [ADR 0110](../decisions/0110-explicit-unrouted-neki.md).

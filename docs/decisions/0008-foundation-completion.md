@@ -2,6 +2,8 @@
 
 **Status:** implementation decision (2026-09-22); evidence is tracked separately.
 
+**0.2 status:** amended (System caller, defects carry); owned by [ADR 0124](0124-engine-rewrite-and-command-log.md) and [ADR 0125](0125-synchronous-deterministic-actions.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** record the second M0 slice: identity modes, lifecycle policies, creation gating, bounded turns, deterministic defects, System callers, and the PGlite test backend.  
 **Authority:** design.  
 **Owner role:** runtime architecture.  

@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-09-30, Dallen; proposed 2026-09-29). It amends [ADR 0027](0027-served-protocol.md) section 1's route table and section 6's OpenAPI document.
 
+**0.2 status:** amended (readiness carries); owned by [ADR 0130](0130-views-sessions-events-and-rpc.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** decide how a served runner reports readiness over HTTP.
 
 **Authority:** design decision record.

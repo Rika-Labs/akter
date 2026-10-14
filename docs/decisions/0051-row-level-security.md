@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-09-30). It gates M4.5. Migration `0018_rls` and `conformance/rls.ts` implement it. It amends [ADR 0028](0028-sql-inspection-views.md) §4, §5, and decided question 6: the inspection views keep their owner's rights instead of switching to `security_invoker`.
 
+**0.2 status:** superseded in part (RLS as actor-data authority); storage isolation amended; owned by [ADR 0134](0134-removing-owned-tables-and-placement.md) and [ADR 0136](0136-stores-the-bucket-is-the-store.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** define how a deployment turns on Postgres row-level security (RLS), which statements it binds to one tenant, which it exempts, and how the `durable` inspection views apply it.
 
 **Authority:** decision record. It amends contracts [06](../contracts/06-storage-ownership.md) and [10](../contracts/10-security.md), [inspection views](../operations/inspection-views.md), the [support matrix](../operations/support-matrix.md), the [runbooks](../operations/runbooks.md), the conformance ledger, and [invariants](../verification/invariants.md) S2.

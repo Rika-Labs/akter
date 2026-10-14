@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-09-30, Dallen).
 
+**0.2 status:** superseded (items 1–6 replaced by the constrained API); owned by [ADR 0128](0128-constrained-actor-api.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** make actor authoring consistent and reduce duplicated declaration, execution, protocol, test and tooling machinery before the first alpha.
 
 **Authority:** design decision record.

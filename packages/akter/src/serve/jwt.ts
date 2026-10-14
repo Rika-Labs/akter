@@ -1,11 +1,11 @@
 import { Clock, DateTime, Duration, Effect, Option, Result, Schema, Semaphore } from "effect"
 import { Base64Url } from "effect/encoding"
 import { HttpClient } from "effect/http"
-import { ActorUnavailable } from "../errors/actor.ts"
-import { User } from "../identity/caller.ts"
+import { User } from "../contract/caller.ts"
+import { ActorError, ActorUnavailable } from "../contract/errors.ts"
 import { type AuthProvider, bearerToken, Credential, unauthorized } from "./auth.ts"
 
-/** A JWS algorithm `Actor.auth.jwt` can verify. */
+/** A JWS algorithm `Auth.jwt` can verify. */
 type Algorithm =
   | "RS256"
   | "RS384"
@@ -17,7 +17,7 @@ type Algorithm =
   | "ES384"
   | "EdDSA"
 
-/** A JSON Web Key as `Actor.auth.jwt` reads it; unrecognized members are dropped. */
+/** A JSON Web Key as `Auth.jwt` reads it; unrecognized members are dropped. */
 export const Jwk = Schema.Struct({
   kty: Schema.String,
   kid: Schema.optionalKey(Schema.String),
@@ -30,7 +30,7 @@ export const Jwk = Schema.Struct({
   y: Schema.optionalKey(Schema.String),
 })
 
-/** A JSON Web Key as `Actor.auth.jwt` reads it. */
+/** A JSON Web Key as `Auth.jwt` reads it. */
 export type Jwk = typeof Jwk.Type
 
 /** A static JSON Web Key Set. */
@@ -45,7 +45,7 @@ const decodeJwk = Schema.decodeUnknownOption(Jwk)
 /** The verified payload of a JWT, handed to the `tenant` and `subject` callbacks. */
 type Claims = Readonly<Record<string, Schema.Json>>
 
-/** Options of `Actor.auth.jwt`. */
+/** Options of `Auth.jwt`. */
 interface JwtOptions<Keys extends URL | Jwks> {
   /** The required `iss` claim. */
   readonly issuer: string
@@ -173,7 +173,7 @@ const verifySignature = Effect.fnUntraced(function* (
  *
  * @example
  * ```ts
- * Actor.auth.jwt({
+ * Auth.jwt({
  *   issuer: "https://issuer.example.com",
  *   audience: "my-api",
  *   jwks: new URL("https://issuer.example.com/.well-known/jwks.json"),
@@ -187,7 +187,7 @@ export const jwt = <Keys extends URL | Jwks>(
   const algorithms = new Set<Algorithm>(options.algorithms ?? ["RS256", "ES256", "EdDSA"])
 
   for (const alg of algorithms)
-    if (!isAlgorithm(alg)) throw new Error(`Actor.auth.jwt: unsupported algorithm ${String(alg)}`)
+    if (!isAlgorithm(alg)) throw new Error(`Auth.jwt: unsupported algorithm ${String(alg)}`)
 
   const audiences = new Set(isString(options.audience) ? [options.audience] : options.audience)
 
@@ -215,11 +215,7 @@ export const jwt = <Keys extends URL | Jwks>(
       }
 
       return keys
-    }).pipe(
-      Effect.mapError(() =>
-        ActorUnavailable.make({ cause: new Error("Actor.auth.jwt could not fetch its JWKS") }),
-      ),
-    )
+    }).pipe(Effect.mapError(() => ActorError.make({ reason: ActorUnavailable.make({}) })))
 
   const keysFor = (refresh: boolean) =>
     lock.withPermit(

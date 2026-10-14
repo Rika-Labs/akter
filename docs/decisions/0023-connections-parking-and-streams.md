@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-09-26, Dallen; proposed 2026-09-26)
 
+**0.2 status:** superseded; owned by [ADR 0130](0130-views-sessions-events-and-rpc.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 ## Context
 
 [Realtime continuity](../contracts/07-realtime.md) promises `Actor.connection` sessions whose sockets stay open while the activation hibernates (`policy.connections: "park"`), per-connection state of up to 16 KiB in `actor_connections`, a `resumed` flag, best-effort `broadcast`, a live `Actor.stream` that ends with its activation, and a "documented revocation bound" for live and parked sessions. None of it is implemented, and the contract leaves the mechanism open:

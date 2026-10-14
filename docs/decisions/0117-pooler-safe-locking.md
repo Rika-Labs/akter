@@ -2,6 +2,8 @@
 
 **Status:** partially implemented by [ADR 0119](0119-transaction-pooling.md) (2026-10-10), for #712. The broader topology and provider gates below remain proposed.
 
+**0.2 status:** superseded (turn lock authority); pooler evidence historical; owned by [ADR 0126](0126-shard-ownership-on-the-bucket-log.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 ## Context
 
 Small customer databases need fewer sessions per runner. The supported `Database.postgres({ preset: "low-connection" })` baseline uses four primary sessions: one turn, two off-turn, one query. This changes pool defaults only, not durable authority. Explicit sizes override the preset; replica and coordination pools remain additional.

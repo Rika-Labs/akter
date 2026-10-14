@@ -2,6 +2,8 @@
 
 **Status:** implementation decision (2026-09-23); evidence is recorded in conformance.
 
+**0.2 status:** amended (status record); owned by [ADR 0124](0124-engine-rewrite-and-command-log.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** record how the M0 implementation was changed to match the accepted API and delivery decisions, and what remains unimplemented.
 
 **Authority:** design.

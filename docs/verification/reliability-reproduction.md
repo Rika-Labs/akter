@@ -1,5 +1,7 @@
 # Reliability reproduction
 
+> Historical 0.1 verification, retained as of 2026-10-12. Recorded observations below are unchanged; they do not establish support for the 0.2 bucket engine. See [current verification](README.md).
+
 **Responsibility:** distinguish reproduced faults from unresolved intermittent reports.  
 **Authority:** evidence.  
 **Owner role:** runtime/reliability.

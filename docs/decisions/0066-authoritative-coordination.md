@@ -2,6 +2,8 @@
 
 **Status:** implementation decision (2026-10-03), amended by [ADR 0112](0112-postgres-and-pglite-only.md) (2026-10-08). Neki clauses and provider gates are superseded; independent coordination and local data fences remain.
 
+**0.2 status:** superseded (fence mechanism); "a lease alone is never authority" carries; owned by [ADR 0126](0126-shard-ownership-on-the-bucket-log.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** separate deployment-wide ownership from shard-local transactions for #482 and #483.
 
 **Authority:** design decision record.

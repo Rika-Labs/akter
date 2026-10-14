@@ -1,14 +1,12 @@
 {
   "name": "@rikalabs/akter-cli",
-  "version": "0.1.0-alpha.6",
-  "description": "The Akter command-line tool for local development and Akter Cloud",
+  "version": "0.2.0",
+  "description": "The Akter command-line tool for Akter Cloud",
   "keywords": [
     "actors",
     "akter",
     "durable",
-    "effect",
-    "pglite",
-    "postgres"
+    "effect"
   ],
   "homepage": "https://github.com/Rika-Labs/akter#readme",
   "bugs": "https://github.com/Rika-Labs/akter/issues",
@@ -50,13 +48,12 @@
     "access": "public"
   },
   "scripts": {
-    "build:inspector": "bun build src/commands/dev/inspector/client.ts --target browser --minify --outfile .cache/inspector-client.js",
-    "build": "tsc -p tsconfig.build.json && bun build src/main.ts --target node --format esm --external '@effect/*' --external effect --external '@rikalabs/akter' --external '@rikalabs/akter/*' --outfile dist/main.js && bun build ../../packages/cloud-api/src/index.ts --target node --format esm --external effect --external '@rikalabs/akter' --external '@rikalabs/akter/*' --outfile dist/cloud-api/index.js && cp -R .cache/declarations/packages/cloud-api/src/. dist/cloud-api/ && bun run build:inspector && cp .cache/inspector-client.js dist/inspector-client.js && cp .cache/declarations/apps/cli/src/main.d.ts dist/main.d.ts",
+    "build": "tsc -p tsconfig.build.json && bun build src/main.ts --target node --format esm --external '@effect/*' --external effect --external '@rikalabs/akter' --external '@rikalabs/akter/*' --outfile dist/main.js && bun build ../../packages/cloud-api/src/index.ts --target node --format esm --external effect --external '@rikalabs/akter' --external '@rikalabs/akter/*' --outfile dist/cloud-api/index.js && cp -R .cache/declarations/packages/cloud-api/src/. dist/cloud-api/ && cp .cache/declarations/apps/cli/src/main.d.ts dist/main.d.ts",
     "prepublishOnly": "echo 'Publish through the release workflow: push a v<version> tag.' && exit 1",
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
     "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
-    "test": "bun run build:inspector && CLI_BACKEND=none bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/cli/src",
-    "test:integration": "CLI_BACKEND=postgres bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/cli/src/commands/adopt apps/cli/src/commands/fleet"
+    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/cli/src --exclude apps/cli/src/commands/storage/check.s3.test.ts",
+    "test:integration": "bun --bun ../../node_modules/vitest/vitest.mjs run --config vitest.integration.config.ts"
   },
   "dependencies": {
     "@effect/platform-bun": "catalog:",
@@ -65,22 +62,15 @@
   },
   "devDependencies": {
     "@akter/cloud-api": "workspace:*",
+    "@aws-sdk/client-s3": "3.1148.0",
     "@effect/platform-bun": "catalog:",
     "@effect/platform-node": "catalog:",
-    "@effect/sql-pg": "catalog:",
-    "@effect/sql-pglite": "catalog:",
     "@effect/vitest": "catalog:",
-    "@types/pg": "8.23.1",
-    "drizzle-orm": "catalog:",
     "effect": "catalog:",
-    "pg": "8.23.0",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },
   "peerDependencies": {
-    "@effect/sql-pg": "catalog:",
-    "@effect/sql-pglite": "catalog:",
-    "drizzle-orm": "catalog:",
     "effect": "catalog:"
   },
   "engines": {

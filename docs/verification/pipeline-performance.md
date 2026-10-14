@@ -1,5 +1,7 @@
 # Pipeline performance evaluation
 
+> Historical 0.1 verification, retained as of 2026-10-12. Recorded observations below are unchanged; they do not establish support for the 0.2 bucket engine. See [current verification](README.md).
+
 Recorded on 2026-10-10 for local `ci/pipeline-performance`, based on
 [the unchanged public baseline](https://github.com/Rika-Labs/akter/commit/f3c06e73c94b8e5e5de4e2c278d472830030c500).
 The [evaluation thread](https://ampcode.com/threads/T-01a12410-fe1a-752d-91c8-d2f22a984d09)

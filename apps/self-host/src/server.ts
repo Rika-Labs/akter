@@ -1,98 +1,116 @@
-import { User, Unauthorized } from "@rikalabs/akter"
-import { Actors, Auth, Database, Runner, RuntimeControl } from "@rikalabs/akter/runtime"
-import { Config, Console, Effect, Fiber, FileSystem, Layer, Option, Redacted, Schema } from "effect"
-import { Headers, HttpRouter, HttpServerResponse } from "effect/http"
-import { Counter } from "./contract.ts"
-import { CounterLive } from "./layer.ts"
+import { timingSafeEqual } from "node:crypto"
+import { readFileSync } from "node:fs"
+import { Actor, ActorError, isUser, Unauthorized, User } from "@rikalabs/akter"
+import { Akter, App, Auth, RuntimeControl, Store } from "@rikalabs/akter/server"
+import type { AuthRequest, RunnerOptions } from "@rikalabs/akter/server"
+import { Config, Effect, Layer, Option, Redacted, Schema } from "effect"
 
-class ConfigurationError extends Schema.TaggedError<ConfigurationError>()("ConfigurationError", {
-  message: Schema.String,
-}) {}
+/** The recipe's actor: a counter every authenticated caller can add to and watch. */
+const Counter = Actor.make("Counter", {
+  state: Schema.Struct({
+    count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
+  }),
+  actions: { add: Actor.action(Schema.Finite, { success: Schema.Finite }) },
+  views: { count: Actor.view(Schema.Finite) },
+  access: isUser,
+})
 
-const runtime = Layer.unwrap(
+const CounterLive = Counter.toLayer({
+  add: (counter, amount) => {
+    counter.count += amount
+    return counter.count
+  },
+  count: (counter) => counter.count,
+})
+
+/** A mounted secret file, trimmed; never logged. */
+const secret = (name: string) => readFileSync(`/run/secrets/${name}`, "utf8").trim()
+
+const refused = (code: "missing_credentials" | "invalid_credentials") =>
+  ActorError.make({ reason: Unauthorized.make({ code }) })
+
+/**
+ * One bearer token, mounted as the `api-token` secret, authenticates as `self-host-client` in the
+ * `default` tenant. Replace it with the application's own provider before exposing an ingress.
+ */
+const bearer = () => {
+  const token = Buffer.from(secret("api-token"))
+  return Auth.make((request: AuthRequest) =>
+    Effect.gen(function* () {
+      const header = request.credential ?? request.headers["authorization"]
+      if (header === undefined || !header.startsWith("Bearer "))
+        return yield* refused("missing_credentials")
+      const given = Buffer.from(header.slice("Bearer ".length))
+      if (given.length !== token.length || !timingSafeEqual(given, token))
+        return yield* refused("invalid_credentials")
+      return { caller: User.make({ subject: "self-host-client" }), tenant: "default" }
+    }),
+  )
+}
+
+/**
+ * `S3_BUCKET` selects an S3-compatible bucket (with `S3_ENDPOINT`, `S3_REGION`, `S3_ACCESS_KEY_ID`
+ * and the `s3-secret-access-key` secret); without it the store is a directory, `STORE_DIRECTORY`.
+ */
+const store = Layer.unwrap(
   Effect.gen(function* () {
-    const host = yield* Config.String("RUNNER_HOST")
-    const databaseHost = yield* Config.String("DATABASE_HOST").pipe(Config.withDefault("postgres"))
-    const fs = yield* FileSystem.FileSystem
-    const password = (yield* fs.readFileString("/run/secrets/database-password")).trim()
-    const token = Redacted.make((yield* fs.readFileString("/run/secrets/api-token")).trim())
-    if (password.length === 0 || Redacted.value(token).length < 32)
-      return yield* ConfigurationError.make({
-        message: "Set a database password and an API token of at least 32 characters",
-      })
-
-    const transport = Runner.socket({
-      address: { host, port: 9000 },
-      listenAddress: { host: "0.0.0.0", port: 9000 },
-      transport: Runner.mtls({
-        deployment: "self-host",
-        credentials: Effect.all({
-          ca: fs.readFileString("/run/secrets/ca.pem"),
-          certificate: fs.readFileString("/run/secrets/certificate.pem"),
-          key: fs.readFileString("/run/secrets/key.pem").pipe(Effect.map(Redacted.make)),
-        }),
-      }),
+    const bucket = yield* Config.option(Config.String("S3_BUCKET"))
+    if (Option.isNone(bucket))
+      return Store.fileSystem(
+        yield* Config.String("STORE_DIRECTORY").pipe(Config.withDefault("/data/store")),
+      )
+    return Store.s3({
+      bucket: bucket.value,
+      endpoint: Option.getOrUndefined(yield* Config.option(Config.String("S3_ENDPOINT"))),
+      region: yield* Config.String("S3_REGION").pipe(Config.withDefault("us-east-1")),
+      credentials: {
+        accessKeyId: yield* Config.String("S3_ACCESS_KEY_ID"),
+        secretAccessKey: secret("s3-secret-access-key"),
+      },
     })
-    const encoder = new TextEncoder()
-    const expected = new Uint8Array(
-      yield* Effect.promise(() =>
-        crypto.subtle.digest("SHA-256", encoder.encode(`Bearer ${Redacted.value(token)}`)),
-      ),
-    )
-    const auth = Auth.make((request) =>
-      Effect.gen(function* () {
-        const header = Option.getOrElse(Headers.get(request.headers, "authorization"), () => "")
-        const actual = new Uint8Array(
-          yield* Effect.promise(() => crypto.subtle.digest("SHA-256", encoder.encode(header))),
-        )
-        let difference = 0
-        for (let index = 0; index < expected.length; index++)
-          difference |= expected[index]! ^ actual[index]!
-
-        return difference === 0
-          ? { tenant: "default", caller: User.make({ subject: "self-host-client" }) }
-          : yield* Unauthorized.make({ code: "invalid_credentials" })
-      }),
-    )
-    const health = HttpRouter.add("GET", "/health", HttpServerResponse.text("alive"))
-    const live = CounterLive.pipe(
-      Layer.provideMerge(Actors.layer().pipe(Layer.provide(transport))),
-      Layer.provideMerge(
-        Database.postgres({
-          url: Redacted.make(
-            `postgres://project:${encodeURIComponent(password)}@${databaseHost}:5432/project`,
-          ),
-          maxConnections: 10,
-          offTurnConnections: 5,
-          queryConnections: 5,
-        }),
-      ),
-    )
-    return HttpRouter.serve(Layer.merge(health, Actors.serve({ actors: [Counter], auth })), {
-      disableListenLog: true,
-    }).pipe(Layer.provideMerge(live))
   }),
 )
 
-/** The signal completes normally so drain runs while the HTTP and actor layers remain alive. */
-const termination = Effect.callback<void>((resume) => {
-  const stop = () => resume(Effect.void)
-  process.once("SIGTERM", stop)
-  process.once("SIGINT", stop)
-  return Effect.sync(() => {
-    process.removeListener("SIGTERM", stop)
-    process.removeListener("SIGINT", stop)
-  })
-})
+const serving = Layer.unwrap(
+  Effect.gen(function* () {
+    const host = yield* Config.option(Config.String("RUNNER_HOST"))
+    let runner: RunnerOptions | undefined
+    if (Option.isSome(host)) {
+      const port = yield* Config.Int("RUNNER_PORT")
+      runner = {
+        address: { host: host.value, port },
+        listenAddress: { host: "0.0.0.0", port },
+        peering: {
+          deployment: yield* Config.String("PEER_IDENTITY"),
+          credentials: Effect.sync(() => ({
+            ca: secret("peer-ca"),
+            certificate: secret("peer-certificate"),
+            key: Redacted.make(secret("peer-key")),
+          })),
+        },
+      }
+    }
+    return Akter.serve({
+      app: App.make({ actors: [Counter], layer: CounterLive }),
+      auth: bearer(),
+      runner,
+    })
+  }),
+).pipe(Layer.provide(store))
 
-export const server = Effect.gen(function* () {
-  const signal = yield* termination.pipe(Effect.forkScoped)
-  const context = yield* Layer.build(runtime)
-  yield* Effect.gen(function* () {
-    const control = yield* RuntimeControl
-    yield* Fiber.join(signal)
-    const report = yield* control.drain({ deadline: "15 seconds" })
-    const json = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(report)
-    yield* Console.log(`DRAINED ${json}`)
-  }).pipe(Effect.provide(context))
-}).pipe(Effect.scoped)
+const main = Effect.scoped(
+  Effect.gen(function* () {
+    const context = yield* Layer.build(serving)
+    yield* RuntimeControl.waitForSignal({ deadline: "15 seconds" }).pipe(
+      Effect.provideContext(context),
+    )
+  }),
+)
+
+if (typeof Bun === "undefined") {
+  const { NodeServices } = await import("@effect/platform-node")
+  await Effect.runPromise(Effect.provide(main, NodeServices.layer))
+} else {
+  const { BunServices } = await import("@effect/platform-bun")
+  await Effect.runPromise(Effect.provide(main, BunServices.layer))
+}

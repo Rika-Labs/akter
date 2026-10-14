@@ -2,6 +2,8 @@
 
 Status: accepted
 
+**0.2 status:** amended (self-host is one bucket); owned by [ADR 0136](0136-stores-the-bucket-is-the-store.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 ## Context
 
 A self-hoster needs reproducible files for two runner processes on one host. The published npm version is still alpha.1; it lags main until alpha.2 and cannot establish the current runner recipe. The framework already serializes startup migrations before actor registration and supplies authenticated peer transport and bounded drain through its public runtime API.

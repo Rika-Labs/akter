@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-09-25, Dallen, on #39 and #42)
 
+**0.2 status:** amended (`RunnerAtCapacity` carries; pool budget ends); owned by [ADR 0126](0126-shard-ownership-on-the-bucket-log.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 ## Context
 
 Effect Cluster admits at most `maxResidentEntities` resident entities per runner (default 10,000), and the runtime didn't set it. When a command needed a new activation past that limit, Cluster failed it with its `MailboxFull` error, and the runtime reported that as `ActorError(MailboxFull)`. The [error model](../contracts/error-model.md) reserves `MailboxFull` for an actor with a finite `Mailbox.capacity`, and the handle types list it only for those actors. So an unbounded actor returned a reason its own types rule out, and the handle didn't retry it. The benchmark harness ([ADR 0018](0018-benchmark-harness-and-results.md)) showed 8,241–11,680 such failures when 64 callers touched 100,000 actors (#39).

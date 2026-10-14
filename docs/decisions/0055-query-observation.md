@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-09-30, Dallen; proposed 2026-09-29). It gates M6.2 ([#299](https://github.com/Rika-Labs/akter/issues/299) drafts it). It is the second item of [ADR 0014](0014-adoption-observation-and-client-reach.md)'s order and needs no migration. When accepted it amends [contract 07](../contracts/07-realtime.md), [protocol](../contracts/protocol.md), [ADR 0027](0027-served-protocol.md) sections 1, 6, and 7, the [server API](../api/01-server-api.md), the [TypeScript SDK](../api/03-typescript-sdk.md), and the [post-foundation sketch](../api/post-foundation-sketches.md).
 
+**0.2 status:** superseded; owned by [ADR 0130](0130-views-sessions-events-and-rpc.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** decide which queries can be watched, how the runtime learns that a committed write may have changed a watched result, what a subscriber receives, and what the runtime refuses instead of pretending to be live.
 
 **Authority:** design decision record.

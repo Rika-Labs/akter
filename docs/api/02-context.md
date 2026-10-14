@@ -1,229 +1,30 @@
 ---
 title: "Context capabilities"
-description: "The typed context service each handler phase receives, and what it may do."
+description: "The synchronous action, view, presence, and Effect job contexts in Akter 0.2."
 ---
 
 # Context capabilities
 
-**Responsibility:** define `Context` phases and capabilities.  
-**Authority:** API contract.  
-**Owner role:** API/runtime.
-**Change policy:** a change requires compatibility review against docs/api/versioning.md.
+Akter exposes different capabilities by handler phase so durable actions stay deterministic and I/O stays in jobs.
 
-Handlers take only their payload. Each phase provides one typed context object as an Effect service on the actor definition, so a capability used in the wrong phase is a missing-service type error. The runtime remains the final authority even when TypeScript prevents invalid use. See [ADR 0010](../decisions/0010-one-way-effect-native-api.md).
+## Actions
 
-```ts
-import { Actor, type ActorRef, type Caller } from "@rikalabs/akter"
-import { pgTable, text, timestamp } from "drizzle-orm/pg-core"
-import { Context, DateTime, Effect, Schema } from "effect"
+An action receives a mutable copy-on-write draft, its decoded payload, and `{ caller, self, id, now, random, send, schedule, start, emit }`. `id()`, `now()`, and `random()` are recorded inputs. `send` and `schedule` stage fire-and-forget calls. `start` stages a job. `emit` publishes an event only after the action segment is durable.
 
-class RoomClosed extends Schema.TaggedError<RoomClosed>()("RoomClosed", {}) {}
-class NotAMember extends Schema.TaggedError<NotAMember>()("NotAMember", {}) {}
-const MessageAdded = Actor.event("MessageAdded", {
-  id: Schema.String,
-  body: Schema.String,
-})
-const messages = Actor.table(
-  pgTable("chat_messages", {
-    id: text("id").primaryKey(),
-    author_id: text("author_id").notNull(),
-    body: text("body").notNull(),
-    sent_at: timestamp("sent_at", { withTimezone: true }).notNull(),
-  }),
-)
-const SendMessage = Actor.command("SendMessage", {
-  payload: Schema.Struct({ body: Schema.String }),
-  success: Schema.String,
-  error: NotAMember,
-})
-const Chat = Actor.make("Chat", {
-  key: Schema.String,
-  state: Actor.state({ closed: Schema.Boolean }),
-  tables: [messages],
-  events: [MessageAdded],
-  api: { SendMessage },
-})
-class Access extends Context.Service<
-  Access,
-  { readonly requireMember: (caller: Caller, ref: ActorRef) => Effect.Effect<string, NotAMember> }
->()("Access") {}
+An action is a plain synchronous function. It cannot read services, sleep, await, access `Date`, `Math.random`, `Promise`, `process`, or `globalThis`. A defect or declared failure discards the entire draft and staged consequences.
 
-export const ChatLive = Chat.toLayer(
-  Effect.gen(function* () {
-    const access = yield* Access
-    return {
-      SendMessage: Effect.fn(function* ({ body }) {
-        const turn = yield* Chat.Turn
-        const author = yield* access.requireMember(turn.caller, turn.ref)
-        yield* turn.rows(messages).insert({
-          id: turn.commandId,
-          author_id: author,
-          body,
-          sent_at: DateTime.toDateUtc(yield* DateTime.now),
-        })
-        yield* turn.emit(MessageAdded.make({ id: turn.commandId, body }))
-        return turn.commandId
-      }),
-    }
-  }),
-)
+## Views
 
-// A helper's requirement states where it may run.
-const requireOpen: Effect.Effect<
-  void,
-  RoomClosed,
-  Context.Service.Identifier<typeof Chat.Turn>
-> = Effect.gen(function* () {
-  const turn = yield* Chat.Turn
-  if (turn.state.closed) return yield* new RoomClosed()
-})
-```
+A view receives durable state, optional parameters, and `{ caller, self }`. It returns its schema value synchronously and stages nothing. Callers admitted by `access` may read state and lists directly; use a view to derive or hide a shape.
 
-## Phases
+## Lists
 
-| Service        | Phase                                                   | Provides                                                                                                                                                                                                                                |
-| -------------- | ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `X.Turn`       | command handler (public or internal)                    | `id`, `ref`, `caller`, `principal`, `commandId`, writable `state`, `rows`, `blob`; read-only `group`; `emit`, `enqueue`, `cancelJob`, `broadcast`, `connections`, `subscribe`, `unsubscribe`, `mint`                                    |
-| `X.Read`       | query and stream handlers                               | `id`, `ref`, `caller`, `principal`, committed `state` and its event `cursor`, read-only `rows`, `group`, `blob`, and `events(Event, { after })`; stream handlers also get `follow(Event, { after })` and `progress(J, { jobId? })`      |
-| `X.Connection` | connection handler (`open`, `frame`, `close`, `resync`) | `X.Read` capabilities plus `connectionId`, `member`, `session` (16 KiB), `resumed`, `send`, `broadcast`, `connections`, and `close`; `id` stays the actor id and `state` the actor's committed state                                    |
-| `X.Workflow`   | workflow body                                           | owner `id` and `ref`, `principal`, `executionId`, `key`, and `version(name)`; waits, sleeps, and steps are `Ship.wait`/`sleep`/`step` constructors                                                                                      |
-| `X.Executor`   | job executor                                            | `jobId`, `attempt`, `principal`, and owner `ref`; no database capability; `progress(J, frame)` for a job declaring `progress` delivered to opted-in connections and streams ([ADR 0030](../decisions/0030-executor-progress-frames.md)) |
+An `Actor.list(Item, { key, by })` field supplies `get`, `range`, `put`, `delete`, and `deleteBefore` in action code. `range` uses inclusive `from`, exclusive `to`, `limit`, and `reverse`. Items are stored in content-addressed pages, so list growth does not grow the bounded actor manifest.
 
-Only command handlers may call `X.intents(id)`; it requires the runtime's `Actor.InTurn` marker, which command turns provide and `X.toLayer` removes from handler requirements. A command handler that acquires a handle with `X.get` does not compile. Request/reply handles (`X.get`) are available outside turns: in applications, job executors, and connection handlers ([ADR 0023](../decisions/0023-connections-parking-and-streams.md)), and in workflow bodies only inside an activity. These workflow rules come from [ADR 0022](../decisions/0022-workflow-engine-storage-and-version-markers.md), which changed the earlier text that let workflow bodies call `X.intents` and use handles anywhere. Executors report results by returning a value; the framework delivers it to the job binding's `onSuccess` route ([ADR 0012](../decisions/0012-workflows-internals-effects-defects-merging-regions.md)). `turn.mint(Child)` implements [ADR 0025](../decisions/0025-turn-mint.md): it returns the child's branded id, derived from the tenant, the parent's type and id, the command id, the call's ordinal within the command (from 0, across child types), and the child's type, so a rerun of the same command mints the same ids. It accepts only unkeyed actors that declare `createdBy`; any other actor fails to compile and dies at runtime. Each minted id needs a creating intent to the child's `createdBy` command staged in the same turn, or the turn dies with `Minted actor <type>/<id> has no creating intent` and rolls back; that intent cannot take `Intent.key` (the turn dies with `Minted actor <type>/<id> has a keyed creating intent`), so no later keyed intent or cancel can remove it. That intent's caller is `System({ source, ref: <parent>, onBehalfOf, mint: { commandId, ordinal } })`, and only the relay, delivering the intent row the parent's turn committed to its outbox with a proof that derives the target id, may create the child; a System caller carrying `mint` through `Actor.as`, a client, or any other external entry point fails `Unauthorized` with code `access_denied` before its turn runs; any other caller of the creating command, including the parent without the proof, fails `Unauthorized` with code `access_denied` and no receipt. A captured `mint` dies with `Mint capability escaped its turn`. `turn.enqueue(job)` is implemented on `X.Turn`; its `{ key, after, at }` options and `turn.cancelJob(key)` are implemented (M2.13) with the accepted defaults of [ADR 0024](../decisions/0024-effect-cancellation-and-per-actor-concurrency.md), and a captured `cancelJob` dies like a captured `enqueue`; and `X.Executor` is provided to executors in `X.toJobLayer`. A job layer whose executors or build Effect require `SqlClient`, `PgClient`, or `PgliteClient` does not compile, and the runtime removes those clients from the context an executor runs in. A client obtained outside Effect's context (for example a driver pool created in the build) is not detected. `X.Executor.attempt` starts at 1, and a later attempt may follow one whose outcome is unknown, so executors pass `jobId` to the provider as an idempotency key. Workflow bodies use the member's typed step constructors (`Ship.step`, `Ship.sleep`, `Ship.wait`, `Ship.race`), which compile to Effect's `Activity`, `DurableClock`, and `DurableDeferred`; the primitives used directly in a body die ([server API](01-server-api.md)). Wrap a step's `run` in Effect's `Activity.retry` to retry it: each attempt, numbered by `Activity.CurrentAttempt`, records its own exit and derives its own call ids, and a replay returns the final one. Effect's `Workflow.withCompensation` and `Workflow.addFinalizer` work in bodies; they run when the execution records its result, so a compensation runs when the execution fails or is interrupted, including an interrupt of a suspended execution, which replays the recorded steps to register them ([ADR 0046](../decisions/0046-workflow-engine-suite-drivers.md), proposed). A runner that dies while compensating replays and compensates again, so compensations must be idempotent. Inside a step's `execute`, each handle call gets a command id derived from the execution, step, attempt, and call order, so a rerun attempt repeats its ids; keep calls within one activity sequential, or use one call per activity. Those calls carry the execution's recorded System caller, `onBehalfOf` the principal that started it, and are admitted like relay delivery: the external `authorize` and command-id expiry checks don't run, so the workflow continues after that principal loses access, and a receiver that must reauthorize checks `onBehalfOf` itself. A call that would be sent past its id's expiry bound is not sent, and the activity dies with `ActivityOutcomeUnknown`.
+## Jobs
 
-Minted children may use a different placement from their parent. The framework relay carries the committed creating intent's provenance over its internal runner transport, so the child's first turn validates creation without reading the parent's shard ([ADR 0048 amendment](../decisions/0048-mint-progress-and-inspection-record-corrections.md#amendment-child-local-creating-intent-proof-485-2026-10-03)). Applications still stage the ordinary creating intent and cannot supply this metadata through a handle or `Actor.as`; it is not a public creation capability.
+A job receives its payload and `{ self, step, emit, id, attempt }` and returns an Effect. `step(name, effect)` journals JSON or void results; pass a schema for other values. Completed steps never run again. A failed or interrupted step may have reached an external provider, so use provider idempotency keys. Calls that must not repeat across retries belong inside a step or target an idempotent action.
 
-## Subscriptions
+## Caller and access
 
-`turn.subscribe(S, sourceId, { from? })` and `turn.unsubscribe(S, sourceId)` (M3.7, [ADR 0026](../decisions/0026-cross-actor-event-subscriptions.md)) start and stop following one source instance through a dynamic `Actor.subscription` (one without `route`). They stage like intents and take effect only if the turn commits. `from` is `"now"` (default), `"start"`, or a cursor to resume after. After `unsubscribe` commits, no further delivery for that source runs the handler. Routed subscriptions are not passed to either; passing one is a type error. A `from` value that isn't `"now"`, `"start"`, or a canonical cursor is a deterministic defect of the turn, and a cursor past the source's head is refused with a `Rejected` delivery. `Intent.key` and `Intent.cancel` reject keys starting with `$` (or a JSON array whose first element does), which the framework uses for its feed and control rows.
-
-## Owned rows
-
-`turn.rows(table)` and `read.rows(table)` accept only the actor type's declared `tables` and scope every operation to the current tenant and actor; `group` reads across the placement group, which for a parent-placed type is the whole family under its root, and never beyond it ([ADR 0033](../decisions/0033-parent-actor-placement.md)). Neither takes ownership fields or predicates. The operations, filters, and rejected uses are in [Drizzle integration](04-drizzle.md).
-
-## Committed snapshots
-
-A query always reads the database, never a warm activation's memory ([ADR 0115](../decisions/0115-warm-actor-fast-path.md)). `read.version?: string` is always undefined. `read.state` and `read.cursor` belong to one database snapshot, never a running handler's staged writes, and the read satisfies the caller's minimum version, preserving read-your-writes ([ADR 0052](../decisions/0052-read-your-writes-commit-versions.md)). This is not a globally latest read or a fresh generation fence.
-
-Command handlers can be evaluated again after discarded speculation or rollback: use `turn.enqueue` and job executors for external effects, never an HTTP call inside a command ([ADR 0115](../decisions/0115-warm-actor-fast-path.md)). New jobs, intents and subscriptions retain ordinary admission so their identities use its database clock.
-
-An ambient deployment `SqlClient` captured by a command handler uses the framework-owned, generation-fenced turn transaction even if the actor declares no tables or blobs. Its first SQL attempt during warm speculation executes nothing and reruns the handler through ordinary admission. Declared failures roll back this business SQL along with the handler's staged state; SQL errors and defects roll back the turn. No SQL-capability declaration is required.
-
-## Blobs
-
-`turn.blob(B)` and `read.blob(B)` accept only the actor type's declared `blobs` and address entries of the current tenant, actor type, and actor by name alone. `turn.blob` returns `BlobWrite` (`get`, `set`, `append`, `compact`, `delete`), bound to the turn transaction, so a turn reads its own writes and a declared failure discards them. `read.blob` returns `BlobRead`, which has only `get`; the object carries no write methods, whatever a cast claims. `get` returns `Option.none()` for an entry that was never written and `Option.some` of an empty array for one set to no bytes. For an `Actor.content` blob (M4.13, [ADR 0034](../decisions/0034-tenant-scoped-content-addressed-blobs.md)), `turn.blob(C)` returns `ContentWrite`: `attach(name, ref)`, `detach(name)`, and `list`, an Effect of the references by name. `read.blob(C)` returns `ContentRead`: `get(name)`, `stream(name)`, and `list`. Turns never see content bytes. `attach` checks the grant's MAC without a read and requires it to stay valid for the skew margin past the actor shard's clock, failing `InvalidContentRef` otherwise; a reference with an existing name replaces it, and references count against `policy.maxBlobEntries` with the actor's own entries. `get` returns `Option.none()` for a missing name, and so does a read whose content a sweep removed after the name resolved; it never returns partial bytes. `stream` reads every chunk from one `REPEATABLE READ` snapshot held for at most `executionTimeout` and fails with `NoSuchElementError` before any chunk for a missing name.
-
-```ts
-import { Actor } from "@rikalabs/akter"
-import { Effect, Option, Schema } from "effect"
-
-const Attachments = Actor.blob("attachments")
-
-const Attach = Actor.command("Attach", {
-  payload: Schema.Struct({ id: Schema.String, bytes: Schema.Uint8Array, line: Schema.Uint8Array }),
-})
-const Download = Actor.query("Download", {
-  payload: Schema.String,
-  success: Schema.Option(Schema.Uint8Array),
-})
-const Room = Actor.make("Room", {
-  key: Schema.String,
-  blobs: [Attachments],
-  api: { Attach, Download },
-})
-
-export const RoomLive = Room.toLayer({
-  Attach: Effect.fn(function* ({ id, bytes, line }) {
-    const files = (yield* Room.Turn).blob(Attachments)
-    yield* files.set(id, bytes)
-    yield* files.append("log", line) // a new chunk; earlier chunks are not rewritten
-    yield* files.compact("log") // one chunk, same bytes
-  }),
-})
-
-export const RoomReads = Room.toQueryLayer({
-  Download: Effect.fn(function* (id) {
-    const file: Option.Option<Uint8Array> = yield* (yield* Room.Read).blob(Attachments).get(id)
-    return file
-  }),
-})
-```
-
-## Command turns
-
-A command's context is the only writable one. One framework-owned transaction performs, in order, the generation fence, receipt resolution, state decode (or reuse of the activation's cached state), handler, staged writes and intents, receipt update, and commit ([command turns](../contracts/02-command-turns.md)). `DateTime.now` is pinned per turn.
-
-Unhandled declared failures roll back business changes and staged notifications while their terminal receipts commit and replay unchanged. A handler that catches an error and succeeds commits normally; an intentionally persisted rejection belongs in its `success` schema. Retryable turn failures, such as a stale generation or command execution timeout, become defects and restart the activation; the caller's handle retries with the same command id. A caller's `Timeout` stops waiting without cancelling the turn. Application errors are never wrapped.
-
-## Minted child ids
-
-`turn.mint(Child)` derives its id as [ADR 0025](../decisions/0025-turn-mint.md) specifies: SHA-256 over the length-prefixed UTF-8 fields `durable-actors/mint/v1`, tenant, parent type, parent id (empty for a singleton), command id, decimal ordinal, and child type; the first 16 bytes get the version-8 and RFC 9562 variant bits and are written as lowercase hyphenated hex. These vectors are checked in [`identity/mint.test.ts`](../../packages/akter/src/identity/mint.test.ts). Every row uses command id `v1.1767225600000.1767312000000.0190a3b4-5c6d-4e7f-8a9b-0c1d2e3f4a5b`:
-
-| Tenant  | Parent type | Parent id | Ordinal | Child type | Id                                     |
-| ------- | ----------- | --------- | ------- | ---------- | -------------------------------------- |
-| `acme`  | `Planner`   | `p1`      | 0       | `Task`     | `0c5a337c-0560-8eb1-b010-902d673172c7` |
-| `acme`  | `Planner`   | `p1`      | 1       | `Task`     | `3ae6ebfe-9609-8687-b75b-9e198d77fb9f` |
-| `acme`  | `Planner`   | `p1`      | 0       | `Note`     | `fe9dbb44-85a2-8877-acb9-6831a50179ef` |
-| `other` | `Planner`   | `p1`      | 0       | `Task`     | `aa018c3d-8a57-8020-928d-3dcdf7f18354` |
-| `acme`  | `Planner`   | `p2`      | 0       | `Task`     | `6aed5848-79c2-8c75-87c9-9a1c1f0b362c` |
-| `acme`  | `Café`      | (empty)   | 0       | `Task`     | `d30d3458-a1b1-89ad-af2e-945f0d48a9f1` |
-
-## Events
-
-`turn.emit(event)` takes an instance of a class declared in the actor's `events`; any other class fails to compile, and an undeclared or invalid value is a defect at runtime. The event is encoded when emitted and appended in the turn's own transaction, so a declared failure, a defect, or a crash before COMMIT leaves no event. Each committed event gets the next number in its actor's sequence, reserved on the locked generation row, so the sequence has no gaps or reuse even after pruning.
-
-`read.events(Event, { after })` returns the committed events of one declared class after the exclusive cursor, oldest first, as `EventEntry` values:
-
-```ts
-import type { DateTime } from "effect"
-
-interface EventEntry<E> {
-  readonly cursor: string // pass as `after` to resume after this event
-  readonly event: E
-  readonly commandId: string // the command whose turn emitted it
-  readonly timestamp: DateTime.Utc // database clock when the event was appended at commit
-}
-```
-
-`after` defaults to the start of the stream. A cursor is the event's decimal sequence number, but callers should treat it as opaque. Replay fails with a typed error instead of skipping anything:
-
-- `UnknownCursor { cursor }`: the cursor is malformed or ahead of every event this actor has committed.
-- `RetentionGap { cursor }`: some event after the cursor has been pruned, whatever its class. The reader has to resynchronize from state.
-
-A query that replays declares these in its `errors`, or handles them itself.
-
-`read.cursor` is the last event committed when the query read `state`, and every `read.events` call in that query stops at it. Two replays of different classes in one query therefore line up, and a reader that takes `state` with `read.cursor` and then follows events after that cursor misses and repeats nothing. That is how a reader resynchronizes after `RetentionGap`.
-
-Replay is paged: `read.events(E, { after, limit })` returns at most `limit` entries (default 1,000, at most 10,000; any other value is a defect). A full page means more may follow, so the reader continues after the last entry's cursor; a shorter page reached `read.cursor`. The events one turn emits may total at most 1,048,576 encoded bytes; the emit that crosses it is a deterministic defect, so the turn commits none of its events unless the handler catches that defect, in which case the events emitted before it commit and every later emit in the turn dies too. The limit bounds rows per page, not their bytes: a page of large events can be large. A stored event that no longer decodes under its current class makes the query a defect, so change an event's schema only in ways that still decode its stored events.
-
-## Connections and streams
-
-Connection members, `Actor.stream`, and `read.follow` are implemented (M2.10, [ADR 0023](../decisions/0023-connections-parking-and-streams.md)), and `Actors.serve` serves connections over WebSocket and streams over SSE (M3.3). `conn.connections` does not take a page `cursor`; it returns the first 1,000.
-
-A runtime's transport holds each socket; the actor never does. A connection member's handlers are `open(params)`, `frame(frame)`, and optional `close(reason)` and `resync({ after })`, each a short Effect with `X.Connection`. Handlers of one connection run one at a time in frame order, outside the command mailbox, and read the state the activation last committed.
-
-- `conn.session.get` and `conn.session.set(patch)` read and change this connection's own state; `conn.state` is the actor's committed state, as in every read context. A changed session is written once, after the handler returns, fenced by the actor's generation; above 16 KiB encoded the handler is a defect that closes the connection and writes nothing.
-- `conn.resumed` is `true` when this activation did not run the connection's `open`: after hibernation, a move to another runner, or a restart.
-- `conn.send(frame)` sends to this connection. `conn.broadcast(frame, { except?, to? })` sends to this member's open connections, parked or not, wherever they are held. `turn.broadcast(Member, frame, { except?, to? })` does the same from a command and flushes after commit; `turn.connections(Member)` lists that member's open connections so a turn can filter them into `to`.
-- `conn.connections({ session? })` lists this member's open connections as `{ connectionId, caller, session? }`, at most 1,000.
-- A connection member may add `resync({ after })`, which runs on the new owner after an ungraceful owner death, with `resumed === true`, to replay what the client may have missed (it may not call `session.set`); the client receives a `Resync { after, reason, deadline }` control frame first and answers `ResyncDone { through }` within 30 seconds.
-- Every member frame reaches the client as `{ frame, cursor?, event? }`. `cursor` is the activation's flushed-through watermark, the highest commit whose broadcasts to that holder all went out before this frame, and is how `Resync.after` is known; `event` is the cursor of the event the frame was sent from (`conn.send(entry)`, or `turn.broadcast(Member, entry)` with an `EventEntry`), which is what clients deduplicate on. After `Resync`, the client replays events after `after`, reloads state derived from frames that carry no event, waits for `ResyncReplayed` when the member has a `resync` handler, and answers `ResyncDone { through }` within 30 seconds. A member declared with `stampCursor: false` hides every cursor (`cursor`, `event`, the open baseline, `Resync.after`, and `ResyncReplayed.through`), cannot declare a `resync` handler, and its clients resync from state. The `resync` handler runs under the connection's current authorization, at bounded concurrency, and never without a cursor.
-- `conn.close` closes this connection once the handler returns. The client sees `ActorError` reason `SessionEnded` with cause `ServerClosed`. A `close` handler runs after the client is gone: its `conn.broadcast` reaches the member's other connections, and its `conn.send` is discarded.
-- Connection handlers cannot write actor state, rows, events, or blobs. They call commands through `X.get`, including on the connection's own actor. Handlers run with the actor's tenant and the caller stored at open; the build Effect runs as a `System` caller, so handles acquired there carry no connection's identity. Frame handlers are at least once, so these calls get command ids derived by HMAC from a per-connection secret, the frame sequence, and the call index: a redelivered frame replays its commands' receipts, and no other caller can predict the ids.
-- `conn.connections()` returns `session` only when asked. It shows every connection's caller, so don't send it to clients unfiltered.
-
-`read.follow(Event, { after })` exists only in stream handlers. It replays the committed events after the exclusive cursor, then emits each new event as its turn commits, with no gap or repeat between the two, and fails with `UnknownCursor` or `RetentionGap` like `read.events`. It requires `Actor.InStream`, which only stream handlers provide, so a query that follows leaves that requirement on its layer and does not compile into a runtime. A stream handler's `X.Read` otherwise matches a query's: `state` and `cursor` are the activation's committed state and event head when the subscription started, `events`, `rows`, `group`, and `blob` read committed data, and command or query calls from the handler are defects. The live part follows commits on the activation it runs on, so it ends with that activation; a subscriber that reconnects passes the last `cursor` it received as `after`. Each commit that emits events costs every following subscription one indexed read of `actor_events`, outside any turn.
-
-`read.progress(J, { jobId? })` exists only in stream handlers whose member lists `J` under `progress.jobs` (elsewhere it dies with `Progress is only available in stream handlers`, and in a query it leaves `Actor.InStream` unsatisfied). It is a live `Stream` of `{ jobId, job, attempt, seq, frame }` for this actor's jobs of class `J`, from the moment of the call: `job` is the enqueued job, decoded, so a handler can filter by its payload. It has no history, keeps only the newest 16 entries for a slow reader, and ends with the stream. The handler is the audience decision, since it runs as the subscriber.
-
-## Activation-local values
-
-Values that live for one activation are ordinary Effect values in the layer's build closure, such as a `Ref`. They are not durable, not rolled back with a transaction, and gone after hibernation. Writable maintenance is an internal command, not a write from a read-only phase.
-
-## Callers
-
-Queries, watch reruns, and streams supply the request or subscriber's identity through both `X.Read` and ambient `CurrentCaller` and `Tenant`. The identity under which their handler layer was built does not replace it. A watch keeps its service-free handler restriction; the two ambient identity references do not add mutation authority.
-
-`CurrentCaller` defaults to `System({ source: "process" })` in tenant `"default"`: code in the application's own process, outside a turn and not through `Actors.serve`, is trusted and names neither a caller nor a tenant ([ADR 0059](../decisions/0059-caller-and-tenant-defaults.md)). The edge sets the caller and tenant per request, `ActorTest.layer({ as })` per test, and `Actor.as(caller)` and `Actor.tenant(tenant)` around an Effect for trusted code acting on behalf of a user or tenant; `X.get` captures it when the handle is acquired. `turn.caller` is the full caller and `turn.principal` the optional principal. Workflow bodies expose `principal` and act through handles carrying persisted System/on-behalf-of attribution.
-
-A transaction-bound capability used after its turn ends dies. Owned rows, `group`, and blobs also die on any fiber other than the one running the turn or query, because its single connection takes no concurrent statements: `Effect.timeout`, `Effect.race`, `Effect.all` with concurrency, and explicit forks around them are defects, while sequential composition is not. A use from another fiber also fails the turn at its end, so a `race`, `exit`, or `catchDefect` that swallows the defect cannot commit the turn without the write. `state.set` and intents only stage values and are not bound to the fiber. Runtime guards still reject request/reply operations inside a turn even when a handle was captured outside it.
+Callers are `User { subject }`, `Anonymous`, or `System { source, subject, ref?, onBehalfOf? }`. `access(caller, request)` receives request kinds including `action`, `state`, `list`, `view`, `event`, `join`, and `find`. Internal actions are reached only by schedules, cron, jobs, failure handlers, or sends.

@@ -1,5 +1,279 @@
 # Akter benchmarks
 
+## 0.2 performance pass: T1/T2 and T6 (2026-10-13)
+
+Machine: `dallens-mbp.lan`, Dallen's MacBook Pro, Apple M5 Max (18 logical CPUs,
+128 GiB RAM), macOS arm64, Effect 4.0.3, Bun 1.4.2 and Node v26.7.0. APFS uses a
+temporary directory. MinIO uses the image below on loopback port 19110, separate
+from other projects' buckets. The host and Docker are not CPU/storage isolated;
+other processes were active. These are local diagnostics, not R2/Tigris numbers,
+a served-client SLO or a four-vCPU T2 qualification.
+
+### Profiling and changes
+
+Before production changes, the existing `bench:engine` harness was profiled on
+both runtimes. Both profiles reached T2 but failed its 30-second drain, so they
+are diagnostic profiles, not completed benchmark results. Node's 50.52-second
+profile contains 29.62 seconds of idle samples; inclusive sampled time is 7.74
+seconds in Smithy, 2.61 seconds in Schema, 0.75 seconds in checkpoint code and
+0.40 seconds in hashing. Inclusive categories overlap. The activation-gauge
+scan alone has 266 ms of self samples. Bun's 41.97-second profile has native
+object cloning at 3.0%, object copying at 2.2%, filtering at 1.1% and stringifying
+at 0.9% of wall time. These include warm-up, measurements and the failed drain,
+not just steady-state action CPU.
+
+Hot batches already contain 64 actions with 64 callers. Broad batches contain
+about 11 actions per PUT across four parallel shards. One conditional create
+remains in flight per shard; encoding happens before that PUT, publication
+after it. No append pipelining, at-rest format, signer, hashing or durability
+rule changed. A scheduler-yield probe increased broad batch fill from 10.97 to
+12.57 but reduced the short-run rate from 5,909 to 3,855 actions/s; it was removed.
+A separate 256-caller/4,096-cap/no-periodic-checkpoint probe reached 11,766 T1 and
+13,374 T2 actions/s but failed T1's latency bound. It is not the default result.
+
+The retained changes aggregate action counters once per actor/outcome/segment
+and replace full resident scans with created-actor counts rebuilt on recovery.
+Checkpoint actor page graphs upload with concurrency 32 instead of serially;
+their capture order and durable-prefix image stay fixed, the root waits for all
+graphs, and the store-wide GC exclusion remains held through publication. A
+same-session two-second Bun MinIO diagnostic changes T2 from 3,691 to 5,909
+actions/s and completes drain/recovery in 4.26 seconds instead of timing out.
+That pair combines changes and host noise; it is not a causal speedup estimate
+for each change. The focused regressions independently check metrics and held,
+out-of-order page uploads.
+
+### Final T1/T2: three invocations per runtime and store
+
+The harness is `tooling/conformance/src/conformance/engine-benchmark.ts`. Each
+case retains four shards, 64 closed-loop callers, cap 64, checkpoint interval
+64 segments, five seconds of measurement and fresh storage. T1 warms 256
+zero-increment actions; T2 pre-creates 10,000 actors. It measures admission to
+durable reply, counts refusals as failures, drains, reopens and independently
+checks every acknowledged increment by actor. Client-id minting, warm-up,
+drain, recovery and cleanup are outside the action timing.
+
+The serial control is a conditional 64 KiB PUT baseline. The additional T1 log
+PUT column measures actual creates during that workload (about 33.5 KiB at
+batch 64), including signer/client time. Their p99s are separate distributions,
+not paired per-action overhead or interchangeable object-size controls.
+
+| Store / runtime / run | Serial PUT p99 ms | T1 actions/s | T1 p50 / p99 ms | T1 log PUT p99 ms | T2 actions/s |   T2 p50 / p99 ms | T2 drain ms |
+| --------------------- | ----------------: | -----------: | --------------: | ----------------: | -----------: | ----------------: | ----------: |
+| MinIO / Bun / 1       |            12.485 |        7,939 |  7.738 / 13.577 |            10.277 |        4,990 |   11.307 / 37.951 |     3,750.4 |
+| MinIO / Bun / 2       |            12.998 |        6,280 |  8.454 / 38.050 |            32.615 |        7,562 |    7.371 / 24.715 |     2,884.1 |
+| MinIO / Bun / 3       |            24.293 |        8,403 |  7.156 / 13.925 |            10.995 |        3,988 |    9.320 / 74.910 |     7,555.1 |
+| MinIO / Node / 1      |            10.356 |        5,979 |  7.632 / 36.927 |            32.958 |        4,347 |   12.382 / 47.814 |    10,314.9 |
+| MinIO / Node / 2      |             9.748 |        7,768 |  7.998 / 12.431 |             9.176 |        6,260 |    9.614 / 21.712 |     6,067.3 |
+| MinIO / Node / 3      |            11.576 |        7,048 |  8.225 / 31.707 |            28.220 |        6,824 |    8.962 / 17.884 |     3,411.2 |
+| APFS / Bun / 1        |             2.164 |       21,167 |   2.729 / 6.735 |             2.977 |       14,798 |    3.965 / 10.749 |     1,480.5 |
+| APFS / Bun / 2        |             0.843 |       22,746 |   2.571 / 5.704 |             2.629 |       15,385 |    3.778 / 10.288 |     1,330.4 |
+| APFS / Bun / 3        |             1.142 |       22,174 |   2.653 / 6.058 |             2.721 |       15,211 |    3.865 / 10.228 |     1,405.2 |
+| APFS / Node / 1       |            33.107 |        2,950 | 19.453 / 50.820 |            44.281 |          190 | 344.318 / 521.071 |    91,801.7 |
+| APFS / Node / 2       |            21.522 |        3,526 | 16.747 / 34.642 |            23.704 |        1,885 |   33.407 / 53.856 |    67,338.7 |
+| APFS / Node / 3       |            11.217 |        5,078 | 12.009 / 20.231 |            15.484 |          232 | 250.006 / 461.231 |    78,722.9 |
+
+All listed cases have zero action failures and exact recovered totals. Node
+APFS first timed out at the unchanged 30-second drain; its standalone rerun
+also timed out (T1 5,328/s; T2 212/s, T2 log PUT p99 267.736 ms). The three listed
+Node APFS diagnostics explicitly use `BENCH_DRAIN_MS=120000`, not the production
+drain budget. They expose 67–92-second drains; they do not establish a 30-second
+drain pass. Parallel page uploads contend with Node filesystem sync/worker-pool
+work and host load, while Bun APFS uses a different platform implementation.
+No fsync, directory sync, durability assertion or configured production drain
+bound was removed to make the rows complete.
+
+T1 still fails on MinIO and Node APFS: no run reaches 10,000 actions/s. Three of
+six MinIO action p99s exceed the serial control p99 + 5 ms; one exceeds its own
+workload log PUT p99 + 5 ms. Bun APFS meets both T1 gates in all three runs. T2
+is below 50,000 actions/s everywhere, and this machine is not a four-vCPU
+qualification. Remaining bottlenecks are store round trips plus encoding,
+admission/publication CPU at full hot batches; underfilled broad batches and
+checkpoint/storage contention are additional T2 costs. The changes improve
+bounded bookkeeping and upload scheduling, not these unmet performance gates.
+
+### T6: clean move, crash takeover and tail replay
+
+The `T6 measures` case in `packages/akter/src/runtime/cluster-process.test.ts`
+starts real runner processes with the actual defaults (`short: false`), writes
+10,000 action entries to one shard, and measures three things. The clean move
+runs from the old owner's drain request until the standby owns all four shards,
+is ready and replays the last action. Crash takeover runs from stopping that
+owner, through spawning a replacement process, until the replacement owns all
+shards and replays the second 10,000-entry tail's last action. Tail replay is
+the replacement's own replay time for that shard. Targets are 5 s, 5 s and 1 s.
+
+Defaults are three-second expiration, 250 ms membership refresh, two-second
+configured lock refresh (one-second effective) and a 1.5-second heartbeat write
+floor. The table is the final matrix on the committed code, every invocation in
+order:
+
+| Store / runtime / run | 10k write ms | Clean move ms | Crash takeover ms | Tail replay ms | Result              |
+| --------------------- | -----------: | ------------: | ----------------: | -------------: | ------------------- |
+| MinIO / Bun / 1       |      4,391.9 |       1,161.5 |           4,128.8 |          553.4 | all targets met     |
+| MinIO / Bun / 2       |      2,545.3 |       1,405.7 |           3,562.2 |          231.3 | all targets met     |
+| MinIO / Bun / 3       |      1,758.9 |       1,152.2 |           4,454.0 |          716.8 | all targets met     |
+| MinIO / Node / 1      |      1,833.1 |       1,743.0 |           4,026.0 |          237.6 | all targets met     |
+| MinIO / Node / 2      |      1,761.3 |       1,226.9 |           3,922.4 |          270.8 | all targets met     |
+| MinIO / Node / 3      |      1,797.7 |       3,267.2 |           5,673.2 |          287.3 | crash target missed |
+| APFS / Bun / 1        |      1,494.2 |       1,161.1 |           3,617.8 |          267.1 | all targets met     |
+| APFS / Bun / 2        |      1,722.4 |       1,138.1 |           5,167.4 |          412.0 | crash target missed |
+| APFS / Bun / 3        |      3,434.8 |       1,198.7 |           4,387.8 |          253.5 | all targets met     |
+| APFS / Node / 1       |      2,256.9 |       1,300.5 |           5,883.9 |          394.1 | crash target missed |
+| APFS / Node / 2       |      2,711.9 |       1,371.9 |           5,912.5 |          269.0 | crash target missed |
+| APFS / Node / 3       |      2,348.9 |       3,556.4 |           4,095.8 |          205.4 | all targets met     |
+
+Clean moves meet 5 s in all 12 runs (1.14–3.56 s) and tail replay meets 1 s in
+all 12 (205–717 ms). Crash takeover meets 5 s in 8 of 12 runs (3.56–4.45 s) and
+misses in four (5.17–5.91 s), so T6 crash takeover is not met reliably on this
+host. The crash measurement includes spawning the replacement process. A fresh
+replacement has never observed the dead owner's heartbeat; it starts the
+three-second expiry clock at its own first observation instead of trusting a
+remote timestamp, so the floor is process start plus three seconds plus
+acquisition and recovery. Six extra Node MinIO invocations with and without the
+drain fix below put crash takeover at 3.77–5.85 s either way; the drain change
+does not affect this SIGKILL path.
+
+An earlier matrix on the same defaults, before the drain fix, met clean move in
+every completed run (1.14–1.32 s) and crash takeover in 12 of 13 completed
+invocations (3.69–5.78 s). One MinIO Node run's old owner reported a `timedOut`
+drain, and the first full Node integration run then failed F24 and T6 the same
+way. The cause: a draining runner disables itself in its own membership view,
+and with a 250 ms refresh Cluster stopped renewing the heartbeat and released
+its advisory locks almost immediately, so a peer could take an expired lock and
+fence the drain before `Released` was durable. The runner now keeps its heartbeat
+and every lock until the engine drain returns. A sharding test that delays the
+`Released` write past expiration fails with `timedOut` without that change and
+passes with it. Three consecutive full Node process suites then passed 7/7.
+Drain itself varied from 0.13 to 1.47 s across the diagnostic invocations with
+and without the fix.
+
+The rejected four-second-expiration candidate (same refresh, lock refresh and
+floor) met crash takeover in all six MinIO runs (4,490–4,893 ms) but only one of
+six APFS runs (4,542–6,506 ms); clean moves were 1,108–1,688 ms except one
+3,286 ms APFS Node run, and replay was 178–311 ms. The historical E3 baseline
+with 30-second expiration and 15-second refresh is in
+[E3 evidence](docs/verification/e3-cluster.md). None of these are provider
+numbers, and a slower provider, a throttled lock CAS or a long event-loop pause
+widens every miss.
+
+### Reproduction
+
+Use a disposable bucket and the same pinned MinIO image as the E2/E6 sections.
+The task used a private local Compose project with host port 19110 because
+another project already held port 9000; the image and test credentials were
+unchanged. `TEST_S3_URL` is configured externally and never printed by the
+harness.
+
+```sh
+TEST_S3_URL="$TEST_S3_URL" bun run --cwd packages/akter test:integration
+for run in 1 2 3; do
+  TEST_S3_URL="$TEST_S3_URL" BENCH_PROVIDER='MinIO loopback Docker' BENCH_ADAPTER=s3 BENCH_DURATION_MS=5000 BENCH_CONCURRENCY=64 BENCH_MAX_BATCH=64 BENCH_CHECKPOINT_EVERY=64 bun run --cwd tooling/conformance bench:engine
+  TEST_S3_URL="$TEST_S3_URL" BENCH_PROVIDER='MinIO loopback Docker' BENCH_ADAPTER=s3 BENCH_DURATION_MS=5000 BENCH_CONCURRENCY=64 BENCH_MAX_BATCH=64 BENCH_CHECKPOINT_EVERY=64 bun run --cwd tooling/conformance bench:engine:node
+  BENCH_PROVIDER='filesystem macOS APFS' BENCH_ADAPTER=fileSystem BENCH_DURATION_MS=5000 BENCH_CONCURRENCY=64 BENCH_MAX_BATCH=64 BENCH_CHECKPOINT_EVERY=64 bun run --cwd tooling/conformance bench:engine
+  BENCH_PROVIDER='filesystem macOS APFS' BENCH_ADAPTER=fileSystem BENCH_DURATION_MS=5000 BENCH_CONCURRENCY=64 BENCH_MAX_BATCH=64 BENCH_CHECKPOINT_EVERY=64 BENCH_DRAIN_MS=120000 bun run --cwd tooling/conformance bench:engine:node
+done
+for run in 1 2 3; do
+  TEST_S3_URL="$TEST_S3_URL" BENCH_CLUSTER_ADAPTER=s3 bun --bun node_modules/vitest/vitest.mjs run packages/akter/src/runtime/cluster-process.test.ts -t 'T6 measures' --maxWorkers 1
+  TEST_S3_URL="$TEST_S3_URL" BENCH_CLUSTER_ADAPTER=s3 node node_modules/vitest/vitest.mjs run packages/akter/src/runtime/cluster-process.test.ts -t 'T6 measures' --maxWorkers 1
+  BENCH_CLUSTER_ADAPTER=fileSystem bun --bun node_modules/vitest/vitest.mjs run packages/akter/src/runtime/cluster-process.test.ts -t 'T6 measures' --maxWorkers 1
+  BENCH_CLUSTER_ADAPTER=fileSystem node node_modules/vitest/vitest.mjs run packages/akter/src/runtime/cluster-process.test.ts -t 'T6 measures' --maxWorkers 1
+done
+```
+
+The actual matrix ran cases serially grouped by store/runtime, not alternated
+as matched pairs. Profile invocations are separate from these final timings.
+Raw profiles, failed runs, candidate probes and per-invocation JSON are retained
+locally under `~/.capy/work/perf-targets/`; they are not public downloads.
+
+## 0.2 E6 cold wake and missed list pages: local diagnostic (2026-10-12–13)
+
+Machine: `dallens-mbp.lan`, Apple M5 Max, macOS arm64, Bun 1.4.2 and Node v26.7.0. Filesystem runs used a temporary APFS directory; S3 runs used MinIO in a local Docker container over loopback. The MinIO image was `cgr.dev/chainguard/minio@sha256:4b862594d23cb20ae0fbeb93311ed312a5b566ecba2293220b204c89ef3c1fe2`.
+
+The harness is `tooling/conformance/src/conformance/page-benchmark.ts`. Each run creates 9,000 list items with at least 9,900,000 payload bytes, checkpoints them, writes a 100-action-entry tail, and measures 20 cold owner recoveries plus one checked range. It then measures 100 checked one-row ranges after clearing the clean-page cache. The cache budget is 72,000 bytes. Values are wall-clock milliseconds, using sorted array index `floor(samples * fraction)` capped at the last sample; these are observed quantiles, not confidence bounds.
+
+| Backend               | Runtime | Cold wake p50 | Cold wake p99 | Page miss p50 | Page miss p99 | Errors |
+| --------------------- | ------- | ------------: | ------------: | ------------: | ------------: | -----: |
+| APFS filesystem       | Bun     |       114.396 |       117.197 |         0.453 |         1.380 |      0 |
+| APFS filesystem       | Node    |       152.556 |       188.352 |         0.296 |         0.662 |      0 |
+| MinIO loopback Docker | Bun     |       175.490 |       325.978 |         1.329 |         5.507 |      0 |
+| MinIO loopback Docker | Node    |       189.163 |       217.666 |         1.691 |         4.282 |      0 |
+
+Reproduce from the repository root; `TEST_S3_URL` names the disposable test bucket and test credentials:
+
+```sh
+BENCH_MACHINE=dallens-mbp.lan BENCH_PROVIDER='filesystem macOS APFS' BENCH_ADAPTER=fileSystem bun run --cwd tooling/conformance bench:pages
+BENCH_MACHINE=dallens-mbp.lan BENCH_PROVIDER='filesystem macOS APFS' BENCH_ADAPTER=fileSystem bun run --cwd tooling/conformance bench:pages:node
+BENCH_MACHINE=dallens-mbp.lan BENCH_PROVIDER='MinIO loopback Docker' BENCH_ADAPTER=s3 TEST_S3_URL="$TEST_S3_URL" bun run --cwd tooling/conformance bench:pages
+BENCH_MACHINE=dallens-mbp.lan BENCH_PROVIDER='MinIO loopback Docker' BENCH_ADAPTER=s3 TEST_S3_URL="$TEST_S3_URL" bun run --cwd tooling/conformance bench:pages:node
+```
+
+These are small local diagnostics, not a T4 production-provider pass or evidence for the original 50 GB page-miss target. The amended T5 gate is the separate R2/Tigris latency and atomicity probe from Fly `iad`; none of these numbers establishes it. No R2, Tigris, S3 Standard or S3 Express latency is inferred from MinIO or APFS.
+
+## 0.2 bucket-log engine: T1/T2 diagnostic (2026-10-12)
+
+The runnable harness is `tooling/conformance/src/conformance/engine-benchmark.ts`.
+It measures the engine through the same admission adapter used by `/rpc`, without
+HTTP or WebSocket, on a real MinIO bucket. It does not establish a served-client
+SLO, a four-vCPU T2 result, or R2/Tigris behavior. The historical 0.1 measurements
+below use different hardware allocations and persistence paths and are not a
+matched before/after comparison.
+
+### Method and reproduction
+
+An Apple M5 Max Mac (18 logical CPUs, 128 GiB RAM), running Bun 1.4.2 or Node
+26.7.0 with Effect 4.0.3, reaches loopback MinIO in Docker. The image is
+`cgr.dev/chainguard/minio@sha256:4b862594d23cb20ae0fbeb93311ed312a5b566ecba2293220b204c89ef3c1fe2`.
+The Mac runs other workloads; neither its CPUs nor Docker storage are isolated.
+Each invocation uses fresh prefixes. The serial baseline warms 32 requests and
+measures conditional PUTs of 64 KiB objects. T1 warms 256 zero-increment actions
+on one key; T2 pre-creates 10,000 keys. Each uses 64 closed-loop callers, four
+shards, batches of at most 64 entries, and periodic checkpoints every 64 segments.
+Three invocations per runtime measure each case for five seconds, include calls
+still in flight at the deadline, and report per-invocation percentiles.
+
+Every acknowledged increment is counted independently by key. After measurement,
+the owner drains, another owner reopens, and every key's recovered total must
+equal that count. Refusals are counted as failures, not retried or hidden. Timing
+includes engine admission through durable reply, but excludes client-id minting,
+warm-up, drain and the recovery check. PUT and action p99s are separate samples,
+not a paired per-action decomposition of latency.
+
+```sh
+docker compose -p akter-e2b -f packages/akter/compose.yaml up -d --wait
+TEST_S3_URL=http://project:project-minio@127.0.0.1:9000/akter-store \
+  bun run --cwd packages/akter test:integration
+TEST_S3_URL=http://project:project-minio@127.0.0.1:9000/akter-store \
+  BENCH_DURATION_MS=5000 BENCH_CONCURRENCY=64 \
+  bun run --cwd tooling/conformance bench:engine
+TEST_S3_URL=http://project:project-minio@127.0.0.1:9000/akter-store \
+  BENCH_DURATION_MS=5000 BENCH_CONCURRENCY=64 \
+  bun run --cwd tooling/conformance bench:engine:node
+docker compose -p akter-e2b -f packages/akter/compose.yaml down -v
+```
+
+The integration command creates the bucket. For another provider, create a
+disposable bucket and set `BENCH_PROVIDER` as well as `TEST_S3_URL`; credentials
+and the endpoint are never printed by the harness.
+
+### Results
+
+| Runtime / run | PUT p50 / p99 ms | T1 actions/s | T1 p50 / p99 ms | T2 actions/s |  T2 p50 / p99 ms | Failures |
+| ------------- | ---------------: | -----------: | --------------: | -----------: | ---------------: | -------: |
+| Bun / 1       |    4.726 / 9.039 |        8,391 |  6.396 / 62.212 |        6,105 |   8.976 / 42.125 |        0 |
+| Bun / 2       |   5.946 / 45.322 |        5,988 |  7.684 / 63.585 |        3,139 | 12.714 / 176.351 |        0 |
+| Bun / 3       |   7.265 / 88.791 |        6,879 |  7.769 / 67.942 |        4,694 |  10.503 / 58.952 |        0 |
+| Node / 1      |   5.057 / 13.954 |        7,166 |  7.430 / 62.922 |        4,513 |  11.095 / 77.245 |        0 |
+| Node / 2      |   5.572 / 62.527 |        7,536 |  6.852 / 61.513 |        4,279 |  11.823 / 68.477 |        0 |
+| Node / 3      |    4.200 / 9.917 |        7,874 |  6.763 / 52.894 |        5,985 |   8.740 / 49.305 |        0 |
+
+T1's revised target is at least 10,000 durable actions/s with p99 at most the
+named provider's PUT p99 + 5 ms. No invocation reaches its throughput target;
+four of six also exceed the latency bound. T2's target remains 50,000 actions/s
+over 10,000 actors on one four-vCPU runner; this uncontrolled Mac diagnostic is
+below that rate and does not prove the CPU-qualified target. These are measured
+shortfalls, not release-performance support. R2 and Tigris rows remain unmeasured
+here and belong to the provider probe; MinIO results must not fill them in.
+
 ## Served command CPU and receipt-history probes (2026-10-11)
 
 ### Method

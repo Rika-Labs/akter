@@ -1,8 +1,8 @@
 import { Clock, DateTime, Duration, Effect, Option, Result, Schema, Semaphore } from "effect"
 import { Base64Url } from "effect/encoding"
 import { Headers, HttpClient } from "effect/http"
-import { ActorUnavailable } from "../../errors/actor.ts"
-import { Anonymous, User } from "../../identity/caller.ts"
+import { Anonymous, User } from "../../contract/caller.ts"
+import { ActorError, ActorUnavailable } from "../../contract/errors.ts"
 import {
   type Authenticated,
   type AuthProvider,
@@ -33,7 +33,7 @@ export const AssertionKeySet = Schema.Struct({ keys: Schema.Array(AssertionKey) 
 /** The key set the control plane publishes for runners. */
 export type AssertionKeySet = typeof AssertionKeySet.Type
 
-/** Options of `Actor.auth.assertion`. */
+/** Options of `Auth.assertion`. */
 export interface AssertionOptions<Keys extends URL | AssertionKeySet> {
   /** The edge's issuer; `iss` must equal it. */
   readonly issuer: string
@@ -190,13 +190,7 @@ export const assertion = <Keys extends URL | AssertionKeySet>(
       const response = yield* client.get(url)
 
       return (yield* decodeKeySet(yield* response.json)).keys
-    }).pipe(
-      Effect.mapError(() =>
-        ActorUnavailable.make({
-          cause: new Error("Actor.auth.assertion could not fetch its key set"),
-        }),
-      ),
-    )
+    }).pipe(Effect.mapError(() => ActorError.make({ reason: ActorUnavailable.make({}) })))
 
   const keysFor = (unknownKid: boolean) =>
     lock.withPermit(

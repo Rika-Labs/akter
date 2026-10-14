@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-09-30, decided by Dallen). It amends [contract 10](../contracts/10-security.md), [ADR 0007](0007-foundation-command-protocol.md) (`Actors.layer` requires an authorization function), [ADR 0013](0013-m0-reconciliation.md) (the ambient caller and tenant), [ADR 0023](0023-connections-parking-and-streams.md) section 8 (the `authorize` hook) and [ADR 0027](0027-served-protocol.md) (its `authorize` `kind` table under Amendments). It supersedes nothing else: [ADR 0004](0004-receipt-access-revocation-and-expiry.md)'s revocation rules and the per-request caller resolution of ADR 0027 stand unchanged.
 
+**0.2 status:** amended (caller and tenant carry; global `authorize` removed; default access changes); owned by [ADR 0128](0128-constrained-actor-api.md) and [ADR 0130](0130-views-sessions-events-and-rpc.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** decide who a call is attributed to and which tenant it runs in when application code names neither, and where authorization decisions live.
 
 **Authority:** design decision record.

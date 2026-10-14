@@ -1,19 +1,15 @@
 import { Effect, Redacted } from "effect"
-import { sha256Bytes } from "../../identity/digest.ts"
-import type { ActorUnavailable } from "../../errors/actor.ts"
-import { Unauthorized } from "../../errors/actor.ts"
-import { type AuthRequest, bearerToken } from "../../serve/auth.ts"
+import type { ActorError } from "../../contract/errors.ts"
+import { type AuthRequest, bearerToken, unauthorized } from "../../serve/auth.ts"
 import type { OperatorGrant } from "./grants.ts"
 
 /**
  * Authenticates an operator request to a grant. It is a different type from
- * `Actor.auth`'s providers, which return an application caller, so no
+ * `Auth`'s providers, which return an application caller, so no
  * application credential can reach an operator route.
  */
 export interface OperatorAuth<R = never> {
-  readonly authenticate: (
-    request: AuthRequest,
-  ) => Effect.Effect<OperatorGrant, Unauthorized | ActorUnavailable, R>
+  readonly authenticate: (request: AuthRequest) => Effect.Effect<OperatorGrant, ActorError, R>
 }
 
 /** An operator provider from a function, e.g. one that verifies an identity provider's token. */
@@ -21,7 +17,10 @@ const make = <R = never>(authenticate: OperatorAuth<R>["authenticate"]): Operato
   authenticate,
 })
 
-const digest = (text: string) => sha256Bytes(new TextEncoder().encode(text))
+const digest = (text: string) =>
+  crypto.subtle
+    .digest("SHA-256", new TextEncoder().encode(text))
+    .then((bytes) => new Uint8Array(bytes))
 
 /**
  * Compares digests without an early exit, and every configured digest is
@@ -46,22 +45,28 @@ const tokens = (
     readonly grant: OperatorGrant
   }>,
 ): OperatorAuth => {
-  const digests = entries.map(({ token, grant }) => ({
-    digest: digest(Redacted.value(token)),
-    grant,
-  }))
+  const digests = Promise.all(
+    entries.map(({ token, grant }) =>
+      digest(Redacted.value(token)).then((configured) => ({ digest: configured, grant })),
+    ),
+  )
 
   return make((request: AuthRequest) =>
-    Effect.flatMap(bearerToken(request), (token) => {
-      const presented = digest(token)
-      let found: OperatorGrant | undefined
+    Effect.flatMap(bearerToken(request), (token) =>
+      Effect.flatMap(
+        Effect.promise(() => Promise.all([digests, digest(token)])),
+        ([configured, presented]) => {
+          let found: OperatorGrant | undefined
 
-      for (const entry of digests) if (equalDigests(entry.digest, presented)) found = entry.grant
+          for (const entry of configured)
+            if (equalDigests(entry.digest, presented)) found = entry.grant
 
-      return found === undefined
-        ? Effect.fail(Unauthorized.make({ code: "invalid_credentials" }))
-        : Effect.succeed(found)
-    }),
+          return found === undefined
+            ? Effect.fail(unauthorized("invalid_credentials"))
+            : Effect.succeed(found)
+        },
+      ),
+    ),
   )
 }
 

@@ -1,68 +1,26 @@
 ---
 title: "Deploy to Akter Cloud"
-description: "Upload an Akter app and follow its managed build and rollout."
+description: "Upload a 0.2 application and understand provisioning and release handoff targets."
 ---
 
-First [sign in with the CLI](/cloud/get-started) and [connect your Postgres](/cloud/database). Every environment on every plan needs its own customer-supplied `DATABASE_URL` before deployment; Akter Cloud provides hosted compute, not a database. The examples use `bunx akter`; with Node, use `npx akter` instead.
+# Deploy to Akter Cloud
 
-## Prepare your app
-
-The uploaded directory must contain `src/app.ts`, default-exporting `App.make({ actors, layer })` from `@rikalabs/akter/runtime`. See the [quickstart](/quickstart) for defining actors and their layers. The Cloud host supplies the actor runtime and connects it to the environment's [database](/cloud/database); do not start a separate server from the entrypoint. You do not need a Dockerfile: the platform generates the build definition.
-
-For the quickstart's `Counter` and `CounterLive`, the hosted entrypoint is:
-
-```ts title="src/app.ts"
-import { App } from "@rikalabs/akter/runtime"
-import { Counter } from "./counter/contract.ts"
-import { CounterLive } from "./counter/layer.ts"
-
-export default App.make({ actors: [Counter], layer: CounterLive })
-```
-
-Include your package manifest, dependency lockfile and application source. Keep secrets outside the upload and configure them with [`akter env`](/cloud/environment-variables).
-
-The CLI uses `.akterignore` if it exists, otherwise `.gitignore`. They are not combined. `.git` is always excluded; other files, including `.env` and `node_modules`, are not automatically excluded. For example, create this `.akterignore` before deploying:
-
-```text
-node_modules/
-.env
-.env.*
-.git
-```
-
-An ignored `src/app.ts` makes deployment fail. The compressed source archive must be no larger than 64 MiB.
-
-## Deploy
-
-Replace `PROJECT_ID` with your project's ID. Save your direct Postgres URL in a secure file outside the upload directory, without quotes or a trailing newline. From your app directory, set it for the selected environment before the first deploy:
-
-```sh
-bunx akter env set DATABASE_URL --project PROJECT_ID --env production --file ../database-url.txt
-bunx akter deploy --project PROJECT_ID --env production
-```
-
-Once `DATABASE_URL` is set, subsequent deploys capture it without setting it again. Migrations and runners use that connection. See [Connect your Postgres](/cloud/database#connection-requirements) for URL, TLS and migration permissions.
-
-At deploy, Akter probes the database from Fly `iad` in Northern Virginia, near AWS `us-east-1`. A **p50 above 5 ms warns but still deploys**; latency is not a rejection threshold. Transaction-pooler URLs are refused because the runtime requires session semantics. A missing or unreachable database also prevents deployment. The probe [budgets runner capacity](/cloud/database#deploy-time-checks) from available Postgres connections, so a larger compute allowance cannot bypass your database's connection ceiling.
-
-You may unset `DATABASE_URL`, but the next deploy is refused until it is set again. Akter does not provision a replacement database or delete the one you supplied.
-
-The current directory is the upload context. To upload another directory:
+Export an `App.make({ actors, layer })` app and pin matching published 0.2 framework and CLI versions. Contracts use schema state and synchronous actions; I/O runs in jobs. Hosted rollout behavior is an E8 target until its own evidence lands.
 
 ```sh
 bunx akter deploy --project PROJECT_ID --env production --context ./my-app
 ```
 
-`--project` can be supplied through `AKTER_PROJECT`. `--env` defaults to `production`; accepted names are `production`, `staging` and `dev`. The selected environment must exist. These are your project's environments, not the infrastructure stage of a Cloud preview.
+`--project` can come from `AKTER_PROJECT`. `--env` defaults to `production`; `staging` and `dev` are also accepted. The context is the uploaded source, not a reference to your local worktree. `--commit` and `--message` are labels, not authority over what gets built. Keep secrets outside the context.
 
-The CLI prints the upload size and deployment ID, then follows `build`, `migrate`, `start-runners` and `drain-previous`. A successful run ends with `Deployment … is live in …`. A failed deployment does not replace the live deployment.
+## 0.2 rollout
 
-The deployment label uses the context's Git HEAD and commit subject, marking an upload with uncommitted changes as dirty. `--commit` and `--message` override those labels; the uploaded files, not the label, are what gets built.
+The first deployment provisions an environment store and validates it with `akter storage check`. Later deployments reuse that store. There is no customer database connection or framework migration phase. Platform-owned temporary storage credentials are injected into runners, never builders or captured customer variables.
 
-## If a rollout fails or takes too long
+A new release starts in standby. The old release becomes unready, drains to checkpoints and `Released` tails, and reports offsets and `nextDue`. An unclean tail needs its matching retained build; current-build replay requires separate audited operator authority. The host must arrange wake-up for stopped stores.
 
-The CLI follows the rollout for 900 seconds by default. `--timeout` changes how long it waits, not how long the platform runs the deployment. A timeout exits with status 1 and leaves the rollout running; inspect that deployment in the console before retrying.
+## Failed or slow rollout
 
-On a build failure, the CLI prints the last build-log lines and the recorded failure. A failed migration ends with `Deployment … failed at migrate: Image migration failed. The previous deployment, if any, is still serving.` The deployment's `migrate` step records only that the migration failed. Check the deployment in the console, correct the source or configuration, then deploy again. A rejected or expired login also exits with status 1; usage errors and an unreachable API exit with status 2. See the [CLI reference](/api/06-cli) for the complete command surface.
+The CLI follows for 900 seconds by default; `--timeout` changes the wait, not the platform's execution lifetime. A timeout does not cancel a rollout. Inspect the existing deployment before retrying. Failed provisioning, refused recovery, and failed builds must remain visible and leave the previous live release intact.
 
-Each deployment captures its environment variables. Changing a variable affects the next deployment, not the running one. Rollback uses the selected deployment's captured values; it does not undo database changes, so keep schema changes compatible with both releases.
+Variable changes apply to the next capture. Rollback selects code/configuration, not an earlier copy of actor data. See [storage](./storage.md), [upgrade notes](../operations/alpha-upgrades.md), and [runner logs](./logs.md). No prices, quotas, or production-provider support are promised by this procedure.

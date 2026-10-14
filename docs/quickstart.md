@@ -1,190 +1,153 @@
 ---
 title: "Quickstart"
-description: "Go from an empty directory to a running, tested actor app on an embedded Postgres database."
+description: "Create, serve, call, and test a bucket-backed Akter 0.2 actor."
 ---
 
 # Quickstart
 
-**Responsibility:** take a developer from an empty directory to a running, tested actor app.  
-**Authority:** operational.  
-**Owner role:** API / SDK.  
-**Change policy:** change with the public API; run every command here against a freshly packed tarball before a release.
+This tutorial creates a counter actor, serves it over `/rpc`, calls it with the Effect client, and runs a seeded test. Local development uses a filesystem store; no Postgres, PGlite, Drizzle, React, Python client, or migration command is involved.
 
-You need [Bun](https://bun.sh) 1.4.2 or later, or [Node.js](https://nodejs.org) 24 or later. No Docker and no database server: the app stores its data with [PGlite](https://pglite.dev), an embedded Postgres database, in `./.data`. File-backed PGlite requires Linux or macOS on a local filesystem with either runtime.
-
-PGlite and ordinary Postgres are the only framework backends. To share a database across runner processes, use `Database.postgres`; embedded PGlite stays one process per directory. See the [support matrix](operations/support-matrix.md).
-
-## 1. Install
+## 1. Create a project
 
 ```sh
-mkdir my-app && cd my-app && bun init -y
-bun add @rikalabs/akter@alpha effect @effect/platform-bun @effect/sql-pg @effect/sql-pglite
+mkdir akter-counter && cd akter-counter
+bun init -y
+bun add @rikalabs/akter effect @effect/platform-bun
+bun add -d @rikalabs/akter-cli
 ```
 
-For Node, install the Node platform instead:
+Both packages release together at one version, starting with 0.2.0. Keep them matched and commit the lockfile; do not deploy from moving dist-tags. Node 24+ works too: install `@effect/platform-node` and use `NodeRuntime`/`NodeServices` instead of the Bun imports below.
 
-```sh
-mkdir my-app && cd my-app && npm init -y
-npm pkg set type=module
-npm install @rikalabs/akter@alpha effect @effect/platform-node @effect/sql-pg @effect/sql-pglite
-```
+## 2. Declare the actor
 
-The `alpha` dist-tag selects the current alpha; `latest` can still name an older release until the maintainer moves it. Effect, the Effect SQL drivers and Drizzle are shared peer dependencies. Published peers accept compatible caret ranges so the app and framework share one Effect copy. The package manager installs the framework's compatible Drizzle peer automatically; bare `drizzle-orm` currently names the older stable release, which lacks the Effect adapter. These commands install current compatible dependencies rather than promise a fixed dependency cohort; keep the generated lockfile and check the resolved graph when upgrading.
+Create `src/counter.ts`:
 
-## 2. Declare an actor
-
-`src/counter/contract.ts` is the actor's public shape. Clients import only this file.
-
-```ts title="src/counter/contract.ts"
-import { Actor } from "@rikalabs/akter"
+```ts
 import { Effect, Schema } from "effect"
-
-export const Increment = Actor.command("Increment", { payload: Schema.Int, success: Schema.Int })
+import { Actor } from "@rikalabs/akter"
 
 export const Counter = Actor.make("Counter", {
-  key: Schema.NonEmptyString,
-  state: Actor.state({ count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
-  api: { Increment },
+  state: Schema.Struct({
+    count: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
+  }),
+  actions: {
+    add: Actor.action(Schema.Number, { success: Schema.Number }),
+  },
 })
-```
-
-`src/counter/layer.ts` implements it. The handler runs inside the turn's transaction.
-
-```ts title="src/counter/layer.ts"
-import { Effect } from "effect"
-import { Counter } from "./contract.ts"
 
 export const CounterLive = Counter.toLayer({
-  Increment: Effect.fn(function* (amount) {
-    const turn = yield* Counter.Turn
-    yield* turn.state.set({ count: turn.state.count + amount })
-
-    return turn.state.count
-  }),
+  add: (counter, amount) => {
+    counter.count += amount
+    return counter.count
+  },
 })
 ```
 
-## 3. Run it
+State is decoded from `{}`. Every non-list field needs a decoding default or `Schema.optional`; there is no `initial` or `migrate` member. `add` is synchronous and deterministic. It does not return an Effect or perform I/O.
 
-```ts title="src/main.ts"
-import { BunCrypto, BunRuntime } from "@effect/platform-bun"
-import { Actors, Database } from "@rikalabs/akter/runtime"
-import { Console, Effect, Layer } from "effect"
-import { Counter } from "./counter/contract.ts"
-import { CounterLive } from "./counter/layer.ts"
+## 3. Serve locally
 
-const live = CounterLive.pipe(
-  Layer.provideMerge(Actors.layer()),
-  Layer.provide(Database.pglite({ dataDir: "./.data" })),
-  Layer.provide(BunCrypto.layer),
-)
+Create `src/server.ts`:
+
+```ts
+import { BunRuntime, BunServices } from "@effect/platform-bun"
+import { Effect, Layer } from "effect"
+import { User } from "@rikalabs/akter"
+import { Akter, App, Auth, RuntimeControl, Store } from "@rikalabs/akter/server"
+import { Counter, CounterLive } from "./counter.ts"
+
+const app = App.make({ actors: [Counter], layer: CounterLive })
+
+const server = Akter.serve({
+  app,
+  auth: Auth.make(() =>
+    Effect.succeed({
+      caller: User.make({ subject: "quickstart" }),
+      tenant: "default",
+    }),
+  ),
+}).pipe(Layer.provide(Store.fileSystem("./.data")))
+
+const main = Effect.scoped(
+  Effect.gen(function* () {
+    const context = yield* Layer.build(server)
+    yield* RuntimeControl.waitForSignal({ deadline: "15 seconds" }).pipe(
+      Effect.provideContext(context),
+    )
+  }),
+).pipe(Effect.provide(BunServices.layer))
+
+BunRuntime.runMain(main)
+```
+
+Run it with `bun run src/server.ts`, then call `GET /ready`. The server creates `.data` using the same create-once protocol as a durable bucket, but this local adapter is a one-host development store. The fixed user is only for the tutorial.
+
+The server exposes one RPC group at `http://127.0.0.1:8080/rpc`: HTTP POST uses NDJSON. Change the client URL to `ws://.../rpc` for a JSON WebSocket session.
+
+## 4. Call it
+
+Create `src/call.ts`:
+
+```ts
+import { Effect } from "effect"
+import { AkterClient } from "@rikalabs/akter/client"
+import { Counter } from "./counter.ts"
 
 const program = Effect.gen(function* () {
-  const counter = yield* Counter.get("visits")
-
-  yield* Console.log(`visits: ${yield* counter.Increment(1)}`)
-})
-
-Layer.effectDiscard(program).pipe(
-  Layer.provide(live),
-  Layer.build,
+  const counter = yield* Counter.client("main")
+  console.log(yield* counter.add(2))
+  console.log(yield* counter.add(3))
+}).pipe(
   Effect.scoped,
-  BunRuntime.runMain,
-)
-```
-
-```sh
-bun src/main.ts   # visits: 1
-bun src/main.ts   # visits: 2
-```
-
-On Node, replace the platform import with `import { NodeCrypto, NodeRuntime } from "@effect/platform-node"`, replace `BunCrypto.layer` with `NodeCrypto.layer` and `BunRuntime.runMain` with `NodeRuntime.runMain`, then run:
-
-```sh
-node src/main.ts   # visits: 1
-node src/main.ts   # visits: 2
-```
-
-Node's native TypeScript support runs this app without a build step. In a served app, provide `NodeHttpServer.layer(createServer, { port: 8080 })` from `@effect/platform-node`, with `createServer` imported from `node:http`, instead of `BunHttpServer.layer({ port: 8080 })`. `Actors.serve` uses the same Effect HTTP layer on both runtimes.
-
-Each run is a new process. The count survives because the turn that incremented it committed to the database files in `./.data` before the reply. Delete `./.data` to start again.
-
-## 4. Test it
-
-`ActorTest` from `@rikalabs/akter/testing` runs the real turn path against a throwaway database, with fault injection and inspection.
-
-```ts title="src/counter/layer.test.ts"
-import { BunCrypto } from "@effect/platform-bun"
-import { ActorTest } from "@rikalabs/akter/testing"
-import { afterAll, expect, test } from "bun:test"
-import { Effect, Layer, ManagedRuntime } from "effect"
-import { mkdtempSync, rmSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
-import { Counter } from "./contract.ts"
-import { CounterLive } from "./layer.ts"
-
-const dataDir = mkdtempSync(join(tmpdir(), "counter-"))
-
-afterAll(() => rmSync(dataDir, { recursive: true, force: true }))
-
-const runtime = ManagedRuntime.make(
-  CounterLive.pipe(
-    Layer.provideMerge(ActorTest.layer({ database: { dataDir } })),
-    Layer.provide(BunCrypto.layer),
+  Effect.provide(
+    AkterClient.layer({
+      url: "http://127.0.0.1:8080/rpc",
+      actors: [Counter],
+    }),
   ),
 )
 
-test("a retried command replays its receipt instead of counting twice", async () => {
-  await runtime.runPromise(
-    Effect.gen(function* () {
-      const actors = yield* ActorTest
-      const counter = yield* Counter.get("retry")
-      const call = counter.Increment(2)
-
-      expect(yield* call).toBe(2)
-      expect(yield* call).toBe(2)
-      expect(yield* actors.inspect(counter.ref)).toMatchObject({ state: { count: 2 }, receipts: 1 })
-    }),
-  )
-}, 60_000)
-
-test("a crash before or after commit leaves exactly one increment", async () => {
-  await runtime.runPromise(
-    Effect.gen(function* () {
-      const actors = yield* ActorTest
-      const counter = yield* Counter.get("crash")
-
-      yield* actors.crashNext("beforeCommit")
-      expect(yield* counter.Increment(7)).toBe(7)
-
-      yield* actors.crashNext("afterCommit")
-      const second = counter.Increment(3)
-      expect(yield* second).toBe(10)
-      expect(yield* second).toBe(10)
-    }),
-  )
-}, 60_000)
+await Effect.runPromise(program)
 ```
+
+`X.client(id)` returns a scoped handle. Action methods are Effects; `state` is a Stream beginning with a full frame; list ranges and views are reads; events are live and non-persisted. The client retries a lost response with the same command id for ten minutes, so the second delivery returns the stored outcome instead of adding twice.
+
+## 5. Test the durable boundary
+
+Create `src/counter.test.ts`:
+
+```ts
+import assert from "node:assert/strict"
+import { test } from "node:test"
+import { Effect } from "effect"
+import { Simulation } from "@rikalabs/akter/testing"
+import { Counter, CounterLive } from "./counter.ts"
+
+test("adds once and exposes durable state", async () => {
+  await Simulation.run(
+    { actors: [Counter], seed: 7 },
+    Effect.gen(function* () {
+      const counter = yield* Counter.client("test")
+      assert.equal(yield* counter.add(2), 2)
+      yield* Simulation.settle
+      assert.equal((yield* Simulation.state(Counter, "test")).count, 2)
+    }).pipe(Effect.scoped),
+    CounterLive,
+  )
+})
+```
+
+Run `bun test` or `node --test src/counter.test.ts`. This smoke rejects an action that fails to persist its result, but does not test retry identity. For failure evidence, add a lost append, a declared failure, a page miss, restart, or same-id retry and assert the final durable state and obligations. The simulator is not provider evidence.
+
+## 6. Check a durable bucket
 
 ```sh
-bun test
+bunx akter storage check --directory ./.data --json
+bunx akter storage check --bucket my-akter-store --endpoint https://s3.example --region us-east-1
 ```
 
-For Node tests, install Vitest (`npm install --save-dev vitest`), import `afterAll`, `expect`, and `test` from `vitest` instead of `bun:test`, and provide `NodeCrypto.layer` instead of `BunCrypto.layer`. Run `npx vitest run`; the actor, receipt and crash assertions stay unchanged.
+Use `AKTER_STORAGE_*` environment variables for credentials. The check writes only under `check/<run>/`, creates no store descriptor, and exits 1 when a required bucket property fails. Passing locally does not certify the hosted provider; save provider-specific output in the support matrix.
 
-The first test opens a new PGlite directory, which runs `initdb` inside WebAssembly and applies the framework's migrations, so it takes a few seconds. The injected `afterCommit` crash is logged as an entity defect; that log line is expected.
+## Next
 
-## 5. Switch to a Postgres server
-
-Replace `Database.pglite({ dataDir: "./.data" })` with `Database.postgres({ url })`, where `url` is a `Redacted` connection string such as `Redacted.make(process.env.DATABASE_URL!)`. In tests, pass `{ url }` as `ActorTest.layer({ database })`. Startup creates the framework tables. Use a database for this app alone.
-
-## What PGlite is for
-
-PGlite has one connection and belongs to the one process that opened its data directory, so:
-
-- run one process against a data directory; a second process opening it at the same time is refused;
-- nothing on PGlite proves lock contention, independent connections, multi-runner relay, or process-kill recovery, which the framework verifies on a Postgres server only;
-- file-backed PGlite is a production backend for one process per data directory, within the limits of [ADR 0035](decisions/0035-pglite-embedded-production-backend.md): the data directory is locked to one process, a process crash recovers to the last commit (power loss is not claimed), backups are stopped copies, and there are no replicas or multiple runners. Move to a Postgres server when those limits bind; see the [support matrix](operations/support-matrix.md).
-
-On a Postgres server the alpha supports multiple runners on one host through `Runner.socket` and `Runner.mtls`, verified with three Bun processes sharing a database. Separate hosts and hosting providers still need their own evidence; see the [deploy guide](guides/deploy.md) and [support matrix](operations/support-matrix.md).
+Read [actions and jobs](guides/actions-and-jobs.md), [lists and find](api/lists-and-find.md), [deployment](guides/deploy.md), and [self-host operations](operations/self-host.md). 0.2 starts empty and has no migration path from the 0.1 relational runtime.

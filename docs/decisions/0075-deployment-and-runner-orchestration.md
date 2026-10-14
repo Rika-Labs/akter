@@ -2,6 +2,8 @@
 
 **Status:** implementation decision for #503, #504, #507 and #510; provider support remains gated by its own evidence. The ECS Fargate provider, ARM64 task definitions, ECR registry and the NLB/Cloudflare client-IP gate are superseded by ADR 0090 (a hosted-platform record, private).
 
+**0.2 status:** amended (no database probe; store readiness); owned by [ADR 0136](0136-stores-the-bucket-is-the-store.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** serialize rollouts, preserve rollback snapshots, recover runner provisioning and establish the hosted client-IP trust boundary.
 
 **Authority:** design decision record.

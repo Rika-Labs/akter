@@ -1,9 +1,8 @@
-import { DateTime } from "effect"
+import { DateTime, Schema } from "effect"
 import { describe, expect, it } from "vitest"
-import { Actor } from "../index.ts"
 import { resolveSchedules } from "./schedules.ts"
 
-const Tick = Actor.command("Tick")
+const Tick = { tag: "Tick", payload: Schema.Void }
 
 const entryOf = (declaration: string) => {
   const [entry] = resolveSchedules({ declared: { [declaration]: Tick }, commands: [Tick] })

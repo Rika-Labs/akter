@@ -2,6 +2,8 @@
 
 **Status:** implementation decision (2026-10-03), amended by [ADR 0112](0112-postgres-and-pglite-only.md) (2026-10-08). Neki targeting and provider gates are superseded; static bucket ranges, shared claim capacity and ownership-key audits remain.
 
+**0.2 status:** superseded; owned by [ADR 0126](0126-shard-ownership-on-the-bucket-log.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** implement the per-data-shard claims required by ADR 0021, including connection-holder liveness, and audit framework uniqueness for shard-local enforcement (#484 and #486).
 
 **Authority:** design decision record.

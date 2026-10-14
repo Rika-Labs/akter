@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-09-28, Dallen, with every recommended default; proposed 2026-09-28).
 
+**0.2 status:** superseded; owned by [ADR 0127](0127-snapshots-pages-lists-history-gc.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Amendment:** [ADR 0114](0114-cold-tier-admission-and-garbage.md), accepted 2026-10-09, supersedes the pre-delivery `readAdmission` fetch protocol in section 4 and the orphan/deletion rules in sections 3 and 5. Fenced owner admission rolls back and releases before fetching; both collectors check current references, cold work, and the latest-unreference backup window.
 
 **Implementation:** opt-in Postgres framework tier, migration `0034_cold_tier`, runtime races, SIGKILL and S3-compatible local evidence in [cold verification](../verification/cold-tier.md). Hosted wake-latency and object durability remain separate unverified L.2 gates.

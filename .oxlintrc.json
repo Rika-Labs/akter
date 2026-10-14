@@ -49,33 +49,53 @@
     "akter/no-generic-directory-segment": "error",
     "akter/no-runtime-import-outside-runtime": "error",
     "akter/no-decision-references": "error",
-    "akter/no-inline-comments": "error"
+    "akter/no-inline-comments": "error",
+    "akter/synchronous-actions": "error"
   },
   "overrides": [
     {
-      "files": [
-        "apps/self-host/src/bun.ts",
-        "apps/self-host/src/node.ts",
-        "apps/self-host/src/check.ts",
-        "apps/self-host/src/peers.ts",
-        "apps/self-host/src/probe.ts"
-      ],
+      "files": ["apps/cli/src/commands/operators/fork.test.ts"],
       "rules": { "effecttsgo/strict-effect-provide": "off" }
     },
     {
+      "files": ["packages/akter/src/execution/workflow.test.ts"],
+      "rules": { "effecttsgo/strict-effect-provide": "off" }
+    },
+    {
+      "files": ["packages/akter/src/execution/workflow.ts"],
+      "rules": { "effecttsgo/any-unknown-in-error-context": "off" }
+    },
+    {
       "files": [
-        "apps/cli/src/platform.ts",
-        "apps/self-host/src/node.ts",
-        "apps/self-host/src/peers.ts"
+        "packages/akter/src/serve/assertion/binding.test.ts",
+        "packages/akter/src/runtime/telemetry/observability.test.ts"
       ],
       "rules": { "effecttsgo/node-builtin-import": "off" }
     },
     {
       "files": [
-        "tooling/conformance/src/conformance/*/harness.ts",
-        "tooling/conformance/src/conformance/transports/wire.ts"
+        "apps/self-host/src/bucket.ts",
+        "apps/self-host/src/probe.ts",
+        "apps/self-host/src/server.ts"
       ],
       "rules": {
+        "effecttsgo/strict-effect-provide": "off"
+      }
+    },
+    {
+      "files": [
+        "apps/cli/src/platform.ts",
+        "apps/self-host/src/bucket.ts",
+        "apps/self-host/src/server.ts"
+      ],
+      "rules": {
+        "effecttsgo/node-builtin-import": "off"
+      }
+    },
+    {
+      "files": ["tooling/oxlint/src/actors/*.ts"],
+      "rules": {
+        "effecttsgo/node-builtin-import": "off",
         "effecttsgo/missing-pipeable-signature": "off"
       }
     },
@@ -86,16 +106,56 @@
       }
     },
     {
+      "files": ["packages/akter/src/store/layer.ts"],
+      "rules": {
+        "effecttsgo/missing-pipeable-signature": "off"
+      }
+    },
+    {
+      "files": ["packages/akter/src/store/s3.test.ts"],
+      "rules": {
+        "effecttsgo/node-builtin-import": "off"
+      }
+    },
+    {
+      "files": ["packages/akter/src/store/codec.ts"],
+      "rules": {
+        "effecttsgo/node-builtin-import": "off"
+      }
+    },
+    {
       "files": ["packages/akter/src/runtime/peering/*.ts"],
       "rules": {
         "effecttsgo/node-builtin-import": "off"
       }
     },
     {
-      "files": ["packages/react/src/*.ts"],
+      "files": ["packages/akter/src/testing/simulation.test.ts"],
       "rules": {
+        "effecttsgo/global-random": "off"
+      }
+    },
+    {
+      "files": ["packages/akter/src/contract/make.test.ts"],
+      "rules": {
+        "akter/synchronous-actions": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/akter/src/handlers/page-tree.ts",
+        "packages/akter/src/handlers/page-tree.test.ts",
+        "packages/akter/src/snapshots/pages.ts",
+        "packages/akter/src/snapshots/forks.ts",
+        "packages/akter/src/snapshots/pages.test.ts",
+        "packages/akter/src/store/gc.ts",
+        "packages/akter/src/store/gc.test.ts",
+        "tooling/conformance/src/conformance/pages.ts"
+      ],
+      "rules": {
+        "effecttsgo/missing-pipeable-signature": "off",
         "effecttsgo/async-function": "off",
-        "effecttsgo/missing-pipeable-signature": "off"
+        "effecttsgo/strict-effect-provide": "off"
       }
     }
   ],

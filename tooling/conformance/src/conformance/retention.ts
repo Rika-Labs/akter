@@ -1,671 +1,179 @@
-import { Cause, Clock, Effect, Exit, Fiber, Layer, Option, Schema, type Scope } from "effect"
-import { SqlClient } from "effect/sql"
-import { Actor, Intent, RetentionGap, UnknownCursor } from "../../../../packages/akter/src/index.ts"
-import { ActorError, CommandExpired, Timeout } from "../../../../packages/akter/src/errors/actor.ts"
-import { databaseTime } from "../../../../packages/akter/src/runtime/turn/admission.ts"
-import { ActorTest } from "../../../../packages/akter/src/testing/actor-test.ts"
-import { CLAIM_LEASE } from "./outbox.ts"
-import type {
-  ConformanceCase,
-  ConformanceEnvironment,
-  ConformanceServices,
-  ConformanceSuite,
-} from "../conformance.ts"
+import { describe, expect, it } from "@effect/vitest"
+import { Effect, Fiber, Option, Result, Schedule } from "effect"
+import { Fault, Faults } from "../../../../packages/akter/src/store/faults.ts"
+import { Condition } from "../../../../packages/akter/src/store/bucket.ts"
+import { RETENTION_KEY } from "../../../../packages/akter/src/store/keys.ts"
+import { CorruptSegment, StorageUnavailable } from "../../../../packages/akter/src/store/errors.ts"
+import {
+  RetentionConflict,
+  RetentionRefused,
+} from "../../../../packages/akter/src/store/retention.ts"
+import { storeOf } from "../../../../packages/akter/src/store/service.ts"
+import type { StoreBackend } from "./store.ts"
 
-export interface RetentionFixture {
-  /** `Add` handler runs, including runs whose turn later rolled back. */
-  adds: number
-  /** `Receive` handler runs. */
-  receives: number
+const DAY = 86_400_000
+const options = {
+  grant: {
+    operator: "retention-operator",
+    capabilities: [{ action: "retention.set" as const, tenant: "*" }],
+  },
+  reason: "plan changed",
 }
 
-export const retentionFixture = (): RetentionFixture => ({ adds: 0, receives: 0 })
-
-const Noted = Actor.event("Noted", { body: Schema.String })
-
-const files = Actor.blob("files")
-
-const Note = Actor.command("Note", { payload: Schema.String, success: Schema.String })
-
-const NoteMany = Actor.command("NoteMany", {
-  payload: Schema.Struct({ count: Schema.Int, bytes: Schema.Int }),
-})
-
-const Add = Actor.command("Add", { payload: Schema.Int, success: Schema.Int })
-
-const Forward = Actor.command("Forward", { payload: Schema.String })
-
-const Receive = Actor.command("Receive", { payload: Schema.String })
-
-const Put = Actor.command("Put", {
-  payload: Schema.Struct({ name: Schema.String, bytes: Schema.Int }),
-})
-
-const Grow = Actor.command("Grow", {
-  payload: Schema.Struct({ name: Schema.String, bytes: Schema.Int }),
-})
-
-const Drop = Actor.command("Drop", { payload: Schema.String })
-
-/** Replaces an entry and swallows the defect, so the turn commits whatever the write left. */
-const PutCaught = Actor.command("PutCaught", {
-  payload: Schema.Struct({ name: Schema.String, bytes: Schema.Int }),
-  success: Schema.Boolean,
-})
-
-const Entry = Schema.Struct({ cursor: Schema.String, body: Schema.String })
-
-const History = Actor.query("History", {
-  payload: Schema.Struct({
-    after: Schema.optional(Schema.String),
-    limit: Schema.optional(Schema.Finite),
-  }),
-  success: Schema.Array(Entry),
-  error: Schema.Union([UnknownCursor, RetentionGap]),
-})
-
-const Size = Actor.query("Size", { payload: Schema.String, success: Schema.Int })
-
-const Total = Actor.query("Total", { success: Schema.Int })
-
-const Journal = Actor.make("Journal", {
-  key: Schema.String,
-  state: Actor.state({ total: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
-  events: [Noted],
-  blobs: [files],
-  api: { Note, NoteMany, Add, Forward, Put, Grow, PutCaught, Drop, History, Size, Total },
-  internal: { Receive },
-  policy: {
-    keepReceipts: "2 days",
-    keepEvents: "1 day",
-    maxBlobBytes: 1024,
-    maxBlobEntries: 3,
-    executionTimeout: "2 seconds",
-  },
-})
-
-/** The same events under a longer horizon, so one sweep applies each type's own policy. */
-const Tally = Actor.command("Tally", { payload: Schema.Int, success: Schema.Int })
-
-/** Keeps receipts for less than the retry window, so only the delivery-timeout grace holds them. */
-const Brief = Actor.make("Brief", {
-  key: Schema.String,
-  state: Actor.state({ total: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
-  api: { Tally },
-  policy: { keepReceipts: "1 second" },
-})
-
-const Chronicle = Actor.make("Chronicle", {
-  key: Schema.String,
-  events: [Noted],
-  api: { Note },
-  policy: { keepEvents: "90 days" },
-})
-
-export const retentionLayer = (fixture: RetentionFixture) =>
-  Layer.mergeAll(
-    Journal.toLayer(
-      Effect.succeed({
-        Forward: Effect.fnUntraced(function* (to: string) {
-          yield* Journal.Turn
-          yield* (yield* Journal.intents(to)).Receive("forwarded").pipe(Intent.after("1 minute"))
-        }),
-        Note: Effect.fnUntraced(function* (body: string) {
-          const turn = yield* Journal.Turn
-          yield* turn.emit(Noted.make({ body }))
-
-          return turn.commandId
-        }),
-        NoteMany: Effect.fnUntraced(function* ({ count, bytes }) {
-          const turn = yield* Journal.Turn
-
-          for (let index = 0; index < count; index++)
-            yield* turn.emit(Noted.make({ body: "x".repeat(bytes) }))
-        }),
-        Add: Effect.fnUntraced(function* (amount: number) {
-          const turn = yield* Journal.Turn
-          fixture.adds += 1
-          yield* turn.state.set({ total: turn.state.total + amount })
-
-          return turn.state.total
-        }),
-        Receive: Effect.fnUntraced(function* () {
-          const turn = yield* Journal.Turn
-          fixture.receives += 1
-          yield* turn.state.set({ total: turn.state.total + 1 })
-        }),
-        Put: Effect.fnUntraced(function* ({ name, bytes }) {
-          yield* (yield* Journal.Turn).blob(files).set(name, new Uint8Array(bytes))
-        }),
-        Grow: Effect.fnUntraced(function* ({ name, bytes }) {
-          yield* (yield* Journal.Turn).blob(files).append(name, new Uint8Array(bytes))
-        }),
-        Drop: Effect.fnUntraced(function* (name: string) {
-          yield* (yield* Journal.Turn).blob(files).delete(name)
-        }),
-        PutCaught: Effect.fnUntraced(function* ({ name, bytes }) {
-          return yield* (yield* Journal.Turn)
-            .blob(files)
-            .set(name, new Uint8Array(bytes))
-            .pipe(
-              Effect.as(true),
-              Effect.catchDefect(() => Effect.succeed(false)),
-            )
-        }),
-      }),
-    ),
-    Journal.toQueryLayer(
-      Effect.succeed({
-        History: Effect.fnUntraced(function* ({ after, limit }) {
-          const read = yield* Journal.Read
-          const entries = yield* read.events(Noted, { after, limit })
-
-          return entries.map(({ cursor, event }) => ({ cursor, body: event.body }))
-        }),
-        Size: Effect.fnUntraced(function* (name: string) {
-          const bytes = yield* (yield* Journal.Read).blob(files).get(name)
-
-          return Option.match(bytes, { onNone: () => -1, onSome: (value) => value.byteLength })
-        }),
-        Total: Effect.fnUntraced(function* () {
-          return (yield* Journal.Read).state.total
-        }),
-      }),
-    ),
-    Brief.toLayer(
-      Effect.succeed({
-        Tally: Effect.fnUntraced(function* (amount: number) {
-          const turn = yield* Brief.Turn
-          yield* turn.state.set({ total: turn.state.total + amount })
-
-          return turn.state.total
-        }),
-      }),
-    ),
-    Chronicle.toLayer(
-      Effect.succeed({
-        Note: Effect.fnUntraced(function* (body: string) {
-          const turn = yield* Chronicle.Turn
-          yield* turn.emit(Noted.make({ body }))
-
-          return turn.commandId
-        }),
-      }),
-    ),
-  )
-
-const defect = (exit: Exit.Exit<unknown, unknown>) =>
-  Exit.isFailure(exit) ? Cause.pretty(exit.cause) : "succeeded"
-
-const cursors = (entries: ReadonlyArray<typeof Entry.Type>) => entries.map(({ cursor }) => cursor)
-
-/**
- * Runs `effect` in a runtime of its own on a fresh database, for a case whose
- * pause points must not catch a turn the shared runtime's relay delivers. The
- * shared runtime stops meanwhile: two in-process runtimes at once can starve
- * Cluster's runner health checks.
- */
-const isolated = <A, E>(
-  environment: ConformanceEnvironment,
-  effect: Effect.Effect<A, E, ConformanceServices | Scope.Scope>,
-) =>
-  Effect.runPromise(
-    Effect.gen(function* () {
-      yield* Effect.acquireRelease(environment.stop, () => environment.restart)
-      const database = yield* environment.freshDatabase
-
-      const runtime = yield* Effect.acquireRelease(
-        Effect.sync(() => environment.build({ database })),
-        (built) => Effect.promise(() => built.dispose()),
-      )
-
-      return yield* Effect.promise(() => runtime.runPromise(Effect.scoped(effect)))
-    }).pipe(Effect.scoped),
-  )
-
-const eventSequence = Effect.fnUntraced(function* (id: string) {
-  const sql = yield* SqlClient.SqlClient
-  const test = yield* ActorTest
-
-  const [row] = yield* sql<{ sequence: string }>`
-    SELECT event_sequence::text AS sequence FROM actor_generations
-    WHERE tenant_id = ${test.tenant} AND actor_type = 'Journal' AND actor_id = ${id}`
-
-  return row?.sequence
-}, Effect.orDie)
-
-/** Retention cases: pruning of receipts and events keeps expired ids rejected, outbox dedup intact, and sequences continuous. */
-export const retentionConformance: ReadonlyArray<ConformanceCase<RetentionFixture>> = [
-  {
-    name: "prunes receipts past keepReceipts and still rejects the expired id after pruning and restart",
-    run: ({ expect, environment, fixture }) =>
-      environment.run(
+/** The mutable retention record uses real conditional writes on every supported test backend. */
+export const retentionConformance = <OE, CE>(backend: StoreBackend<OE, CE>) =>
+  describe(`Retention on ${backend.name}`, () => {
+    it.effect(
+      "admits exactly one concurrent update at the absent and matched record, with a typed loser (rejects plain PUT and rebasing a lost CAS)",
+      () =>
         Effect.gen(function* () {
-          const test = yield* ActorTest
-          const journal = yield* Journal.get("receipts")
-          const before = fixture.adds
-          const add = journal.Add(3)
-          expect(yield* add).toBe(3)
-          expect(yield* journal.Add(4)).toBe(7)
+          const client = yield* backend.namespace
+          const stores = yield* Effect.forEach(["a", "b"], (writer) =>
+            Effect.gen(function* () {
+              const faults = Faults.plan()
+              const store = yield* storeOf(yield* client, {
+                writer,
+                shards: 1,
+                retry: Schedule.recurs(4),
+                faults,
+              })
+              return { store, faults }
+            }),
+          )
+          for (let round = 0; round < 4; round++) {
+            const held = yield* Effect.forEach(stores, ({ faults }) =>
+              faults.inject(Fault.Hold(), {
+                match: ({ kind, key }) => kind === "lease.write" && key === RETENTION_KEY,
+              }),
+            )
+            const changing = yield* Effect.forEach(stores, ({ store }, index) =>
+              Effect.forkChild(
+                Effect.result(store.setRetention(`${11 + round * 3 + index} days`, options)),
+              ),
+            )
+            yield* Effect.forEach(held, (hold) => hold.fired)
+            yield* Effect.forEach(held, (hold) => hold.release)
+            const results = yield* Effect.forEach(changing, Fiber.join)
+            expect(results.filter(Result.isSuccess)).toHaveLength(1)
+            expect(results.filter(Result.isFailure)).toHaveLength(1)
+            const winner = results.findIndex(Result.isSuccess)
+            for (const result of results)
+              if (Result.isFailure(result)) expect(result.failure).toBeInstanceOf(RetentionConflict)
+            for (const { store } of stores)
+              expect(yield* store.retention).toBe((11 + round * 3 + winner) * DAY)
+            const successful = (yield* stores[0]!.store.audits).filter(
+              (audit) => audit.outcome === "allowed",
+            )
+            expect(successful).toHaveLength(round + 1)
+            expect(
+              (yield* stores[0]!.store.audits).filter((audit) => audit.outcome === "refused"),
+            ).toHaveLength(round + 1)
+          }
+          for (const { faults } of stores)
+            expect(
+              (yield* faults.operations).filter(
+                ({ kind, key }) => key === RETENTION_KEY && kind === "put",
+              ),
+            ).toEqual([])
+        }),
+      60_000,
+    )
 
-          yield* test.advance("1 day")
-          yield* test.cleanup
-          expect(yield* test.inspect(journal.ref)).toMatchObject({ receipts: 2 })
-          expect((yield* add.pipe(Effect.flip)).reason).toBeInstanceOf(CommandExpired)
-
-          yield* test.advance("2 days")
-          yield* test.cleanup
-          expect(yield* test.inspect(journal.ref)).toMatchObject({
-            receipts: 0,
-            state: { total: 7 },
+    it.effect(
+      "seeds only new stores, applies scope and inclusive bounds, and preserves mutation audits through reopen (rejects option-driven mutation or a tenant/actor-scoped store change)",
+      () =>
+        Effect.gen(function* () {
+          const client = yield* backend.namespace
+          const store = yield* storeOf(yield* client, {
+            retention: "7 days",
+            shards: 1,
+            retry: Schedule.recurs(4),
           })
-          expect((yield* add.pipe(Effect.flip)).reason).toBeInstanceOf(CommandExpired)
-          expect(fixture.adds - before).toBe(2)
-          expect(yield* journal.Total()).toBe(7)
-        }),
-      ),
-  },
-  {
-    name: "rejects a pruned expired id after restart without running its handler",
-    run: ({ expect, environment, fixture }) =>
-      Effect.runPromise(
-        Effect.gen(function* () {
-          yield* environment.stop
-          const first = environment.build()
-
-          const saved = yield* Effect.promise(() =>
-            first
-              .runPromise(
-                Effect.scoped(
-                  Effect.gen(function* () {
-                    const test = yield* ActorTest
-                    const journal = yield* Journal.get("restart")
-                    const now = yield* databaseTime
-                    const id = `v1.${now - 59_000}.${now + 1_000}.6f6f1e0a-3a42-4c1e-9d6b-2b1c1f1a9e01`
-                    expect(yield* journal.Add(5).pipe(Actor.commandId(id))).toBe(5)
-                    yield* test.advance("3 days")
-                    yield* test.cleanup
-                    expect(yield* test.inspect(journal.ref)).toMatchObject({ receipts: 0 })
-
-                    return { id, tenant: test.tenant }
-                  }),
-                ),
-              )
-              .finally(() => first.dispose()),
-          )
-
-          const adds = fixture.adds
-          const second = environment.build()
-
-          yield* Effect.promise(() =>
-            second
-              .runPromise(
-                Effect.scoped(
-                  Effect.gen(function* () {
-                    const journal = yield* Journal.get("restart").pipe(Actor.tenant(saved.tenant))
-
-                    yield* Effect.sleep("1100 millis")
-
-                    const failure = yield* journal
-                      .Add(5)
-                      .pipe(Actor.commandId(saved.id), Effect.flip)
-
-                    expect(failure.reason).toBeInstanceOf(CommandExpired)
-                    expect(yield* journal.Total()).toBe(5)
-                  }),
-                ),
-              )
-              .finally(() => second.dispose()),
-          )
-
-          expect(fixture.adds).toBe(adds)
-        }).pipe(Effect.ensuring(environment.restart)),
-      ),
-  },
-  {
-    name: "prunes receipts past keepReceipts without breaking outbox dedup",
-    run: ({ expect, environment, fixture }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const sender = yield* Journal.get("sender")
-          const receiver = yield* Journal.get("receiver")
-          const bystander = yield* Journal.get("bystander")
-          const before = fixture.receives
-          yield* sender.Forward("receiver")
-
-          const sql = yield* SqlClient.SqlClient
-          yield* bystander.Add(1)
-          yield* sql`UPDATE actor_receipts SET command_id = o.intent_id FROM actor_outbox o
-            WHERE o.tenant_id = ${test.tenant} AND o.actor_id = 'sender'
-              AND actor_receipts.tenant_id = ${test.tenant} AND actor_receipts.actor_id = 'bystander'`
-
-          const [intent] = yield* sql<{ intent_id: string }>`SELECT intent_id FROM actor_outbox
-            WHERE tenant_id = ${test.tenant} AND actor_id = 'sender'`
-          yield* test.crashNext("beforeOutboxDelete", { commandId: intent!.intent_id })
-          yield* test.crashNext("beforeOutboxDelete", { commandId: intent!.intent_id })
-          yield* test.advance("10 days")
-          expect(yield* test.receiptsFor(receiver.ref, "Receive")).toBe(1)
-          expect(yield* test.inspect(sender.ref)).toMatchObject({ outbox: 1 })
-
-          yield* test.cleanup
-          expect(yield* test.receiptsFor(receiver.ref, "Receive")).toBe(1)
-          expect(yield* test.receiptsFor(bystander.ref, "Add")).toBe(0)
-
-          yield* test.advance(CLAIM_LEASE)
-          yield* test.cleanup
-          expect(yield* test.inspect(sender.ref)).toMatchObject({ outbox: 1 })
-          yield* test.advance(CLAIM_LEASE)
-
-          expect(fixture.receives - before).toBe(1)
-          expect(yield* receiver.Total()).toBe(1)
-          expect(yield* test.inspect(sender.ref)).toMatchObject({ outbox: 0 })
-
-          yield* test.cleanup
-          expect(yield* test.receiptsFor(receiver.ref, "Receive")).toBe(0)
-        }),
-      ),
-  },
-  {
-    name: "completes a command admitted before expiry when keepReceipts is shorter than the retry window",
-    run: ({ expect, environment }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const brief = yield* Brief.get("short-horizon")
-          const bystander = yield* Journal.get("expiry-bystander")
-          expect(yield* bystander.Add(1)).toBe(1)
-          const now = yield* databaseTime
-          const id = `v1.${now - 59_500}.${now + 500}.2d1f6a3e-7b9c-4e21-8f0a-5c6d7e8f9a01`
-          const pause = yield* test.pauseNext("beforeHandler", { commandId: id })
-          yield* test.crashNext("beforeCommit", { commandId: id })
-          const committed = yield* test.pauseNext("afterCommit", { commandId: id })
-
-          const competing = yield* bystander.Add(4).pipe(Effect.forkChild)
-
-          const waiter = yield* brief
-            .Tally(9)
-            .pipe(Actor.commandId(id), Effect.flip, Effect.forkChild)
-
-          yield* pause.reached
-          yield* Effect.sleep("550 millis")
-          yield* pause.release
-          yield* committed.reached
-          expect(waiter.pollUnsafe()).toBe(undefined)
-          expect(yield* test.inspect(brief.ref)).toMatchObject({ state: { total: 9 }, receipts: 1 })
-          expect(yield* Fiber.join(competing)).toBe(5)
-          yield* committed.release
-          expect((yield* Fiber.join(waiter)).reason).toBeInstanceOf(CommandExpired)
-          expect(yield* test.inspect(brief.ref)).toMatchObject({ state: { total: 9 }, receipts: 1 })
-
-          yield* test.cleanup
-          expect(yield* test.inspect(brief.ref)).toMatchObject({ receipts: 1 })
-        }),
-      ),
-  },
-  {
-    name: "prunes only an actor's oldest events, never resets the sequence, and reports the gap",
-    run: ({ expect, environment }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const journal = yield* Journal.get("events")
-          const chronicle = yield* Chronicle.get("events")
-          yield* journal.Note("a")
-          yield* journal.Note("b")
-          yield* chronicle.Note("kept")
-          yield* test.advance("2 days")
-          yield* journal.Note("c")
-
-          yield* test.cleanup
-          expect(yield* test.inspect(journal.ref)).toMatchObject({ events: 1 })
-          expect(yield* test.inspect(chronicle.ref)).toMatchObject({ events: 1 })
-          expect(yield* eventSequence("events")).toBe("3")
-
-          expect(yield* journal.History({}).pipe(Effect.flip)).toEqual(
-            RetentionGap.make({ cursor: "0" }),
-          )
-          expect(yield* journal.History({ after: "1" }).pipe(Effect.flip)).toEqual(
-            RetentionGap.make({ cursor: "1" }),
-          )
-          expect(yield* journal.History({ after: "2" })).toEqual([{ cursor: "3", body: "c" }])
-
-          yield* journal.Note("d")
-          expect(cursors(yield* journal.History({ after: "2" }))).toEqual(["3", "4"])
-          expect(yield* eventSequence("events")).toBe("4")
-        }),
-      ),
-  },
-  {
-    name: "prunes events as a prefix even when a later event carries an older timestamp",
-    run: ({ expect, environment }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const sql = yield* SqlClient.SqlClient
-          const journal = yield* Journal.get("skewed")
-
-          for (const body of ["a", "b", "c", "d"]) yield* journal.Note(body)
-
-          yield* sql`UPDATE actor_events SET emitted_at_ms = emitted_at_ms - 172800000
-            WHERE tenant_id = ${test.tenant} AND actor_type = 'Journal' AND actor_id = 'skewed' AND sequence = 3`
-
-          yield* test.cleanup
-          expect(yield* test.inspect(journal.ref)).toMatchObject({ events: 1 })
-          expect(yield* journal.History({ after: "3" })).toEqual([{ cursor: "4", body: "d" }])
-          expect(yield* journal.History({ after: "2" }).pipe(Effect.flip)).toEqual(
-            RetentionGap.make({ cursor: "2" }),
-          )
-        }),
-      ),
-  },
-  {
-    name: "sweeps in batches that each leave a whole prefix",
-    run: ({ expect, environment }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const journal = yield* Journal.get("batched")
-          yield* journal.NoteMany({ count: 2_500, bytes: 1 })
-          yield* test.advance("2 days")
-          yield* journal.Note("fresh")
-
-          yield* test.cleanup
-          expect(yield* test.inspect(journal.ref)).toMatchObject({ events: 1 })
-          expect(yield* journal.History({ after: "2500" })).toEqual([
-            { cursor: "2501", body: "fresh" },
-          ])
-          expect(yield* eventSequence("batched")).toBe("2501")
-        }),
-      ),
-  },
-  {
-    name: "pages event replay by limit and continues after the last cursor",
-    run: ({ expect, environment }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const journal = yield* Journal.get("paged")
-          yield* journal.NoteMany({ count: 1_205, bytes: 1 })
-
-          const first = yield* journal.History({})
-          expect(first.length).toBe(1_000)
-          expect(first.at(-1)!.cursor).toBe("1000")
-          expect((yield* journal.History({ after: "1000" })).length).toBe(205)
-
-          const small = yield* journal.History({ after: "10", limit: 3 })
-          expect(cursors(small)).toEqual(["11", "12", "13"])
-          expect(cursors(yield* journal.History({ after: "1203", limit: 3 }))).toEqual([
-            "1204",
-            "1205",
-          ])
-          expect(yield* journal.History({ after: "1205", limit: 3 })).toEqual([])
-
-          for (const limit of [0, 10_001, 1.5])
-            expect(defect(yield* journal.History({ limit }).pipe(Effect.exit))).toContain(
-              "read.events limit must be an integer from 1 to 10000",
+          const reopen = () =>
+            Effect.flatMap(client, (bucket) =>
+              storeOf(bucket, { retention: "17 days", retry: Schedule.recurs(4) }),
             )
-        }),
-      ),
-  },
-  {
-    name: "fails a turn whose emits exceed the per-turn byte budget and commits none of them",
-    run: ({ expect, environment }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const journal = yield* Journal.get("budget")
-          yield* journal.NoteMany({ count: 2, bytes: 500_000 })
-          expect(yield* test.inspect(journal.ref)).toMatchObject({ events: 2, receipts: 1 })
-
+          expect(yield* (yield* reopen()).retention).toBe(7 * DAY)
+          for (const capabilities of [
+            [],
+            [{ action: "retention.set" as const, tenant: "default" }],
+            [{ action: "retention.set" as const, tenant: "*", actorType: "Room" }],
+            [{ action: "retention.set" as const, tenant: "*", commandId: "one" }],
+          ]) {
+            const denied = yield* Effect.flip(
+              store.setRetention("30 days", {
+                ...options,
+                grant: { operator: "restricted", capabilities },
+              }),
+            )
+            expect(denied).toBeInstanceOf(RetentionRefused)
+            expect(denied).toMatchObject({ reason: "scope" })
+          }
+          for (const duration of [DAY - 1, 365 * DAY + 1, Number.POSITIVE_INFINITY]) {
+            expect(yield* Effect.flip(store.setRetention(duration, options))).toMatchObject({
+              reason: "range",
+            })
+            expect(yield* store.retention).toBe(7 * DAY)
+          }
+          const first = yield* store.setRetention("1 day", options)
+          expect(first.retentionMillis).toBe(DAY)
+          expect((yield* store.audits).some((audit) => audit.id === first.audit.id)).toBe(true)
+          const last = yield* store.setRetention("365 days", options)
+          expect(last.revision).toBe(2)
+          const opened = yield* reopen()
+          expect(opened.meta.retentionMillis).toBe(7 * DAY)
+          expect(yield* opened.retention).toBe(365 * DAY)
           expect(
-            defect(yield* journal.NoteMany({ count: 3, bytes: 500_000 }).pipe(Effect.exit)),
-          ).toContain("Events emitted in one turn exceed 1048576 bytes")
-          expect(yield* test.inspect(journal.ref)).toMatchObject({ events: 2, receipts: 1 })
-          expect(yield* eventSequence("budget")).toBe("2")
+            (yield* opened.audits)
+              .filter(({ outcome }) => outcome === "allowed")
+              .map(({ id }) => id)
+              .sort(),
+          ).toEqual([first.audit.id, last.audit.id].sort())
         }),
-      ),
-  },
-  {
-    name: "refuses blob writes past policy.maxBlobBytes and leaves the entry whole",
-    run: ({ expect, environment }) =>
-      environment.run(
+      60_000,
+    )
+
+    it.effect(
+      "recognizes a lost CAS response and refuses an unavailable audit archive before replacing authority (rejects double updates or a mutation without its audit)",
+      () =>
         Effect.gen(function* () {
-          const test = yield* ActorTest
-          const journal = yield* Journal.get("quota")
-          yield* journal.Put({ name: "a", bytes: 600 })
-          yield* journal.Grow({ name: "b", bytes: 200 })
-          yield* journal.Grow({ name: "b", bytes: 200 })
-
-          expect(defect(yield* journal.Grow({ name: "b", bytes: 25 }).pipe(Effect.exit))).toContain(
-            "One actor's blobs hold at most 1024 bytes (policy.maxBlobBytes)",
+          const client = yield* backend.namespace
+          const raw = yield* client
+          const faults = Faults.plan()
+          const store = yield* storeOf(raw, { shards: 1, retry: Schedule.recurs(2), faults })
+          yield* faults.inject(Fault.LoseResponse(), {
+            match: ({ kind, key }) => kind === "lease.write" && key === RETENTION_KEY,
+          })
+          const changed = yield* store.setRetention("30 days", options)
+          expect(changed.revision).toBe(1)
+          expect(yield* store.retention).toBe(30 * DAY)
+          expect((yield* store.audits).filter(({ outcome }) => outcome === "allowed")).toEqual([
+            changed.audit,
+          ])
+          yield* faults.inject(Fault.Unavailable({ status: 503 }), {
+            match: ({ kind, key }) => kind === "create" && key.startsWith("audit/"),
+            times: Number.POSITIVE_INFINITY,
+          })
+          expect(yield* Effect.flip(store.setRetention("7 days", options))).toBeInstanceOf(
+            StorageUnavailable,
           )
-          expect(defect(yield* journal.Put({ name: "c", bytes: 25 }).pipe(Effect.exit))).toContain(
-            "policy.maxBlobBytes",
+          const opened = yield* storeOf(yield* client, { retry: Schedule.recurs(2) })
+          expect(yield* opened.retention).toBe(30 * DAY)
+          expect((yield* opened.audits).filter(({ outcome }) => outcome === "allowed")).toEqual([
+            changed.audit,
+          ])
+          yield* raw.leases.write(
+            RETENTION_KEY,
+            new Uint8Array([1, 2, 3]),
+            Condition.Matches({
+              etag: Option.getOrThrow(yield* raw.leases.read(RETENTION_KEY)).etag,
+            }),
           )
-
-          yield* journal.Put({ name: "a", bytes: 624 })
-          expect(yield* journal.Size("a")).toBe(624)
-
-          expect(yield* journal.PutCaught({ name: "b", bytes: 500 })).toBe(false)
-          expect(yield* journal.Size("b")).toBe(400)
-          expect(yield* journal.PutCaught({ name: "b", bytes: 100 })).toBe(true)
-          expect(yield* journal.Size("b")).toBe(100)
-          expect(yield* test.inspect(journal.ref)).toMatchObject({ blobs: { files: 2 } })
+          expect(yield* Effect.flip(opened.retention)).toBeInstanceOf(CorruptSegment)
+          expect(yield* Effect.flip(opened.setRetention("7 days", options))).toBeInstanceOf(
+            CorruptSegment,
+          )
         }),
-      ),
-  },
-  {
-    name: "refuses a new blob entry past policy.maxBlobEntries and frees one on delete",
-    run: ({ expect, environment }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const journal = yield* Journal.get("entries")
-          yield* journal.Put({ name: "a", bytes: 0 })
-          yield* journal.Put({ name: "b", bytes: 0 })
-          yield* journal.Grow({ name: "c", bytes: 0 })
-
-          expect(defect(yield* journal.Put({ name: "d", bytes: 0 }).pipe(Effect.exit))).toContain(
-            "One actor's blobs hold at most 3 entries (policy.maxBlobEntries)",
-          )
-          expect(defect(yield* journal.Grow({ name: "d", bytes: 1 }).pipe(Effect.exit))).toContain(
-            "policy.maxBlobEntries",
-          )
-          expect(yield* journal.PutCaught({ name: "d", bytes: 1 })).toBe(false)
-          expect(yield* journal.Size("d")).toBe(-1)
-
-          yield* journal.Put({ name: "a", bytes: 10 })
-          yield* journal.Grow({ name: "b", bytes: 5 })
-          yield* journal.Grow({ name: "b", bytes: 5 })
-          expect([yield* journal.Size("a"), yield* journal.Size("b")]).toEqual([10, 10])
-          expect(yield* test.inspect(journal.ref)).toMatchObject({ blobs: { files: 3 } })
-
-          yield* journal.Drop("b")
-          yield* journal.Drop("missing")
-          expect(yield* journal.Size("b")).toBe(-1)
-          yield* journal.Put({ name: "d", bytes: 4 })
-          expect(yield* journal.Size("d")).toBe(4)
-          expect(yield* test.inspect(journal.ref)).toMatchObject({ blobs: { files: 3 } })
-        }),
-      ),
-  },
-  {
-    name: "rejects a retry admitted before expiry when cleanup pruned the receipt before its turn",
-    requiresFreshDatabase: true,
-    requiresIndependentConnections: true,
-    timeoutMs: 20_000,
-    run: ({ expect, environment, fixture }) =>
-      isolated(
-        environment,
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const journal = yield* Journal.get("race")
-          const before = fixture.adds
-          const now = yield* databaseTime
-          const id = `v1.${now - 58_500}.${now + 1_500}.0c2f3a55-5b8e-4d53-9a51-1f7b3d9f0c11`
-
-          const committing = yield* test.pauseNext("beforeCommit")
-          const first = yield* journal.Add(1).pipe(Actor.commandId(id), Effect.forkChild)
-          yield* committing.reached
-
-          const delivering = yield* test.pauseNext("beforeDelivery")
-
-          const retry = yield* journal
-            .Add(1)
-            .pipe(Actor.commandId(id), Effect.flip, Effect.forkChild)
-
-          yield* delivering.reached
-
-          yield* committing.release
-          expect(yield* Fiber.join(first)).toBe(1)
-
-          yield* test.advance("3 days")
-          yield* test.cleanup
-          expect(yield* test.inspect(journal.ref)).toMatchObject({ receipts: 0 })
-
-          yield* delivering.release
-          const failure = yield* Fiber.join(retry)
-          expect(Schema.is(ActorError)(failure) && failure.reason).toBeInstanceOf(CommandExpired)
-          expect(fixture.adds - before).toBe(1)
-          expect(yield* journal.Total()).toBe(1)
-        }),
-      ),
-  },
-  {
-    name: "cancels a query read past commandTimeout on the server",
-    requiresIndependentConnections: true,
-    timeoutMs: 20_000,
-    run: ({ expect, environment }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const journal = yield* Journal.get("slow-read")
-          yield* journal.Add(1)
-          const connect = environment.connect!
-          const locker = yield* connect
-
-          yield* locker.query("BEGIN")
-          yield* locker.query("LOCK TABLE actor_state IN ACCESS EXCLUSIVE MODE")
-
-          const started = yield* Clock.currentTimeMillis
-          const failure = yield* journal.Total().pipe(Effect.flip)
-          expect(failure.reason).toBeInstanceOf(Timeout)
-          expect((yield* Clock.currentTimeMillis) - started < 10_000).toBe(true)
-
-          const waiting = yield* locker.query(
-            `SELECT count(*)::int AS waiting FROM pg_stat_activity
-             WHERE datname = current_database() AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()`,
-          )
-
-          expect(waiting).toEqual([{ waiting: 0 }])
-          yield* locker.query("ROLLBACK")
-          expect(yield* journal.Total()).toBe(1)
-        }),
-      ),
-  },
-]
-
-/** Retention actors. */
-export const retentionSuite: ConformanceSuite<RetentionFixture> = {
-  fixture: retentionFixture,
-  layer: retentionLayer,
-}
+      60_000,
+    )
+  })

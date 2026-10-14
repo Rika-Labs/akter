@@ -1,204 +1,79 @@
-<div align="center">
-
 # Akter
 
-**The framework for durable, stateful backends that power realtime apps, background work, and agents.**
+Akter is a typed framework for durable actors, deterministic actions, journaled Effect jobs, and realtime state. Version 0.2 runs the framework on one S3-compatible store per environment; local development uses a filesystem store.
 
-[Quickstart](docs/quickstart.md) · [Concepts](docs/guides/concepts.md) · [API](docs/api/README.md) · [Comparison](docs/guides/comparison.md)
+## The model
 
-</div>
+An actor owns schema state and optional page-backed lists. Its actions are synchronous copy-on-write functions. A declared failure, defect, or lost segment discards the draft and every staged consequence. An action that touches a list page not in memory is rerun after the page loads; discarding everything the stopped run staged is the contract's target and is not yet covered by a test. The runner publishes a reply, send, timer, job start, or event only after the shard's create-once segment is durable.
 
-Define each part of your app once: its data, the commands it accepts, the work it schedules, and the clients it updates. The framework keeps all of it consistent, retries what fails, and picks up where it left off.
+External I/O belongs in jobs. Named `step` results never rerun after they are durable; ambiguous provider effects still require provider idempotency keys.
 
-The database backends are **Postgres** and **PGlite** (embedded, one process within its documented limits). Neki support has been removed. See the [support matrix](docs/operations/support-matrix.md) for server versions and verification boundaries.
-
-## What you build with it
-
-- **Realtime apps.** Chat rooms, shared documents, and live dashboards that store their history, push every change to connected clients, and keep sockets open while idle parts of the app sleep.
-- **Background work.** Payments, emails, imports, and billing runs that retry with backoff, run on schedules, and end up in a dead letter you can act on instead of disappearing.
-- **Agents.** Sessions that keep their transcript, stream output to the browser, pause for an approval, and resume after a crash or a deploy.
-
-Each of these is an actor: an addressable part of your app, such as one order, one room, or one agent session, that handles one command at a time and owns its data, its background work, and its live connections.
-
-## What it looks like
-
-An order that records its lines, emits an event, and charges the customer. The contract is the only file clients import:
-
-```ts title="src/order/contract.ts"
+```ts
+import { Effect, Schema } from "effect"
 import { Actor } from "@rikalabs/akter"
-import { integer, pgTable, text } from "drizzle-orm/pg-core"
-import { Schema } from "effect"
 
-export const orderLines = Actor.table(
-  pgTable("order_lines", {
-    sku: text("sku").primaryKey(),
-    quantity: integer("quantity").notNull(),
-    unitPrice: integer("unit_price").notNull(),
+export const Counter = Actor.make("Counter", {
+  state: Schema.Struct({
+    count: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
-)
-
-export const OrderPlaced = Actor.event("OrderPlaced", { total: Schema.Int })
-
-export class AlreadyPlaced extends Schema.TaggedError<AlreadyPlaced>()("AlreadyPlaced", {}) {}
-
-export const Charge = Actor.job("Charge", {
-  payload: { amount: Schema.Int },
-  success: Schema.Struct({ chargeId: Schema.String }),
-})
-
-export const Place = Actor.command("Place", {
-  payload: {
-    lines: Schema.Array(
-      Schema.Struct({ sku: Schema.String, quantity: Schema.Int, unitPrice: Schema.Int }),
-    ),
+  actions: {
+    add: Actor.action(Schema.Number, { success: Schema.Number }),
   },
-  success: Schema.Int,
-  error: AlreadyPlaced,
 })
 
-export const Charged = Actor.command("Charged", { payload: { chargeId: Schema.String } })
-
-export const Order = Actor.make("Order", {
-  key: Schema.NonEmptyString,
-  state: Actor.state({
-    total: Schema.optional(Schema.Int),
-    chargeId: Schema.optional(Schema.String),
-  }),
-  tables: [orderLines],
-  events: [OrderPlaced],
-  jobs: { Charge: { job: Charge, onSuccess: Charged } },
-  api: { Place },
-  internal: { Charged },
+export const CounterLive = Counter.toLayer({
+  add: (counter, amount) => {
+    counter.count += amount
+    return counter.count
+  },
 })
 ```
 
-The handlers. Each one runs inside its command's transaction:
-
-```ts title="src/order/layer.ts"
-import { Effect } from "effect"
-import { AlreadyPlaced, Charge, Order, OrderPlaced, orderLines } from "./contract.ts"
-
-export const OrderLive = Order.toLayer({
-  Place: Effect.fn(function* ({ lines }) {
-    const turn = yield* Order.Turn
-
-    if (turn.state.total !== undefined) return yield* AlreadyPlaced.make({})
-
-    const total = lines.reduce((sum, line) => sum + line.quantity * line.unitPrice, 0)
-
-    yield* turn.rows(orderLines).insert(lines)
-    yield* turn.emit(OrderPlaced.make({ total }))
-    yield* turn.enqueue(Charge.make({ amount: total }))
-    yield* turn.state.set({ total })
-
-    return total
-  }),
-
-  Charged: Effect.fn(function* ({ chargeId }) {
-    const turn = yield* Order.Turn
-
-    yield* turn.state.set({ chargeId })
-  }),
-})
-```
-
-Calling it from anywhere in your app. The handle is typed from the contract, including the `AlreadyPlaced` failure:
-
-```ts title="src/checkout.ts"
-import { Effect } from "effect"
-import { Order } from "./order/contract.ts"
-
-export const checkout = Effect.gen(function* () {
-  const order = yield* Order.get("o-1")
-
-  return yield* order.Place({ lines: [{ sku: "mug", quantity: 2, unitPrice: 1200 }] })
-})
-```
-
-`Place` inserts the lines, emits `OrderPlaced`, records the total, and enqueues `Charge` in one commit. The charge runs only after that commit, outside the transaction, and its result comes back to the order as the `Charged` command.
-
-### What happens when…
-
-- **…the process dies before the commit?** Nothing was written: no lines, no event, no charge. The caller retries with the same command ID, and the order is placed once.
-- **…it dies after the commit, before the reply?** The retry finds the stored result and returns the same total without running the handler again.
-- **…the payment provider times out?** `Charge` retries with backoff under one job ID, which the executor passes to the provider as its idempotency key. When the retries run out, the job lands in a dead letter that an `onDeadLetter` command can turn into order state.
-- **…the order sits idle?** It sleeps. Its state and pending work stay in the database, and the next command, timer, or job result wakes it.
-
-## Quickstart
-
-```sh
-mkdir my-app && cd my-app && bun init -y
-bun add @rikalabs/akter@alpha effect @effect/platform-bun @effect/sql-pg @effect/sql-pglite
-```
-
-The [quickstart](docs/quickstart.md) adds a counter actor in three short files, runs it twice to show its state surviving a restart, and tests a retry and a crash. It runs on [PGlite](https://pglite.dev), an embedded Postgres database, so there's no Docker or database server to set up; `Database.postgres` runs the same code on a Postgres database.
-
-The OSS launch claim is multi-runner on one host. Configure `Runner.socket` and `Runner.mtls` to share one Postgres database across separate processes; the launch verification starts three Bun processes on one host and exercises command routing, relay delivery, singleton work, schedules, crash recovery, and rolling drain. Separate hosts and hosting providers still need their own evidence.
-
-## What you get
-
-- **One transaction per command.** State, rows, events, files, timers, messages to other actors, and jobs commit together. Handlers never hold the transaction open while waiting on the network; slow or external work is recorded and runs after the commit.
-- **Safe retries.** Every command carries an ID. A retry with the same ID returns the stored result, and reusing an ID with different input is rejected.
-- **Data you own.** State and rows live in your own Postgres database as ordinary Drizzle tables, scoped to their actor and tenant. Report across them with plain SQL.
-- **Work that outlives the request.** Jobs with retries and dead letters, timers, cron schedules, and workflows that sleep and wait for events.
-- **Realtime.** Event feeds that resume from a cursor, WebSocket connections that stay open while an idle actor sleeps, and live streams for output such as tokens.
-- **One definition, every interface.** Typed Effect handles, a browser-safe Promise client with optimistic updates, and, through `Actors.serve`, HTTP, WebSocket, and SSE endpoints, an OpenAPI document, and an MCP endpoint.
-- **Tests that crash it.** `ActorTest` runs the real transaction path with virtual time, injected crashes, and committed-state inspection. The framework's conformance and deterministic simulations stay in the repository's unpublished verification workspace.
-
-## How it works
-
-```text
-command ─► fence ─► receipt ─► handler ─► COMMIT ─► reply
-                                            │
-                    state · rows · events · receipt · outbox
-                                            │
-                                            ▼
-                after commit: deliver messages, fire timers, run jobs
-```
-
-Each command checks that this process still owns the actor, looks for a stored receipt for its command ID, runs the handler, and commits. Ownership is checked in the database, so a process that has lost an actor can't commit for it. Everything the handler hands off is written to an outbox in the same commit and delivered afterwards. [Concepts](docs/guides/concepts.md) explains the model, and the [runtime contracts](docs/contracts/README.md) state each guarantee precisely.
-
-## How it compares
-
-- **Cloudflare Durable Objects** have the same one-request-at-a-time model on Cloudflare's platform, with storage attached to each object. Akter keeps data in your Postgres server and runs in your own process.
-- **Rivet Actors** keep state in memory and save it on an interval. Here a command's reply waits for its transaction to commit, and a retry returns the recorded result.
-- **Temporal and Restate** record a function's steps so it can resume after a crash. An Akter command is a short transaction instead, and anything slow becomes a job or workflow owned by the actor.
-
-The [comparison](docs/guides/comparison.md) covers each in detail and says when to choose it instead.
+The same contract serves the server and the single Effect client: `Counter.client(id)` returns a scoped handle and `Counter.find(...)` is a static id-only query. The server exposes one `/rpc` group with JSON WebSocket and NDJSON HTTP POST transports.
 
 ## Install
 
 ```sh
-bun add @rikalabs/akter@alpha effect @effect/sql-pg @effect/sql-pglite
+bun add @rikalabs/akter effect @effect/platform-bun
+bun add -d @rikalabs/akter-cli
+# Node: use @effect/platform-node instead of @effect/platform-bun
 ```
 
-The runtime needs [Bun](https://bun.sh) 1.4.2 or later, or [Node.js](https://nodejs.org) 24 or later. The [quickstart](docs/quickstart.md) includes both runtimes; use `@effect/platform-node` layers on Node instead of `@effect/platform-bun`. Effect, its SQL drivers, and Drizzle are peer dependencies with compatible caret ranges (`^4.0.2` for the Effect packages), so your app and the framework share one copy of each. The framework is tested against the Effect cohort that its CI runs, not a fixed version you must install; if you pin `effect@4.0.2`, pin `@effect/sql-pg` and `@effect/sql-pglite` at `4.0.2` too, or let all three resolve to the latest 4.0.x.
+The framework and CLI release together at one version; keep them matched and commit the lockfile before deploying. Supported runtime floors are Bun 1.4.2 and Node 24. The public package entries are `@rikalabs/akter`, `@rikalabs/akter/server`, `@rikalabs/akter/client`, and `@rikalabs/akter/testing`; the client entry is the same Effect client, not a Promise facade.
 
-| Import                    | What it holds                                                                                  |
-| ------------------------- | ---------------------------------------------------------------------------------------------- |
-| `@rikalabs/akter`         | Browser-safe declarations: `Actor.make`, commands, queries, events, jobs, errors, and handles. |
-| `@rikalabs/akter/runtime` | `Actors.layer`, `Actors.serve`, `Auth`, and the database layers.                               |
-| `@rikalabs/akter/client`  | The browser-safe Promise client: commands, queries, reducers, feeds, streams, and connections. |
-| `@rikalabs/akter/testing` | `ActorTest`, crash and clock controls, and inspection.                                         |
+## Run and deploy
 
-## Akter Cloud
+```sh
+bunx akter storage check --directory ./.data
+bunx akter login
+bunx akter deploy --project PROJECT_ID --env production
+```
 
-[Akter Cloud](https://app.akter.dev) hosts your app on managed runners. Every environment on every plan requires [your own Postgres](docs/cloud/database.md) through `DATABASE_URL`; Akter does not provision or delete your database. Install the CLI with `bun add -d @rikalabs/akter-cli@alpha`, sign in with `bunx akter login`, set `DATABASE_URL`, then deploy with `bunx akter deploy --project <project-id>` (Node: `npm install --save-dev @rikalabs/akter-cli@alpha` and `npx akter`). Billing is a base subscription plus compute unit-hours only; you pay your database provider separately. See the [Cloud guide](docs/cloud/get-started.md) for signup, configuration, pricing and account cleanup.
+`Store.fileSystem` is the `akter dev` adapter. A durable deployment uses `Store.s3({ bucket })`, one bucket per environment. The bucket contains log, fencing epochs, checkpoints, pages, index, leases, and audits. The framework has no Postgres, PGlite, Drizzle, `Database.postgres`, `Actor.table`, `toJobLayer`, `X.self`, or migration command.
+
+## What this repository contains
+
+- Contracts and implementation for actor state, lists, synchronous actions, jobs, timers, views, events, presence, and the Effect client; [milestone evidence](docs/operations/support-matrix.md) bounds which guarantees have landed.
+- Store protocol adapters for S3-compatible buckets, local filesystem development, and non-durable memory tests.
+- Seeded `Simulation`, local MinIO integration evidence, and CLI `storage check`; local evidence does not certify R2, Tigris, AWS S3, or another provider.
+- Cloud client commands and the public cloud API contract; hosted edge, control plane, billing, and rollout orchestration live in a private repository.
 
 ## Documentation
 
-Akter is alpha software. The launch-supported Postgres server version is **18.6**, the version exercised by CI; other server versions and providers are unverified. [Support matrix](docs/operations/support-matrix.md) scopes each backend and feature, and [alpha upgrade notes](docs/operations/alpha-upgrades.md) describe the planned alpha.1 → alpha.2 database changes. `@akter/react` and the Python client generator are repo-only and are not published at launch.
+- [Quickstart](docs/quickstart.md)
+- [Concepts](docs/guides/concepts.md)
+- [Actions and jobs](docs/guides/actions-and-jobs.md)
+- [API reference](docs/api/README.md)
+- [Architecture](docs/architecture/README.md)
+- [Operations](docs/operations/README.md)
+- [Runtime contracts](docs/contracts/README.md)
+- [Support matrix](docs/operations/support-matrix.md)
 
-- [Quickstart](docs/quickstart.md): create, run, and test an app.
-- [Concepts](docs/guides/concepts.md): actors, commands, receipts, and the work that continues after a commit.
-- [Guides](docs/guides/README.md): Effect inside the transaction, testing, and deploying.
-- [API reference](docs/api/README.md): declarations, contexts, the client, Drizzle, and generated clients.
-- [Fit and non-fit](docs/product/fit-and-non-fit.md): when Akter is the right tool, and when it isn't.
-- [Runtime contracts](docs/contracts/README.md): exactly what each guarantee covers and where it stops.
+0.2 begins with fresh stores. Historical ADRs and dated verification pages describe the decisions and evidence of their time; they are not promises of current support.
 
 ## Akter Cloud
 
-Akter Cloud, the hosted service, lives in a private repository. It consumes the published npm packages (`@rikalabs/akter` and `@rikalabs/akter-cli`) like any other application; it does not mount this repository as a submodule.
+Akter Cloud consumes published `@rikalabs/akter` and `@rikalabs/akter-cli` packages. Its 0.2 design provisions an isolated store bucket per environment incarnation and does not require `DATABASE_URL`; hosted provider, pricing, quota, and deletion evidence remain separate release gates.
 
 ## License
 

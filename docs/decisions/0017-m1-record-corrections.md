@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-09-24). Supersedes [ADR 0015](0015-durable-agent-runtime-boundary.md), ADR 0011's dictionary requirement, ADR 0013's "Not implemented" list as a status record, and the parent-actor placement option in ADR 0006 and ADR 0010's definition table as accepted API.
 
+**0.2 status:** superseded in part: codec 0127, placement 0134; owned by [ADR 0127](0127-snapshots-pages-lists-history-gc.md) and [ADR 0134](0134-removing-owned-tables-and-placement.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** correct decision records that M1 planning found stale or unresolved.
 
 **Authority:** design and product direction.

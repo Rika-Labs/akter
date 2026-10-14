@@ -2,25 +2,6 @@ import { Effect, Runtime, Schema } from "effect"
 import { CliError, Command } from "effect/cli"
 
 import { version } from "../package.json" with { type: "json" }
-import {
-  backfillCommand,
-  enforceCommand,
-  observeCommand,
-  planCommand,
-  releaseCommand,
-  statusCommand,
-} from "./commands/adopt/run.ts"
-import { discardCommand, retryCommand } from "./commands/dead-letters/repair.ts"
-import { listCommand as defectsListCommand } from "./commands/defects/list.ts"
-import { devCommand } from "./commands/dev/run.ts"
-import { exportCommand } from "./commands/export/run.ts"
-import { rebuildCommand, setupCommand } from "./commands/fleet/run.ts"
-import { inspectCommand } from "./commands/inspect/show.ts"
-import { checkCommand as payloadsCheckCommand, clearCommand } from "./commands/payloads/run.ts"
-import { showCommand } from "./commands/receipts/show.ts"
-import { listCommand as subscriptionsListCommand } from "./commands/subscriptions/list.ts"
-import { skipCommand } from "./commands/subscriptions/skip.ts"
-import { checkCommand as workflowsCheckCommand } from "./commands/workflows/check.ts"
 import { CommandFailed } from "./failure.ts"
 import { deployCommand } from "./commands/cloud/deploy.ts"
 import { loginCommand } from "./commands/cloud/login.ts"
@@ -30,69 +11,23 @@ import { whoamiCommand } from "./commands/cloud/whoami.ts"
 import { envCommand } from "./commands/cloud/env.ts"
 import { logsCommand } from "./commands/cloud/logs.ts"
 import { keysCommand } from "./commands/cloud/keys.ts"
-
-const group = <const Subcommands extends ReadonlyArray<Command.Command.SubcommandEntry>>(
-  name: string,
-  description: string,
-  subcommands: Subcommands,
-) =>
-  Command.make(name).pipe(
-    Command.withDescription(description),
-    Command.withSubcommands(subcommands),
-  )
+import { storageCommand } from "./commands/storage/check.ts"
+import {
+  inspectCommand,
+  logCommand,
+  replayCommand,
+  retentionCommand,
+  snapshotCommand,
+} from "./commands/operator.ts"
+import { devCommand } from "./commands/dev.ts"
+import { forkCommand } from "./commands/operators/fork.ts"
 
 /** The `akter` command tree. */
 export const akter = Command.make("akter").pipe(
   Command.withDescription(
-    "Run actors locally, check a deploy against stored data, adopt existing tables, inspect and repair a running deployment, and deploy to Akter Cloud",
+    "Run Akter locally, inspect durable state, operate logs, and manage Akter Cloud",
   ),
   Command.withSubcommands([
-    {
-      group: "Develop and check",
-      commands: [
-        devCommand,
-        group("workflows", "Check workflow changes against open executions", [
-          workflowsCheckCommand,
-        ]),
-        group("payloads", "Check and clear stored event and job payload versions", [
-          payloadsCheckCommand,
-          clearCommand,
-        ]),
-        group(
-          "adopt",
-          "Adopt existing tables: plan, observe legacy writers, backfill, enforce, and check status",
-          [
-            planCommand,
-            observeCommand,
-            backfillCommand,
-            enforceCommand,
-            statusCommand,
-            releaseCommand,
-          ],
-        ),
-        group("fleet", "Set up fleet views' change feed and rebuild a view from its source", [
-          setupCommand,
-          rebuildCommand,
-        ]),
-      ],
-    },
-    {
-      group: "Operate a running deployment",
-      commands: [
-        group("defects", "Read recent defects from runners", [defectsListCommand]),
-        inspectCommand,
-        exportCommand,
-        group("receipts", "Read stored command outcomes", [showCommand]),
-        group("dead-letters", "Repair dead-lettered jobs; the runner audits each repair", [
-          retryCommand,
-          discardCommand,
-        ]),
-        group("subscriptions", "List and skip stuck subscription rows", [
-          subscriptionsListCommand,
-          skipCommand,
-        ]),
-      ],
-    },
     {
       group: "Akter Cloud",
       commands: [
@@ -105,6 +40,19 @@ export const akter = Command.make("akter").pipe(
         logsCommand,
       ],
     },
+    { group: "Storage", commands: [storageCommand] },
+    {
+      group: "Operators",
+      commands: [
+        inspectCommand,
+        logCommand,
+        snapshotCommand,
+        forkCommand,
+        replayCommand,
+        retentionCommand,
+      ],
+    },
+    { group: "Local", commands: [devCommand] },
   ]),
 )
 

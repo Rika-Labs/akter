@@ -2,6 +2,8 @@
 
 **Status:** implementation decision (2026-10-03), for #489; amends ADR 0021's process model and ADR 0053's `routing` readiness reason.
 
+**0.2 status:** superseded (runner layout); socket runners, mTLS and readiness carry; owned by [ADR 0126](0126-shard-ownership-on-the-bucket-log.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** expose multi-runner construction without internal testing wiring.
 
 **Authority:** design decision record.

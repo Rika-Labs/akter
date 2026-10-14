@@ -2,6 +2,8 @@
 
 **Status:** implementation decision (2026-10-03), for #493; amends ADR 0020's pre-delivery reads.
 
+**0.2 status:** superseded; owned by [ADR 0124](0124-engine-rewrite-and-command-log.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** remove the database flights surrounding the fenced turn without speculative execution or an admission-clock expiry recheck.
 
 **Authority:** design decision record.

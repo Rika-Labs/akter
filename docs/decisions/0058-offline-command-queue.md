@@ -2,6 +2,8 @@
 
 **Status:** implementation decision (2026-09-30).
 
+**0.2 status:** superseded; owned by [ADR 0130](0130-views-sessions-events-and-rpc.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Amended (2026-09-30):** a saved command also records `principal`, the client's `identity` (or, without one, the `iss` and `sub` of its `Bearer` JWT), never a credential. A client sends only the commands saved under the principal it runs as now, read before every save and every attempt; another principal's commands are `held` in `pending` until that principal signs back in or the application discards them. An offline client with neither an `identity` nor a JWT refuses to queue. Before this, commands one user queued on a shared store were sent with the next user's credential.
 
 **Responsibility:** specify the persisted command queue of the Promise client: what it stores, when it sends, in what order, and when it gives up, without ever changing a command's identity.

@@ -12,7 +12,9 @@ description: "Publish framework and CLI releases and main canaries through npm t
 
 ## Status
 
-At launch preparation, `@rikalabs/akter` has `alpha: 0.1.0-alpha.1` and `latest: 0.1.0-alpha.0`; `@rikalabs/akter-cli` still needs its first publish. The framework was bootstrapped by hand on 2026-10-04, and its trusted publisher names `Rika-Labs/akter`'s `release.yml` and the `npm` environment. The workflow now promotes pre-1.0 releases to `latest` and publishes verified main canaries to `next`, but requires the publisher permissions and environment setup below. Editing the workflow does not change existing registry tags or bootstrap the CLI.
+`main` carries 0.2, and `0.2.0` is the first stable release published from it. [ADR 0138](https://github.com/Rika-Labs/akter/blob/main/docs/decisions/0138-framework-release-posture.md) records this release posture without changing package channels or evidence gates.
+
+A stable version such as `0.2.0` publishes directly to `latest` from a `v<version>` tag on `main`; verified `main` pushes publish `next` canaries. The `alpha` dist-tag keeps the last 0.1 alpha and the `rewrite` dist-tag keeps the last pre-swap branch canary; neither moves with a stable release. Registry tags, trusted-publisher permissions, and environment approvals must be checked at release time. Editing a workflow does not publish a package or change registry tags.
 
 ## Prerequisites
 
@@ -20,7 +22,7 @@ At launch preparation, `@rikalabs/akter` has `alpha: 0.1.0-alpha.1` and `latest:
 - **GitHub-hosted runner.** Trusted publishing and provenance reject self-hosted runners. The release job runs on `ubuntu-latest`.
 - **npm CLI 12.2.0 and Node 26.7.0.** The workflow pins Node and installs npm 12.2.0, which supports both trusted publishing and OIDC-authenticated dist-tag changes. npm 11.5.1's publish support alone is insufficient for automated `latest` promotion.
 - **Trusted-publisher permissions.** For both packages, enable **Allow npm publish** and **Allow npm dist-tag** on the GitHub trusted publisher. Dist-tag permission is independent of publish permission and is disabled by default. See npm's [trusted-publishing documentation](https://docs.npmjs.com/trusted-publishers#managing-dist-tags-with-trusted-publishing). No npm token is needed.
-- **`npm` environment.** Both tagged releases and main canaries use this environment. Allow the `main` branch and `v*` tags in its deployment policy. Configure required reviewers as the release maintainers, enable “Prevent self-review”, and disallow administrators from bypassing protection. A maintainer approves only after checking the exact verified SHA and, for a tagged release, its version/changelog changes. Reviewers apply to canaries too; publishing on every green main run will wait for their approval. Maintainers must choose and apply these settings; changing this document does not configure them.
+- **`npm` environment.** Both tagged releases and main canaries use this environment. Allow the `main` and `rewrite/0.2` branches and `v*` tags in its deployment policy if it restricts deployment branches. Configure required reviewers as the release maintainers, enable “Prevent self-review”, and disallow administrators from bypassing protection. A maintainer approves only after checking the exact verified SHA and, for a tagged release, its version/changelog changes. Reviewers apply to canaries too; publishing on every green main run will wait for their approval. Maintainers must choose and apply these settings; changing this document does not configure them.
 - **Tag ruleset.** Add an active repository ruleset targeting tags that match `v*`. Restrict creation to the release maintainers through the ruleset's bypass list, and restrict updates and deletions so a published tag cannot be moved or removed. The maintainer applies this ruleset in GitHub; a package rebuild uses a new version and tag rather than bypassing the update protection.
 - **GitHub Release.** The workflow creates or updates the GitHub Release from the matching `CHANGELOG.md` section after publishing; prerelease versions are marked as prereleases.
 
@@ -36,11 +38,11 @@ SMOKE_RUNTIME=node bun .github/src/release/smoke.ts --package .local/package --c
 SMOKE_RUNTIME=bun bun .github/src/release/smoke.ts --package .local/package --cli-package .local/package-cli
 ```
 
-`pack.ts` builds and stages the framework and CLI tarballs with `publishConfig` applied and `catalog:` versions resolved, copies `LICENSE` and `NOTICE`, runs `npm pack --dry-run`, and fails when a required file or export target is missing, when sources, tests or the crash fixtures would ship, when a dependency is still `catalog:` or `workspace:`, when the manifest is private or its version is not semantic, or when compiled code imports a package the manifest does not declare. The CLI includes compiled JS and declarations for `@rikalabs/akter-cli/cloud-api`; `@akter/cloud-api` stays private and is not a separate npm package. `smoke.ts` installs both packed tarballs into a clean temporary project, typechecks the framework and cloud-API consumers, checks the cloud API's endpoint and schema behavior, runs the PGlite command, and runs `akter --help`, `akter login --help`, and `akter dev` readiness and inspector checks on Node and Bun. Without package arguments it stages fresh copies first.
+`pack.ts` builds and stages the framework and CLI tarballs with `publishConfig` applied and `catalog:` versions resolved, copies `LICENSE` and `NOTICE`, runs `npm pack --dry-run`, and fails when a required file or export target is missing, when sources, tests or the crash fixtures would ship, when a dependency is still `catalog:` or `workspace:`, when the manifest is private or its version is not semantic, or when compiled code imports a package the manifest does not declare. The CLI includes compiled JS and declarations for `@rikalabs/akter-cli/cloud-api`; `@akter/cloud-api` stays private and is not a separate npm package. `smoke.ts` installs both packed tarballs into a clean temporary project, typechecks framework and cloud-API consumers, checks endpoint/schema behavior, and serves `/rpc` to the Effect client over HTTP and WebSocket on Bun and Node. It also checks the CLI help and login help. Without package arguments it stages fresh copies first. No relational backend or generated client is part of the 0.2 smoke.
 
 ## One-time bootstrap
 
-Only `@rikalabs/akter-cli` needs a first publish at launch; `@rikalabs/akter` already exists. There is no `@rikalabs/akter-cloud-api` publish: the contract is the CLI's `/cloud-api` subpath. Bootstrap publishes the validated CLI tarball manually. `release.yml` remains OIDC-only and does not read a bootstrap token; it publishes both packages only after they exist and their trusted publishers are configured.
+Check whether each package already exists before deciding whether bootstrap is needed. There is no `@rikalabs/akter-cloud-api` publish: the contract is the CLI's `/cloud-api` subpath. Bootstrap publishes the validated CLI tarball manually. `release.yml` remains OIDC-only and does not read a bootstrap token; it publishes both packages only after they exist and their trusted publishers are configured.
 
 Interactive `npm login` with 2FA is sufficient. For a noninteractive bootstrap, use a short-lived [granular access token](https://docs.npmjs.com/creating-and-viewing-access-tokens) from an account that can create packages in `@rikalabs`, with **Packages and scopes → Read and write (publish and stage)** for the `@rikalabs` scope and **Bypass two-factor authentication** enabled. A read-only or stage-only token cannot run `npm publish`; organization-management permissions alone do not grant package publishing, and legacy/classic tokens are no longer supported. Supply the token through private npm authentication configuration, never committed files, and revoke it after bootstrap. A publish token does not replace the maintainer's interactive 2FA for account and trusted-publisher setup.
 
@@ -65,7 +67,7 @@ npm view @rikalabs/akter dist-tags
 npm view @rikalabs/akter-cli dist-tags
 ```
 
-Check that `alpha` and `latest` both name the released alpha for both packages. Publishing and dist-tag updates are separate registry operations, not an atomic transaction. If the CLI publish or a tag update fails after the framework publishes, fix the authorization or package problem and rerun the same tagged release: already-published versions are skipped, and `latest` promotion retries without replacing an immutable version on npm. Promotion compares semantic versions so a historical rerun cannot move a newer `latest` backwards; a registry lookup failure stops promotion instead of assuming the tag is absent.
+For a stable release, check that `latest` names the released version for both packages and that `alpha`, `next` and `rewrite` are unchanged by the tagged run. For a pre-1.0 prerelease, check that its channel and `latest` both name it. Publishing and dist-tag updates are separate registry operations, not an atomic transaction. If the CLI publish or a tag update fails after the framework publishes, fix the authorization or package problem and rerun the same tagged release: already-published versions are skipped, and `latest` promotion retries without replacing an immutable version on npm. Promotion compares semantic versions so a historical rerun cannot move a newer `latest` backwards; a registry lookup failure stops promotion instead of assuming the tag is absent.
 
 ## Main canaries
 
@@ -79,9 +81,19 @@ bun .github/src/pack.ts --out .local/next --cli-out .local/next-cli --canary 321
 
 Install with `@rikalabs/akter@next` and `@rikalabs/akter-cli@next` to try the channel, but pin the complete same version of both packages in cloud deployments. Canaries are published only to `next`; they never move `alpha` or `latest`. Tagged releases and canaries share workflow concurrency so publishing jobs do not overlap. As with tagged releases, each package must already exist and its trusted publisher must permit publishing.
 
+## Rewrite canaries
+
+Before the swap, `rewrite/0.2` carried the 0.2 framework. A push to that branch still publishes `@rikalabs/akter` and `@rikalabs/akter-cli` as `0.2.0-rewrite.<run-id>.<attempt>.g<sha12>` under the `rewrite` dist-tag. `release.yml` runs on the branch push itself, because a `workflow_run` event always executes the workflow file on the default branch (`main`). The job waits up to 30 minutes for a successful `push` run of `ci.yml` on the pushed SHA and fails if that run fails, then applies the same checks as a main canary against `origin/rewrite/0.2`: the commit must be on that branch and must equal `GITHUB_SHA`, the framework and CLI versions must match, and the same pack checks and both runtime smokes run. The tag is read from `version.ts --canary-branch rewrite/0.2`, so the channel can never be `latest` or `next`, and the promotion step stays off. The source manifests carry `0.2.0`; the canary replaces everything after the core version.
+
+```sh
+bun .github/src/pack.ts --out .local/rewrite --cli-out .local/rewrite-cli --canary 321.1.g123456abcdef --canary-channel rewrite
+```
+
+Cloud deployments pin the complete same version of both packages rather than the moving `rewrite` tag.
+
 ## Limits
 
 - The workflow cannot publish a package name that does not exist on npm yet; each new package needs the bootstrap above.
 - A tag whose version is already on npm runs every check and the smoke test, then skips `npm publish`; pre-1.0 promotion still runs unless `latest` is newer. npm versions are immutable, so a changed build needs a new version, not a retag.
-- The OSS launch claim is multi-runner on one host with `Runner.socket` and `Runner.mtls`, verified with three Bun processes sharing a Postgres database. Separate-host and hosting-provider support need their own evidence in the [support matrix](support-matrix.md).
-- `@akter/react` and the Python client generator are repo-only and are not published at launch. Check the [CLI reference](../api/06-cli.md) for its current installation status.
+- Bucket protocol, mTLS routing, and provider claims need their own current evidence in the [support matrix](./support-matrix.md); local MinIO results do not certify a production provider.
+- React and Python clients are not part of 0.2.0. The public client is Effect-only; no removed compatibility package is published.

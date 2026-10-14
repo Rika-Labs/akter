@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-10-11).
 
+**0.2 status:** superseded (cold-adapter entry); the no-AWS-in-the-root bundling rule carries; owned by [ADR 0127](0127-snapshots-pages-lists-history-gc.md) and [ADR 0136](0136-stores-the-bucket-is-the-store.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 ## Context
 
 The alpha.6 runtime barrel reaches the S3 adapter even when `Actors.layer` has no cold storage. The SDK's retained module initialization makes cold storage's opt-in runtime configuration insufficient as a bundle boundary.

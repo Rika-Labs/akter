@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-10-09, Dallen).
 
+**0.2 status:** superseded; owned by [ADR 0136](0136-stores-the-bucket-is-the-store.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** align the public cloud API and CLI with customer-owned Postgres and base subscription plus compute billing.
 
 ## Context

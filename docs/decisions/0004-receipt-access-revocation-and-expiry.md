@@ -2,6 +2,8 @@
 
 **Status:** accepted design (2026-09-22); command expiry and whole-database restore are implemented and covered by `conformance/restore.ts`; conformance for the remaining checks below stays with their owning slices.
 
+**0.2 status:** amended (outcome access, expiry); owned by [ADR 0124](0124-engine-rewrite-and-command-log.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** record the owner's remaining retry and authorization choices before decomposing the framework backlog.
 
 **Authority:** historical decision record.

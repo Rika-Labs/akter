@@ -2,22 +2,83 @@ import { Clock, DateTime, Effect, Exit, Schema } from "effect"
 import { Base64Url } from "effect/encoding"
 import { Headers } from "effect/http"
 import { describe, expect, it } from "vitest"
-import { Unauthorized } from "../../errors/actor.ts"
-import { Anonymous, System, User } from "../../identity/caller.ts"
-import {
-  claimsFor,
-  DEPLOYMENT,
-  edgeKey,
-  ISSUER,
-  REGION,
-  signAssertion,
-} from "../../../../../tooling/conformance/src/conformance/assertions.ts"
-import { type AssertionKey, assertion } from "./verify.ts"
+import { Anonymous, System, User } from "../../contract/caller.ts"
+import { ActorError, Unauthorized } from "../../contract/errors.ts"
+import { type AssertionClaims, type AssertionKey, assertion } from "./verify.ts"
+import { ASSERTION_TYPE } from "./binding.ts"
 import { Credential } from "../auth.ts"
+
+const ISSUER = "https://edge.durable.test"
+
+const DEPLOYMENT = "dep-assertions"
+
+const REGION = "test-1"
 
 const REQ = "a".repeat(64)
 
+const utf8 = new TextEncoder()
+
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Json))
+
+const segment = (value: Schema.Json) =>
+  encodeJson(value).pipe(Effect.orDie, Effect.map(Base64Url.encode))
+
+/** An edge signing key and the public key runners verify it with. */
+interface EdgeKey {
+  readonly kid: string
+  readonly privateKey: CryptoKey
+  readonly publicKey: AssertionKey
+}
+
+const edgeKey = Effect.fnUntraced(function* (kid: string) {
+  const pair = yield* Effect.promise(() =>
+    crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]),
+  )
+
+  const { x } = yield* Effect.promise(() => crypto.subtle.exportKey("jwk", pair.publicKey))
+
+  return {
+    kid,
+    privateKey: pair.privateKey,
+    publicKey: { kid, kty: "OKP", crv: "Ed25519", x: x ?? "" },
+  } satisfies EdgeKey
+})
+
+/** A compact JWS over `claims`; the header defaults to an Ed25519 assertion under `key`. */
+const signAssertion = Effect.fnUntraced(function* (
+  key: EdgeKey,
+  claims: AssertionClaims | { readonly [claim: string]: Schema.Json },
+  header?: Partial<{ readonly alg: string; readonly typ: string; readonly kid: string }>,
+) {
+  const head = yield* segment({ alg: "EdDSA", typ: ASSERTION_TYPE, kid: key.kid, ...header })
+  const signed = `${head}.${yield* segment({ ...claims })}`
+
+  const signature = yield* Effect.promise(() =>
+    crypto.subtle.sign({ name: "Ed25519" }, key.privateKey, utf8.encode(signed)),
+  )
+
+  return `${signed}.${Base64Url.encode(new Uint8Array(signature))}`
+})
+
+/** Claims for `tenant`'s `subject`, issued now for 10 seconds, bound to `req`. */
+const claimsFor = Effect.fnUntraced(function* (options: {
+  readonly tenant: string
+  readonly subject: string
+  readonly req: string
+}) {
+  const now = Math.floor((yield* Clock.currentTimeMillis) / 1000)
+
+  return {
+    iss: ISSUER,
+    aud: DEPLOYMENT,
+    region: REGION,
+    iat: now,
+    exp: now + 10,
+    tenant: options.tenant,
+    caller: User.make({ subject: options.subject }),
+    req: options.req,
+  } satisfies AssertionClaims
+})
 
 const setup = Effect.gen(function* () {
   const edge = yield* edgeKey("edge-1")
@@ -35,7 +96,8 @@ const setup = Effect.gen(function* () {
   return { edge, claims, now, provider, run }
 })
 
-const refusal = (code: Unauthorized["code"]) => Exit.fail(Unauthorized.make({ code }))
+const refusal = (code: (typeof Unauthorized.Type)["code"]) =>
+  Exit.fail(ActorError.make({ reason: Unauthorized.make({ code }) }))
 
 describe("Actor.auth.assertion", () => {
   it("refuses a signed assertion whose cexp is past the representable time as invalid, not a defect", () =>
@@ -125,7 +187,10 @@ describe("Actor.auth.assertion", () => {
         }).pipe(Effect.orDie)
 
         const withCrit = [Base64Url.encode(critical), ...valid.split(".").slice(1)]
-        const system = { ...claims, caller: System.make({ source: "actor" }) }
+        const system = {
+          ...claims,
+          caller: System.make({ source: "send", subject: "actor:Room/r1" }),
+        }
 
         const exits = [
           yield* run(withCrit.join(".")),

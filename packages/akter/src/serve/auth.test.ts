@@ -1,6 +1,6 @@
 import { Effect } from "effect"
 import { describe, expect, it } from "vitest"
-import { User } from "../identity/caller.ts"
+import { User } from "../contract/caller.ts"
 import { Credential, make, none, readsCookies } from "./auth.ts"
 
 const authenticate = () => Effect.succeed({ caller: User.make({ subject: "s" }), tenant: "t" })

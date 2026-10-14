@@ -1,5 +1,7 @@
 # Runner shutdown configuration
 
+> Historical 0.1 verification, retained as of 2026-10-12. Recorded observations below are unchanged; they do not establish support for the 0.2 bucket engine. See [current verification](README.md).
+
 `packages/akter/src/runtime/runner.test.ts` rejects a missing guard, a strict inequality that rejects equality, an uncapped configured refresh, failure to apply default termination timeouts, an untyped refusal, and changed accepted configuration values.
 
 ```sh

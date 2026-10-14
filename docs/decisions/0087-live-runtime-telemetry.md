@@ -2,6 +2,8 @@
 
 **Status:** implementation decision (2026-10-04), for [#574](https://github.com/Rika-Labs/akter/issues/574); extends the read-only inspector of [ADR 0028](0028-sql-inspection-views.md) and the console runtime endpoints of #577, and composes with ADR 0082 (a hosted-platform record, private)'s service credential.
 
+**0.2 status:** superseded (recorder); live telemetry restated; owned by [ADR 0137](0137-inspection-audited-operations-telemetry.md). See the [0.2 registry](0124-engine-rewrite-and-command-log.md#registry-of-earlier-decisions).
+
 **Responsibility:** decide what a runner records durably and what it reports live for the console's runtime pages, how the live command stream reaches the console, and the bounds, redaction, tenant scoping and cost of each.
 
 **Authority:** design decision record.

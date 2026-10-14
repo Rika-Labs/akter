@@ -1,6 +1,6 @@
 # Security policy
 
-Akter is alpha software. Interfaces and guarantees can still change, and it has not had an external security review.
+Akter is at 0.x: interfaces and guarantees can change between minor versions, and it has not had an external security review.
 
 ## Scope
 
@@ -10,7 +10,7 @@ Out of scope: vulnerabilities in third-party dependencies that have no effect on
 
 ## Supported versions
 
-Only the latest `0.x` alpha release of the framework packages receives security fixes. Older alphas are not patched; upgrade to the latest one.
+Only the latest `0.x` release of the framework packages receives security fixes. Earlier releases, including every 0.1 alpha, are not patched; upgrade to the latest one.
 
 ## Reporting a vulnerability
 
@@ -18,7 +18,7 @@ Report privately, either by email to security@akter.dev or through GitHub Securi
 
 Include:
 
-- for the framework: the affected package and version, or the commit you tested, the runtime and the database server
+- for the framework: the affected package and version, or the commit you tested, the runtime and the store provider
 - for Akter Cloud: the affected service, the region if known, and timestamps or request identifiers
 - what an attacker can do and what access they need
 - steps or a minimal project that reproduces it, with credentials and personal data removed
