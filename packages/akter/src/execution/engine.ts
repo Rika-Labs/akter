@@ -586,11 +586,9 @@ const make = (catalog: Catalog, options: EngineOptions) =>
      * with the earliest timer as the store's wake time. A failed periodic checkpoint changes
      * nothing: the log still holds every entry, and the next one tries again.
      */
-    const checkpoint = (shard: Shard, lease: Lease) => {
-      const writing = PagedCheckpoints.write(shard.durable, store, pages)
-      return store.gc.protect(
+    const checkpoint = (shard: Shard, lease: Lease) =>
+      store.gc.protect(PagedCheckpoints.write(shard.durable, store, pages), (prepared) =>
         Effect.gen(function* () {
-          const prepared = yield* writing
           yield* store.checkpoint(lease, {
             offset: BigInt(prepared.offset),
             statePages: [prepared.hash],
@@ -600,7 +598,6 @@ const make = (catalog: Catalog, options: EngineOptions) =>
           prepared.committed()
         }),
       )
-    }
 
     const periodicCheckpoint = (
       shard: Shard,

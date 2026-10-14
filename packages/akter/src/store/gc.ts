@@ -1,4 +1,4 @@
-import { Clock, Duration, Effect, Option, Random, Result, Schema, Semaphore } from "effect"
+import { Clock, Deferred, Duration, Effect, Exit, Option, Random, Schema, Semaphore } from "effect"
 import { SchemaBinary } from "effect/encoding"
 import { type RetriedBucket, retryUnavailable } from "./bucket.ts"
 import { decodeManifest, decodePage, decodeSegment, FORMAT, PageHash } from "./codec.ts"
@@ -12,6 +12,18 @@ const EPOCH = /^gc\/([0-9a-f]{16})$/u
 
 const LAST_EPOCH = 0xffff_ffff_ffff_ffffn
 
+/**
+ * Milliseconds after its claim that a `publishing` epoch may be taken over. It bounds how long a
+ * publisher that stopped without advancing to `idle` (killed, interrupted, or failed with an
+ * unknown outcome) blocks publication and collection. Safety does not rest on it: a holder whose
+ * epoch was taken fails its fence before any durable reference.
+ */
+const PUBLICATION_EXPIRY = 60_000
+
+/**
+ * An epoch record. A `publishing` record's `expiresAt` holds its claim time, as every release has
+ * written it; the epoch expires {@link PUBLICATION_EXPIRY} later.
+ */
 const Record = Schema.Struct({
   format: Schema.Literal(FORMAT),
   owner: Schema.String,
@@ -80,6 +92,26 @@ interface Holding extends StoredEpoch {
   readonly deadline: number
 }
 
+/** This process's open publication: one `publishing` epoch shared by every concurrent publisher. */
+interface Publication {
+  /** The claimed epoch once its create is acknowledged; no `idle` can follow an unacknowledged one. */
+  holding: Holding | undefined
+  /** Settles when the claim does; members wait on it before uploading. */
+  readonly claimed: Deferred.Deferred<
+    Holding,
+    PagePublicationBusy | GcStaleEpoch | StorageUnavailable | CorruptSegment
+  >
+  /** Monotonic time before the claim was sent; members join only while it is within `validFor`. */
+  readonly since: number
+  members: number
+  /** No `idle` may follow: a member's reference has no known outcome, or the epoch was taken. */
+  unknown: boolean
+  closing: boolean
+  readonly closed: Deferred.Deferred<void>
+}
+
+const publishingExpiry = (record: typeof Record.Type) => record.expiresAt + PUBLICATION_EXPIRY
+
 interface Candidate {
   readonly key: string
   readonly cutoff: number
@@ -101,18 +133,42 @@ const millis = (input: Duration.Input) => Duration.toMillis(Duration.fromInputUn
  * Every snapshot and fork must hold `gc.protect` from its first reused-page PUT through
  * its durable reference. Publication and deletion then contend for the same next immutable epoch,
  * closing the gap between a page timestamp check and an unconditional delete.
+ *
+ * A publisher confirms its epoch is still the newest after its uploads are acknowledged and
+ * before it writes its durable reference. A collector that claims a later epoch therefore either
+ * fences that reference or reads the uploads' fresh timestamps, which the grace period keeps; so
+ * a `publishing` epoch whose holder stopped can expire after {@link PUBLICATION_EXPIRY} instead of
+ * blocking the store for good. That holds only while every page the reference names was written
+ * by the upload with a fresh timestamp or stays reachable from a retained checkpoint, and while
+ * the reference lands within the grace period less the trim delay of the upload's start.
+ * Concurrent publishers of one process share one epoch, so a drain claims the barrier once rather
+ * than once per shard.
  */
 export const bucketGc = (settings: GcSettings) => {
   const { bucket } = settings
   const retrying = retryUnavailable(settings.retry)
   const permit = Semaphore.makeUnsafe(1)
   let listing: { readonly at: number; readonly keys: ReadonlyArray<string> } | undefined
+  let publication: Publication | undefined
+  let collecting = false
+  let seen = 0n
 
+  /** The newest epoch; epochs are never deleted, so the listing starts at the newest one seen. */
   const latest = Effect.gen(function* () {
-    const keys = yield* retrying(bucket.list(PREFIX))
+    const keys = yield* retrying(
+      bucket.list(PREFIX, seen > 0n ? { startAfter: keyOf(seen - 1n) } : {}),
+    )
     const key = keys.filter((key) => EPOCH.test(key)).at(-1)
-    if (key === undefined) return undefined
+    if (key === undefined) {
+      if (seen > 0n)
+        return yield* CorruptSegment.make({
+          key: keyOf(seen),
+          reason: "collector epoch is no longer stored",
+        })
+      return undefined
+    }
     const epoch = BigInt(`0x${key.slice(PREFIX.length)}`)
+    if (epoch > seen) seen = epoch
     const bytes = yield* retrying(bucket.get(key))
     if (Option.isNone(bytes))
       return yield* CorruptSegment.make({ key, reason: "collector epoch is no longer stored" })
@@ -162,41 +218,145 @@ export const bucketGc = (settings: GcSettings) => {
     ([a, b]) => `${settings.writer}:${a}:${b}`,
   )
 
-  const protect = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-    permit
-      .withPermitsIfAvailable(1)(
-        Effect.gen(function* () {
-          const previous = yield* latest
-          const at = yield* Clock.currentTimeMillis
-          if (
-            previous !== undefined &&
-            (previous.record.phase === "deleting" ||
-              previous.record.phase === "publishing" ||
-              (previous.record.phase === "marking" && previous.record.expiresAt > at))
-          )
-            return yield* PagePublicationBusy.make({ epoch: previous.epoch })
-          const holding = yield* create(
-            previous?.epoch ?? 0n,
-            { format: FORMAT, owner: yield* ownerId, phase: "publishing", expiresAt: at },
-            yield* monotonic,
-          )
-          yield* confirm(holding)
-          const result = yield* effect.pipe(Effect.result)
-          if (Result.isFailure(result) && !Schema.is(StaleEpoch)(result.failure))
-            return yield* Effect.fail(result.failure)
-          yield* create(holding.epoch, { ...holding.record, phase: "idle" }, holding.deadline)
-          return Result.isFailure(result) ? yield* Effect.fail(result.failure) : result.success
+  /**
+   * Claims the next epoch as `publishing` unless a live epoch holds the barrier. Losing the create
+   * race or the confirmation is the same busy barrier a caller retries.
+   */
+  const claim = (made: Publication) =>
+    Effect.gen(function* () {
+      const previous = yield* latest
+      const at = yield* Clock.currentTimeMillis
+      if (
+        previous !== undefined &&
+        (previous.record.phase === "deleting" ||
+          (previous.record.phase === "publishing" && publishingExpiry(previous.record) > at) ||
+          (previous.record.phase === "marking" && previous.record.expiresAt > at))
+      )
+        return yield* PagePublicationBusy.make({ epoch: previous.epoch })
+      made.holding = yield* create(
+        previous?.epoch ?? 0n,
+        { format: FORMAT, owner: yield* ownerId, phase: "publishing", expiresAt: at },
+        made.since,
+      )
+      yield* confirm(made.holding)
+      return made.holding
+    }).pipe(
+      Effect.catchTag("GcStaleEpoch", ({ epoch }) =>
+        Effect.fail(PagePublicationBusy.make({ epoch: epoch + 1n })),
+      ),
+    )
+
+  /**
+   * Joins this process's open publication, or opens one and claims its epoch. Membership changes
+   * run uninterruptibly so every member that entered also leaves; only waiting and the claim's
+   * requests can be interrupted.
+   */
+  const enter = (restore: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>) =>
+    Effect.gen(function* () {
+      while (true) {
+        const at = yield* monotonic
+        const current = publication
+        if (current !== undefined) {
+          if (!current.closing && !current.unknown && at - current.since <= settings.validFor) {
+            current.members++
+            return current
+          }
+          yield* restore(Deferred.await(current.closed))
+          continue
+        }
+        if (collecting) return yield* PagePublicationBusy.make({ epoch: seen })
+        const made: Publication = {
+          holding: undefined,
+          claimed: Deferred.makeUnsafe(),
+          since: at,
+          members: 1,
+          unknown: false,
+          closing: false,
+          closed: Deferred.makeUnsafe(),
+        }
+        publication = made
+        const claimed = yield* Effect.exit(restore(claim(made)))
+        Deferred.doneUnsafe(
+          made.claimed,
+          Exit.hasInterrupts(claimed)
+            ? Exit.fail(PagePublicationBusy.make({ epoch: seen }))
+            : claimed,
+        )
+        return made
+      }
+    })
+
+  /** Fails unless the shared epoch is still the newest, so a taken-over publisher references nothing. */
+  const fence = (current: Publication, holding: Holding) =>
+    confirm(holding).pipe(
+      Effect.catchTag("GcStaleEpoch", () =>
+        Effect.suspend(() => {
+          current.unknown = true
+          return Effect.fail(PagePublicationBusy.make({ epoch: holding.epoch }))
         }),
+      ),
+    )
+
+  /**
+   * The last member out advances the epoch to `idle`, unless a member's reference ended without a
+   * known outcome or the epoch was taken; then the epoch stays `publishing` until it expires. A
+   * member that failed before its reference sent nothing, so it does not hold the epoch back. The
+   * idle write only frees the barrier sooner, so its failure leaves the same expiring epoch.
+   */
+  const leave = (
+    current: Publication,
+    exit: Exit.Exit<unknown, unknown>,
+    referenced: boolean,
+    restore: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>,
+  ) =>
+    Effect.suspend(() => {
+      current.members--
+      if (
+        referenced &&
+        Exit.isFailure(exit) &&
+        !Option.exists(Exit.findErrorOption(exit), (error) => Schema.is(StaleEpoch)(error))
       )
-      .pipe(
-        Effect.flatMap((result) =>
-          Option.isSome(result)
-            ? Effect.succeed(result.value)
-            : Effect.flatMap(latest, (previous) =>
-                Effect.fail(PagePublicationBusy.make({ epoch: previous?.epoch ?? 0n })),
-              ),
-        ),
-      )
+        current.unknown = true
+      if (current.members > 0) return Effect.void
+      current.closing = true
+      const close = Effect.sync(() => {
+        if (publication === current) publication = undefined
+        Deferred.doneUnsafe(current.closed, Exit.void)
+      })
+      const holding = current.holding
+      if (current.unknown || holding === undefined) return close
+      return restore(
+        create(holding.epoch, { ...holding.record, phase: "idle" }, holding.deadline),
+      ).pipe(Effect.ignore, Effect.ensuring(close))
+    })
+
+  const protect = <A, B, E1, E2, R1, R2>(
+    upload: Effect.Effect<A, E1, R1>,
+    reference: (uploaded: A) => Effect.Effect<B, E2, R2>,
+  ): Effect.Effect<
+    B,
+    E1 | E2 | PagePublicationBusy | GcStaleEpoch | StorageUnavailable | CorruptSegment,
+    R1 | R2
+  > =>
+    Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        const current = yield* enter(restore)
+        let referenced = false
+        const exit = yield* Effect.exit(
+          restore(
+            Effect.gen(function* () {
+              const holding = yield* Deferred.await(current.claimed)
+              const uploaded = yield* upload
+              yield* fence(current, holding)
+              referenced = true
+              return yield* reference(uploaded)
+            }),
+          ),
+        )
+        yield* leave(current, exit, referenced, restore)
+        return yield* exit
+      }),
+    )
 
   const collect = (options: GcOptions) =>
     permit.withPermits(1)(
@@ -235,10 +395,15 @@ export const bucketGc = (settings: GcSettings) => {
           deletedPages: 0,
           deletedCheckpoints: 0,
         }
-        if (previous?.record.phase === "deleting" || previous?.record.phase === "publishing")
+        if (
+          publication !== undefined ||
+          previous?.record.phase === "deleting" ||
+          (previous?.record.phase === "publishing" && publishingExpiry(previous.record) > at)
+        )
           return { ...report, outcome: "blocked" } satisfies GcReport
         if (previous?.record.phase === "marking" && previous.record.expiresAt > at)
           return { ...report, outcome: "busy" } satisfies GcReport
+        collecting = true
         const owner = yield* ownerId
         let holding = yield* create(
           previous?.epoch ?? 0n,
@@ -355,7 +520,13 @@ export const bucketGc = (settings: GcSettings) => {
           marked: marked.size,
           outcome: "collected",
         } satisfies GcReport
-      }),
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            collecting = false
+          }),
+        ),
+      ),
     )
 
   return { gc: { collect, protect } }

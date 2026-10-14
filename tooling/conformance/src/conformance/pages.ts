@@ -379,10 +379,10 @@ export const pageConformance = <E, E2>(backend: EngineBackend<E, E2>) => {
             a.gc.collect({ references: PageDocuments.references, entryReferences: () => [] }),
           )
           yield* held.fired
-          const publishing = b.gc.protect(
+          const publishing = b.gc.protect(b.putPage(bytes), (page) =>
             Effect.gen(function* () {
-              expect(yield* b.putPage(bytes)).toBe(hash)
-              yield* b.checkpoint(lease, { offset: lease.head, statePages: [hash], indexPages: [] })
+              expect(page).toBe(hash)
+              yield* b.checkpoint(lease, { offset: lease.head, statePages: [page], indexPages: [] })
             }),
           )
           const blocked = yield* publishing.pipe(Effect.result)

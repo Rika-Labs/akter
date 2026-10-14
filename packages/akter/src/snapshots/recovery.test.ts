@@ -157,9 +157,8 @@ describe("Recovery", () => {
         yield* b.add(13)
         yield* (yield* Tally.client("c")).add(19)
         yield* Simulation.settle
-        const prepared = yield* engine.store.gc.protect(
+        const prepared = yield* engine.store.gc.protect(upload, (prepared) =>
           Effect.gen(function* () {
-            const prepared = yield* upload
             yield* engine.store.checkpoint(engine.lease(0)!, {
               offset: BigInt(prepared.offset),
               statePages: [prepared.hash],

@@ -201,9 +201,8 @@ const make = (engine: Engine) => {
               ])
             image.offset = Number(
               paged
-                ? yield* store.gc.protect(
+                ? yield* store.gc.protect(PagedCheckpoints.write(image, store, pages), (prepared) =>
                     Effect.gen(function* () {
-                      const prepared = yield* PagedCheckpoints.write(image, store, pages)
                       replayPage = prepared.hash
                       const offset = yield* append(
                         Entry.cases.Replayed.make({ page: prepared.hash }),
@@ -230,17 +229,19 @@ const make = (engine: Engine) => {
                 nextDue = Math.min(nextDue ?? Infinity, at)
             yield* Effect.ignore(
               store.gc.protect(
-                Effect.gen(function* () {
-                  const hash =
-                    replayPage ?? (yield* PagedCheckpoints.write(image, store, pages)).hash
-                  yield* store.checkpoint(lease, {
-                    offset: BigInt(image.offset),
-                    statePages: [hash],
-                    indexPages: [hash],
-                    nextDue,
-                  })
-                  yield* store.append(lease, [EntryCodec.encode(Entry.cases.Released.make({}))])
-                }),
+                replayPage === undefined
+                  ? Effect.map(PagedCheckpoints.write(image, store, pages), ({ hash }) => hash)
+                  : Effect.succeed(replayPage),
+                (hash) =>
+                  Effect.gen(function* () {
+                    yield* store.checkpoint(lease, {
+                      offset: BigInt(image.offset),
+                      statePages: [hash],
+                      indexPages: [hash],
+                      nextDue,
+                    })
+                    yield* store.append(lease, [EntryCodec.encode(Entry.cases.Released.make({}))])
+                  }),
               ),
             )
             yield* engine.assign([shard])

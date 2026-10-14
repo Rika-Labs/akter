@@ -169,7 +169,7 @@ const forkOnce = (target: Engine, options: ForkOptions, source: Store["Service"]
       return yield* ForkRefused.make({ reason: "target" })
     if ((yield* target.durableRecord(actor, to)).created)
       return yield* ForkRefused.make({ reason: "target" })
-    const publish = Effect.gen(function* () {
+    const upload = Effect.gen(function* () {
       const snapshot = Checkpoints.capture(image, false).actors.find(
         (candidate) => candidate.actor === actor.name && same(candidate.key, from),
       )!
@@ -217,69 +217,79 @@ const forkOnce = (target: Engine, options: ForkOptions, source: Store["Service"]
           }),
         }),
       )
-      const identity = CommandIds.derive(
-        manifest,
-        "fork",
-        source.meta.store,
-        position.offset,
-        position.index,
-        Durable.addressOf(actor.name, to),
-      )
-      const timers =
-        options.withWork === true
-          ? Array.from(image.timers.values())
-              .filter((timer) => timer.address === record.address)
-              .map(({ timer }, ordinal) => ({
-                ...timer,
-                commandId: CommandIds.derive(identity, "timer", ordinal),
-              }))
-          : []
-      const jobs =
-        options.withWork === true
-          ? Array.from(image.jobs.values())
-              .filter((job) => job.address === record.address && job.done === undefined)
-              .map((job, ordinal) => ({
-                jobId: CommandIds.derive(identity, "job", ordinal),
-                job: job.job,
-                payload: job.payload,
-                key: job.key,
-                steps: Array.from(job.steps, ([name, value]) => ({ name, value })),
-              }))
-          : []
-      yield* target.installFork(
-        Entry.cases.Forked.make({
-          actor: actor.name,
-          key: to,
-          from,
-          position,
-          at: now,
-          manifest,
-          state: snapshot.state,
-          lists: roots,
-          timers,
-          jobs,
-        }),
-        Entry.cases.Audit.make({
-          record: {
-            id: identity,
-            at: now,
-            operator: grant.operator,
-            action: "fork",
-            capability: Option.getOrUndefined(capability),
-            target: {
-              tenant,
-              shard: target.shardOf(Durable.addressOf(actor.name, to)),
-              actorType: actor.name,
-              actorId: to,
-            },
-            reason: "Retained actor image forked",
-            outcome: "allowed",
-          },
-        }),
-      )
-      return { actor: actor.name, id: to, position, manifest, withWork: options.withWork === true }
+      return { snapshot, roots, manifest }
     })
-    return yield* target.store.gc.protect(publish)
+    const publish = ({ snapshot, roots, manifest }: Effect.Success<typeof upload>) =>
+      Effect.gen(function* () {
+        const identity = CommandIds.derive(
+          manifest,
+          "fork",
+          source.meta.store,
+          position.offset,
+          position.index,
+          Durable.addressOf(actor.name, to),
+        )
+        const timers =
+          options.withWork === true
+            ? Array.from(image.timers.values())
+                .filter((timer) => timer.address === record.address)
+                .map(({ timer }, ordinal) => ({
+                  ...timer,
+                  commandId: CommandIds.derive(identity, "timer", ordinal),
+                }))
+            : []
+        const jobs =
+          options.withWork === true
+            ? Array.from(image.jobs.values())
+                .filter((job) => job.address === record.address && job.done === undefined)
+                .map((job, ordinal) => ({
+                  jobId: CommandIds.derive(identity, "job", ordinal),
+                  job: job.job,
+                  payload: job.payload,
+                  key: job.key,
+                  steps: Array.from(job.steps, ([name, value]) => ({ name, value })),
+                }))
+            : []
+        yield* target.installFork(
+          Entry.cases.Forked.make({
+            actor: actor.name,
+            key: to,
+            from,
+            position,
+            at: now,
+            manifest,
+            state: snapshot.state,
+            lists: roots,
+            timers,
+            jobs,
+          }),
+          Entry.cases.Audit.make({
+            record: {
+              id: identity,
+              at: now,
+              operator: grant.operator,
+              action: "fork",
+              capability: Option.getOrUndefined(capability),
+              target: {
+                tenant,
+                shard: target.shardOf(Durable.addressOf(actor.name, to)),
+                actorType: actor.name,
+                actorId: to,
+              },
+              reason: "Retained actor image forked",
+              outcome: "allowed",
+            },
+          }),
+        )
+        return {
+          actor: actor.name,
+          id: to,
+          position,
+          manifest,
+          withWork: options.withWork === true,
+        }
+      })
+    return yield* target.store.gc.protect(upload, publish)
   })
 
 const fork = (target: Engine, options: ForkOptions, source: Store["Service"] = target.store) =>
