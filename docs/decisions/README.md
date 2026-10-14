@@ -13,6 +13,8 @@ Use an ADR when a choice changes an interface, invariant, data model, deployment
 
 Decisions do not override newer accepted requirements. When a decision is superseded, preserve it and link the replacement.
 
+- [ADR 0138: Framework release posture](0138-framework-release-posture.md) (accepted 2026-10-13) requires a complete framework before the 0.2 product release and separates product copy from technical package channels and evidence status.
+
 **Superseded backend decisions:** ADRs 0057, 0070, 0091–0097 and 0110 are superseded by [ADR 0112](0112-postgres-and-pglite-only.md). Their descriptions below record historical decisions, not current backend support or configuration. Provider-specific clauses in the earlier generic ADRs, including 0066 and 0067, are also superseded; their engine-independent ownership, scheduling and coordination mechanisms remain.
 
 ## 0.2 rewrite (proposed)

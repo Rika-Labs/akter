@@ -5,7 +5,7 @@ description: "0.2 starts empty; evolve schema fields and release builds without 
 
 # Upgrades and schema changes
 
-Akter 0.2 is a clean break from 0.1. Alpha deployments redeploy into fresh stores. There is no `akter migrate` or `adopt` command, no relational schema conversion, and no in-place conversion of old runtime authority. Keep any 0.1 export or backup separately as historical data.
+Akter 0.2 is a clean break from 0.1. Upgrading from 0.1 requires a fresh 0.2 store; subsequent 0.2 redeployments reuse that store. There is no `akter migrate` or `adopt` command, no relational schema conversion, and no in-place conversion of old runtime authority. Keep any 0.1 export or backup separately as historical data.
 
 ## Actor schemas
 

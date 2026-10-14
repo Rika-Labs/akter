@@ -16,7 +16,7 @@ bun add @rikalabs/akter@rewrite effect @effect/platform-bun
 bun add -d @rikalabs/akter-cli@rewrite
 ```
 
-The `rewrite` channel selects 0.2 candidates while `main` remains on 0.1. Resolve both packages to the same complete prerelease version and keep the lockfile; do not deploy from moving tags. Node 24+ works too: install `@effect/platform-node` and use `NodeRuntime`/`NodeServices` instead of the Bun imports below.
+The `rewrite` channel selects branch canaries while `main` remains on 0.1. Resolve both packages to the same complete prerelease version and keep the lockfile; do not deploy from moving tags. Node 24+ works too: install `@effect/platform-node` and use `NodeRuntime`/`NodeServices` instead of the Bun imports below.
 
 ## 2. Declare the actor
 

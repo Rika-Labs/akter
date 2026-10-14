@@ -1,6 +1,6 @@
 # Akter documentation
 
-This documentation describes Akter 0.2 on `rewrite/0.2`. The normative runtime target is in [contracts](contracts/README.md), design rationale is in [decisions](decisions/README.md), and executable evidence is in [verification](verification/README.md). A proposal is not a provider-support claim.
+This documentation describes Akter 0.2. The normative runtime target is in [contracts](contracts/README.md), design rationale is in [decisions](decisions/README.md), and executable evidence is in [verification](verification/README.md). A proposal is not a provider-support claim.
 
 ## Public distribution
 
