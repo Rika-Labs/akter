@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Cause, Context, Effect, Exit, Fiber, Layer, Random, Schema, Stream } from "effect"
+import { Cause, Config, Context, Effect, Exit, Fiber, Layer, Random, Schema, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { Actor, ActorError, JobFailure, Unauthorized, anonymous, isUser, user } from "../index.ts"
 import { InvariantViolation, SIMULATION_SEED_BASE, Simulation, SimulationService } from "./index.ts"
@@ -799,7 +799,22 @@ const ledgerRun = (run: number, moving = false): Promise<LedgerRun> =>
     LedgerLive,
   )
 
-const seedRuns = 1_000
+/**
+ * The fixed matrix runs 1,000 seeds; `AKTER_SIMULATION_SEEDS` raises it for a long run. A value that
+ * is not a positive integer fails the file instead of quietly running the default.
+ */
+const seedRuns = Effect.runSync(
+  Effect.gen(function* () {
+    const configured = yield* Config.String("AKTER_SIMULATION_SEEDS").pipe(
+      Config.withDefault("1000"),
+    )
+    if (!/^[1-9]\d*$/.test(configured))
+      return yield* Effect.die(
+        new Error(`AKTER_SIMULATION_SEEDS must be a positive integer, got "${configured}"`),
+      )
+    return Number(configured)
+  }),
+)
 
 const movingRuns = 200
 
@@ -847,14 +862,16 @@ const matrix = (runs: number, moving: boolean): Promise<FaultsSeen> =>
 describe("seed matrix", () => {
   it(
     `conserves money and delivers every send and timer exactly once across ${seedRuns} faulted seeds`,
-    () =>
-      matrix(seedRuns, false).then((seen) => {
-        expect(seen.refused).toBeGreaterThan(0)
-        expect(seen.crashes).toBeGreaterThan(0)
-        expect(seen.lostResponses).toBeGreaterThan(0)
-        expect(seen.outages).toBeGreaterThan(0)
-      }),
-    300_000,
+    ({ annotate }) =>
+      matrix(seedRuns, false).then((seen) =>
+        annotate(`faults across ${seedRuns} seeds: ${JSON.stringify(seen)}`).then(() => {
+          expect(seen.refused).toBeGreaterThan(0)
+          expect(seen.crashes).toBeGreaterThan(0)
+          expect(seen.lostResponses).toBeGreaterThan(0)
+          expect(seen.outages).toBeGreaterThan(0)
+        }),
+      ),
+    seedRuns * 300,
   )
 
   it(
