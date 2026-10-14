@@ -20,6 +20,7 @@ import { PageCorrupt, StaleEpoch, StorageUnavailable } from "./errors.ts"
 import { Fault, Faults } from "./faults.ts"
 import { fileSystemBucket } from "./file-system.ts"
 import { GcStaleEpoch, PagePublicationBusy } from "./gc.ts"
+import { encodePage, sha256 } from "./codec.ts"
 import { checkpointKey, pageKey, PAGES_PREFIX } from "./keys.ts"
 import { memoryBucket } from "./memory.ts"
 import { storeOf } from "./service.ts"
@@ -30,6 +31,8 @@ const platform =
     : (await import("@effect/platform-bun")).BunServices.layer
 
 const text = (value: string) => new TextEncoder().encode(value)
+
+const sha256Of = (value: string) => sha256(encodePage(text(value)))
 
 const references = (bytes: Uint8Array): ReadonlyArray<string> => {
   const [kind, , ...hashes] = new TextDecoder().decode(bytes).split(":")
@@ -58,6 +61,8 @@ const age = (bucket: Bucket, duration: number) =>
   })
 
 const DAY = 24 * 60 * 60 * 1000
+
+const PUBLICATION_EXPIRY = 60_000
 
 const gcKey = (epoch: number) => `gc/${epoch.toString(16).padStart(16, "0")}`
 
@@ -380,10 +385,10 @@ for (const backend of backends)
           })
           const collecting = yield* Effect.forkChild(a.gc.collect({ references, entryReferences }))
           yield* held.fired
-          const publication = b.gc.protect(
+          const publication = b.gc.protect(b.putPage(text("leaf:forked")), (page) =>
             Effect.gen(function* () {
-              expect(yield* b.putPage(text("leaf:forked"))).toBe(hash)
-              yield* b.append(lease, [text(`forked:${hash}`)])
+              expect(page).toBe(hash)
+              yield* b.append(lease, [text(`forked:${page}`)])
             }),
           )
           expect(yield* failed(publication)).toBeInstanceOf(PagePublicationBusy)
@@ -400,7 +405,7 @@ for (const backend of backends)
     )
 
     it.effect(
-      "blocks collection during publication and after an unknown publication failure (rejects marking through an unfinished checkpoint)",
+      "blocks collection during publication and until expiry after a reference with an unknown outcome, but not after a failed upload (rejects marking through an unfinished checkpoint, or stranding the store when nothing was referenced)",
       () =>
         Effect.gen(function* () {
           const bucket = yield* yield* backend.namespace
@@ -409,7 +414,7 @@ for (const backend of backends)
           const b = yield* storeOf(bucket, { writer: "b", retry: RETRY })
           const held = yield* faults.inject(Fault.Hold(), { match: ({ kind }) => kind === "put" })
           const publishing = yield* Effect.forkChild(
-            a.gc.protect(a.putPage(text("leaf:publishing"))),
+            a.gc.protect(a.putPage(text("leaf:publishing")), () => Effect.void),
           )
           yield* held.fired
           expect(yield* b.gc.collect({ references, entryReferences })).toMatchObject({
@@ -417,15 +422,30 @@ for (const backend of backends)
           })
           yield* held.release
           yield* Fiber.join(publishing)
+          const uploadError = StorageUnavailable.make({
+            operation: "put",
+            key: "page",
+            reason: "upload failed",
+          })
+          expect(yield* failed(a.gc.protect(Effect.fail(uploadError), () => Effect.void))).toBe(
+            uploadError,
+          )
+          expect(yield* b.gc.collect({ references, entryReferences })).toMatchObject({
+            outcome: "collected",
+          })
           const error = StorageUnavailable.make({
             operation: "create",
             key: "checkpoint",
             reason: "unknown outcome",
           })
-          expect(yield* failed(a.gc.protect(Effect.fail(error)))).toBe(error)
-          yield* TestClock.adjust("1 day")
+          expect(yield* failed(a.gc.protect(Effect.void, () => Effect.fail(error)))).toBe(error)
+          yield* TestClock.adjust(PUBLICATION_EXPIRY - 1)
           expect(yield* b.gc.collect({ references, entryReferences })).toMatchObject({
             outcome: "blocked",
+          })
+          yield* TestClock.adjust(1)
+          expect(yield* b.gc.collect({ references, entryReferences })).toMatchObject({
+            outcome: "collected",
           })
         }),
     )
@@ -441,11 +461,8 @@ for (const backend of backends)
           yield* b.open(0)
           yield* TestClock.adjust("11 seconds")
           const result = yield* failed(
-            a.gc.protect(
-              Effect.gen(function* () {
-                const hash = yield* a.putPage(text("leaf:discarded-checkpoint"))
-                yield* a.checkpoint(old, { offset: old.head, statePages: [hash], indexPages: [] })
-              }),
+            a.gc.protect(a.putPage(text("leaf:discarded-checkpoint")), (hash) =>
+              a.checkpoint(old, { offset: old.head, statePages: [hash], indexPages: [] }),
             ),
           )
           expect(result).toBeInstanceOf(StaleEpoch)
@@ -453,6 +470,133 @@ for (const backend of backends)
             outcome: "collected",
           })
           expect(yield* b.history.checkpoints(0)).toEqual([])
+        }),
+    )
+
+    it.effect(
+      "expires a publishing epoch whose holder stopped without an outcome, then publication and collection resume (rejects an epoch stranded forever by an interrupted or killed publisher)",
+      () =>
+        Effect.gen(function* () {
+          const bucket = yield* yield* backend.namespace
+          const faults = Faults.plan()
+          const a = yield* storeOf(bucket, { writer: "a", shards: 1, faults, retry: RETRY })
+          const b = yield* storeOf(bucket, { writer: "b", retry: RETRY })
+          const held = yield* faults.inject(Fault.Hold(), { match: ({ kind }) => kind === "put" })
+          const publishing = yield* Effect.forkChild(
+            a.gc.protect(a.putPage(text("leaf:interrupted")), () => Effect.void),
+          )
+          yield* held.fired
+          yield* Fiber.interrupt(publishing)
+          expect(
+            yield* failed(b.gc.protect(b.putPage(text("leaf:next")), () => Effect.void)),
+          ).toBeInstanceOf(PagePublicationBusy)
+          expect(yield* b.gc.collect({ references, entryReferences })).toMatchObject({
+            outcome: "blocked",
+          })
+          yield* TestClock.adjust(PUBLICATION_EXPIRY - 1)
+          expect(yield* b.gc.collect({ references, entryReferences })).toMatchObject({
+            outcome: "blocked",
+          })
+          expect(
+            yield* failed(b.gc.protect(b.putPage(text("leaf:next")), () => Effect.void)),
+          ).toBeInstanceOf(PagePublicationBusy)
+          yield* TestClock.adjust(1)
+          yield* b.gc.protect(b.putPage(text("leaf:next")), () => Effect.void)
+          expect(yield* b.gc.collect({ references, entryReferences })).toMatchObject({
+            outcome: "collected",
+          })
+          yield* held.release
+        }),
+    )
+
+    it.effect(
+      "lets concurrent publications of one process share a single publishing epoch (rejects serializing every checkpoint of a drain behind its own epoch)",
+      () =>
+        Effect.gen(function* () {
+          const bucket = yield* yield* backend.namespace
+          const faults = Faults.plan()
+          const store = yield* storeOf(bucket, { writer: "a", shards: 16, faults, retry: RETRY })
+          const leases = yield* Effect.forEach(
+            Array.from({ length: 16 }, (_, shard) => shard),
+            (shard) => store.open(shard),
+          )
+          const uploads = yield* faults.inject(Fault.Hold(), {
+            match: ({ kind }) => kind === "put",
+            times: Number.POSITIVE_INFINITY,
+          })
+          const publishing = yield* Effect.forkChild(
+            Effect.forEach(
+              leases,
+              (lease) =>
+                store.gc.protect(store.putPage(text(`leaf:shard-${lease.shard}`)), (hash) =>
+                  store.checkpoint(lease, {
+                    offset: lease.head,
+                    statePages: [hash],
+                    indexPages: [],
+                  }),
+                ),
+              { concurrency: "unbounded", discard: true },
+            ),
+          )
+          const held = Effect.map(
+            faults.operations,
+            (operations) => operations.filter(({ kind }) => kind === "put").length,
+          )
+          for (let turn = 0; turn < 10_000 && (yield* held) < 16; turn++) yield* Effect.yieldNow
+          expect(yield* held).toBe(16)
+          yield* uploads.release
+          yield* Fiber.join(publishing)
+          expect(yield* bucket.list("gc/")).toEqual([gcKey(1), gcKey(2)])
+          for (const lease of leases)
+            expect(yield* store.history.checkpoints(lease.shard)).toHaveLength(1)
+        }),
+    )
+
+    it.effect(
+      "keeps a shared epoch publishing when one member's reference has an unknown outcome and another member leaves last (rejects letting the last member's success decide the epoch)",
+      () =>
+        Effect.gen(function* () {
+          const bucket = yield* yield* backend.namespace
+          const faults = Faults.plan()
+          const store = yield* storeOf(bucket, { writer: "a", shards: 2, faults, retry: RETRY })
+          const collector = yield* storeOf(bucket, { writer: "b", retry: RETRY })
+          const lease = yield* store.open(1)
+          const unknownUpload = yield* faults.inject(Fault.Hold(), {
+            match: ({ kind, key }) => kind === "put" && key.endsWith(sha256Of("leaf:unknown")),
+          })
+          const knownUpload = yield* faults.inject(Fault.Hold(), {
+            match: ({ kind, key }) => kind === "put" && key.endsWith(sha256Of("leaf:known")),
+          })
+          const held = yield* faults.inject(Fault.Hold(), {
+            match: ({ kind, key }) => kind === "create" && key === checkpointKey(1, lease.head),
+          })
+          const unknown = StorageUnavailable.make({
+            operation: "create",
+            key: checkpointKey(0, 0n),
+            reason: "unknown outcome",
+          })
+          const unknownMember = yield* Effect.forkChild(
+            store.gc.protect(store.putPage(text("leaf:unknown")), () => Effect.fail(unknown)),
+          )
+          const knownMember = yield* Effect.forkChild(
+            store.gc.protect(store.putPage(text("leaf:known")), (hash) =>
+              store.checkpoint(lease, { offset: lease.head, statePages: [hash], indexPages: [] }),
+            ),
+          )
+          yield* unknownUpload.fired
+          yield* knownUpload.fired
+          yield* unknownUpload.release
+          yield* knownUpload.release
+          yield* held.fired
+          expect(
+            Option.getOrUndefined(Exit.findErrorOption(yield* Fiber.await(unknownMember))),
+          ).toBe(unknown)
+          yield* held.release
+          yield* Fiber.join(knownMember)
+          expect(yield* bucket.list("gc/")).toEqual([gcKey(1)])
+          expect(yield* collector.gc.collect({ references, entryReferences })).toMatchObject({
+            outcome: "blocked",
+          })
         }),
     )
   })
@@ -519,6 +663,169 @@ describe("GC timestamp and validity boundaries", () => {
         expect(yield* store.gc.collect({ references, entryReferences })).toMatchObject({
           marked: 1,
           deletedPages: 0,
+        })
+      }),
+  )
+
+  it.effect(
+    "refuses the durable reference of a publisher whose expired epoch was taken over while its page refresh was in flight (rejects expiry without a fence between uploads and the reference)",
+    () =>
+      Effect.gen(function* () {
+        const bucket = memoryBucket()
+        const publisherFaults = Faults.plan()
+        const collectorFaults = Faults.plan()
+        const a = yield* storeOf(bucket, {
+          writer: "a",
+          shards: 1,
+          faults: publisherFaults,
+          retry: RETRY,
+        })
+        const b = yield* storeOf(bucket, { writer: "b", faults: collectorFaults, retry: RETRY })
+        const hash = yield* a.putPage(text("leaf:reused"))
+        const lease = yield* a.open(0)
+        yield* TestClock.adjust("25 hours")
+        const upload = yield* publisherFaults.inject(Fault.Hold(), {
+          match: ({ kind }) => kind === "put",
+        })
+        const publishing = yield* Effect.forkChild(
+          a.gc.protect(a.putPage(text("leaf:reused")), (page) =>
+            a.checkpoint(lease, { offset: lease.head, statePages: [page], indexPages: [] }),
+          ),
+        )
+        yield* upload.fired
+        yield* TestClock.adjust(PUBLICATION_EXPIRY + 1000)
+        const deleting = yield* collectorFaults.inject(Fault.Hold(), {
+          match: ({ kind }) => kind === "delete",
+        })
+        const collecting = yield* Effect.forkChild(b.gc.collect({ references, entryReferences }))
+        expect(
+          yield* Effect.raceFirst(
+            Effect.as(deleting.fired, "deleting"),
+            Effect.as(Fiber.await(collecting), "returned"),
+          ),
+        ).toBe("deleting")
+        yield* upload.release
+        expect(
+          Option.getOrUndefined(Exit.findErrorOption(yield* Fiber.await(publishing))),
+        ).toBeInstanceOf(PagePublicationBusy)
+        yield* deleting.release
+        expect(yield* Fiber.join(collecting)).toMatchObject({
+          outcome: "collected",
+          deletedPages: 1,
+        })
+        expect(yield* bucket.list("s/00/cp/")).toEqual([])
+        expect(yield* bucket.head(pageKey(hash))).toEqual(Option.none())
+      }),
+  )
+
+  it.effect(
+    "keeps a reused page whose refresh was throttled when a collector takes over the expired epoch after the publisher's confirmation (rejects counting a throttled PUT of an old object as a refresh)",
+    () =>
+      Effect.gen(function* () {
+        const bucket = memoryBucket()
+        const publisherFaults = Faults.plan()
+        const a = yield* storeOf(bucket, {
+          writer: "a",
+          shards: 1,
+          faults: publisherFaults,
+          retry: RETRY,
+        })
+        const b = yield* storeOf(bucket, { writer: "b", retry: RETRY })
+        const hash = yield* a.putPage(text("leaf:reused"))
+        const lease = yield* a.open(0)
+        yield* TestClock.adjust("25 hours")
+        yield* publisherFaults.inject(Fault.Unavailable({ status: 429 }), {
+          match: ({ kind, key }) => kind === "put" && key === pageKey(hash),
+        })
+        const referencing = yield* publisherFaults.inject(Fault.Hold(), {
+          match: ({ kind, key }) => kind === "create" && key === checkpointKey(0, lease.head),
+        })
+        const publishing = yield* Effect.forkChild(
+          a.gc.protect(a.putPage(text("leaf:reused")), (page) =>
+            a.checkpoint(lease, { offset: lease.head, statePages: [page], indexPages: [] }),
+          ),
+        )
+        yield* referencing.fired
+        yield* TestClock.adjust(PUBLICATION_EXPIRY + 1000)
+        expect(yield* b.gc.collect({ references, entryReferences })).toMatchObject({
+          outcome: "collected",
+          deletedPages: 0,
+        })
+        yield* referencing.release
+        yield* Fiber.join(publishing)
+        expect(yield* a.getPage(hash)).toEqual(text("leaf:reused"))
+        expect(yield* bucket.modified(pageKey(hash))).toEqual(Option.some(25 * 60 * 60 * 1000))
+      }),
+  )
+
+  it.effect(
+    "answers a publisher that lost the race to take over an expired epoch as busy (rejects failing a checkpoint with a collector error a caller does not retry)",
+    () =>
+      Effect.gen(function* () {
+        const bucket = memoryBucket()
+        const strandedFaults = Faults.plan()
+        const losingFaults = Faults.plan()
+        const stranded = yield* storeOf(bucket, {
+          writer: "a",
+          shards: 1,
+          faults: strandedFaults,
+          retry: RETRY,
+        })
+        const losing = yield* storeOf(bucket, { writer: "b", faults: losingFaults, retry: RETRY })
+        const winning = yield* storeOf(bucket, { writer: "c", retry: RETRY })
+        const upload = yield* strandedFaults.inject(Fault.Hold(), {
+          match: ({ kind }) => kind === "put",
+        })
+        const publishing = yield* Effect.forkChild(
+          stranded.gc.protect(stranded.putPage(text("leaf:stranded")), () => Effect.void),
+        )
+        yield* upload.fired
+        yield* Fiber.interrupt(publishing)
+        yield* TestClock.adjust(PUBLICATION_EXPIRY)
+        const claiming = yield* losingFaults.inject(Fault.Hold(), {
+          match: ({ kind, key }) => kind === "create" && key === gcKey(2),
+        })
+        const losingPublication = yield* Effect.forkChild(
+          losing.gc.protect(losing.putPage(text("leaf:losing")), () => Effect.void),
+        )
+        yield* claiming.fired
+        yield* winning.gc.protect(winning.putPage(text("leaf:winning")), () => Effect.void)
+        yield* claiming.release
+        expect(
+          Option.getOrUndefined(Exit.findErrorOption(yield* Fiber.await(losingPublication))),
+        ).toBeInstanceOf(PagePublicationBusy)
+        expect(yield* bucket.list("gc/")).toEqual([gcKey(1), gcKey(2), gcKey(3)])
+        yield* upload.release
+      }),
+  )
+
+  it.effect(
+    "answers members waiting on a claim whose publisher was interrupted as busy and frees the process's publication (rejects a joiner hanging or a membership leaked by an interrupted claim)",
+    () =>
+      Effect.gen(function* () {
+        const bucket = memoryBucket()
+        const faults = Faults.plan()
+        const store = yield* storeOf(bucket, { writer: "a", shards: 1, faults, retry: RETRY })
+        const claiming = yield* faults.inject(Fault.Hold(), {
+          match: ({ kind, key }) => kind === "create" && key === gcKey(1),
+        })
+        const first = yield* Effect.forkChild(
+          store.gc.protect(store.putPage(text("leaf:first")), () => Effect.void),
+        )
+        yield* claiming.fired
+        const joined = yield* Effect.forkChild(
+          store.gc.protect(store.putPage(text("leaf:joined")), () => Effect.void),
+        )
+        yield* Effect.yieldNow
+        yield* Fiber.interrupt(first)
+        expect(
+          Option.getOrUndefined(Exit.findErrorOption(yield* Fiber.await(joined))),
+        ).toBeInstanceOf(PagePublicationBusy)
+        yield* claiming.release
+        yield* store.gc.protect(store.putPage(text("leaf:after")), () => Effect.void)
+        expect(yield* bucket.list("gc/")).toEqual([gcKey(1), gcKey(2)])
+        expect(yield* store.gc.collect({ references, entryReferences })).toMatchObject({
+          outcome: "collected",
         })
       }),
   )

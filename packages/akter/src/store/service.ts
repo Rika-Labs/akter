@@ -142,13 +142,19 @@ export class Store extends Context.Service<
       readonly collect: (
         options: GcOptions,
       ) => Effect.Effect<GcReport, GcStaleEpoch | StorageUnavailable | CorruptSegment>
-      /** Holds the store-wide barrier from page uploads through the durable checkpoint or fork reference; unknown publication failures stay blocked. */
-      readonly protect: <A, E, R>(
-        effect: Effect.Effect<A, E, R>,
+      /**
+       * Holds the store-wide barrier from `upload` through the durable reference `reference`
+       * writes, confirming the barrier is still held between them. Concurrent publishers of one
+       * process share the barrier; one that stopped without a known outcome leaves it blocked
+       * until it expires.
+       */
+      readonly protect: <A, B, E1, E2, R1, R2>(
+        upload: Effect.Effect<A, E1, R1>,
+        reference: (uploaded: A) => Effect.Effect<B, E2, R2>,
       ) => Effect.Effect<
-        A,
-        E | PagePublicationBusy | GcStaleEpoch | StorageUnavailable | CorruptSegment,
-        R
+        B,
+        E1 | E2 | PagePublicationBusy | GcStaleEpoch | StorageUnavailable | CorruptSegment,
+        R1 | R2
       >
     }
     readonly history: {
@@ -265,7 +271,7 @@ export const storeOf: {
         trimAfter,
         retention: retention.retention,
       }),
-      ...bucketPages({ bucket, retry }),
+      ...bucketPages({ bucket, retry, refreshWithin: trimAfter }),
       audit: audit.audit,
       audits: Effect.gen(function* () {
         const current = yield* retention.retentionAudit

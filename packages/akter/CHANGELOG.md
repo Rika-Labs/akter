@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased (0.2.1)
+
+- A checkpoint or fork that stopped mid-publication (drain deadline, SIGKILL, crash or a failed request) no longer blocks every later checkpoint, drain and garbage collection in its store for good. A publisher now confirms the store-wide publication epoch between its page uploads and its durable reference, so an abandoned `publishing` epoch expires 60 seconds after its claim; epochs stranded by 0.2.0 expire the same way. `deleting` epochs still never expire.
+- Concurrent checkpoints of one runner share one publication epoch, so a drain claims the barrier once instead of once per shard. On Tigris a 16-shard drain was serialized at about 1.4 s per shard and timed out at the 15-second default.
+- A page write answered `412` or `429` counts as written only when the stored copy's last-modified time is recent; otherwise it is retried, so a throttled refresh cannot leave a referenced page old enough for garbage collection.
+- A publication that fails before its reference, or loses the race to take over an expired epoch, no longer blocks the barrier and is retried as busy.
+- `Store` `gc.protect` takes `(upload, reference)`.
+
 ## 0.2.0 (2026-10-14)
 
 Akter 0.2 is a new engine: actors run on one S3-compatible store per environment, with no database. The framework and CLI release together at `0.2.0` on the `latest` npm dist-tag. 0.2 starts with fresh stores; there is no migration from 0.1 data. Read the [0.2 upgrade notes](https://docs.akter.dev/operations/alpha-upgrades) before moving an application.

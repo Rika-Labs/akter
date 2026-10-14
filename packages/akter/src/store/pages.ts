@@ -1,4 +1,4 @@
-import { Effect, Option, Request, RequestResolver, Schema } from "effect"
+import { Clock, Effect, Option, Request, RequestResolver, Schema } from "effect"
 import { type RetriedBucket, retryUnavailable } from "./bucket.ts"
 import { decodePage, encodePage, PageHash, sha256 } from "./codec.ts"
 import { PageCorrupt, type StorageUnavailable } from "./errors.ts"
@@ -24,11 +24,18 @@ const RESOLVED_BY_HEAD = new Set([412, 429])
  * Content-addressed pages. A page is written with a plain PUT, so writing the
  * same bytes again refreshes the object instead of failing, and the hash of the
  * stored bytes is its key. A refused or throttled write is a success when the
- * key already holds an object of the page's length: the key is the hash of
- * those bytes. A page that is absent or does not match its key is the
- * `PageCorrupt` defect.
+ * key already holds an object of the page's length, since the key is the hash of
+ * those bytes, and that object was written no more than `refreshWithin` before
+ * this write began; otherwise the write is retried. The collector keeps a page
+ * only while it is younger than its grace period, so a write that left an old
+ * timestamp would let a page a durable reference is about to name be deleted. A
+ * page that is absent or does not match its key is the `PageCorrupt` defect.
  */
-export const bucketPages = ({ bucket, retry }: RetriedBucket) => {
+export const bucketPages = ({
+  bucket,
+  retry,
+  refreshWithin,
+}: RetriedBucket & { readonly refreshWithin: number }) => {
   const retrying = retryUnavailable(retry)
   const load = (hash: string) =>
     Effect.gen(function* () {
@@ -54,14 +61,21 @@ export const bucketPages = ({ bucket, retry }: RetriedBucket) => {
       const stored = encodePage(payload)
       const hash = sha256(stored)
       const key = pageKey(hash)
+      const started = yield* Clock.currentTimeMillis
       yield* retrying(
         bucket.put(key, stored).pipe(
           Effect.catchIf(
             (error) => RESOLVED_BY_HEAD.has(error.status ?? 0),
             (error) =>
-              Effect.flatMap(bucket.head(key), (size) =>
-                Option.contains(size, stored.length) ? Effect.void : Effect.fail(error),
-              ),
+              Effect.gen(function* () {
+                const size = yield* bucket.head(key)
+                const modified = yield* bucket.modified(key)
+                if (
+                  !Option.contains(size, stored.length) ||
+                  !Option.exists(modified, (time) => time >= started - refreshWithin)
+                )
+                  return yield* error
+              }),
           ),
         ),
       )

@@ -13,6 +13,7 @@ Use an ADR when a choice changes an interface, invariant, data model, deployment
 
 Decisions do not override newer accepted requirements. When a decision is superseded, preserve it and link the replacement.
 
+- [ADR 0139: Fenced, expiring and shared publication epochs](0139-expiring-fenced-shared-publication.md) (accepted 2026-10-14) amends ADR 0127's publication exclusion: a publisher confirms its epoch between its uploads and its durable reference, a `publishing` epoch expires 60 seconds after its claim instead of stranding the store, and concurrent publishers of one runner share one epoch so a drain claims the barrier once.
 - [ADR 0138: Framework release posture](0138-framework-release-posture.md) (accepted 2026-10-13) requires a complete framework before the 0.2 product release and separates product copy from technical package channels and evidence status.
 
 **Superseded backend decisions:** ADRs 0057, 0070, 0091–0097 and 0110 are superseded by [ADR 0112](0112-postgres-and-pglite-only.md). Their descriptions below record historical decisions, not current backend support or configuration. Provider-specific clauses in the earlier generic ADRs, including 0066 and 0067, are also superseded; their engine-independent ownership, scheduling and coordination mechanisms remain.
