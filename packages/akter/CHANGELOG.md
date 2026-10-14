@@ -1,11 +1,14 @@
 # Changelog
 
-## Unreleased (0.2.1)
+## 0.2.1 (2026-10-14)
+
+The framework and CLI release together at `0.2.1` on the `latest` npm dist-tag. Stores written by 0.2.0 open unchanged, and a publication epoch 0.2.0 left stranded expires on its own once a 0.2.1 runner or collector reaches it. Do not run `Store.collect` against a store while a 0.2.0 runner of it is still live.
 
 - A checkpoint or fork that stopped mid-publication (drain deadline, SIGKILL, crash or a failed request) no longer blocks every later checkpoint, drain and garbage collection in its store for good. A publisher now confirms the store-wide publication epoch between its page uploads and its durable reference, so an abandoned `publishing` epoch expires 60 seconds after its claim; epochs stranded by 0.2.0 expire the same way. `deleting` epochs still never expire.
 - Concurrent checkpoints of one runner share one publication epoch, so a drain claims the barrier once instead of once per shard. On Tigris a 16-shard drain was serialized at about 1.4 s per shard and timed out at the 15-second default.
 - A page write answered `412` or `429` counts as written only when the stored copy's last-modified time is recent; otherwise it is retried, so a throttled refresh cannot leave a referenced page old enough for garbage collection.
 - A publication that fails before its reference no longer blocks the barrier, and one that loses the race to take over an expired epoch is retried as busy. A publication interrupted as the last member out (for example by a drain deadline) still blocks the store for up to 60 seconds.
+- `Store.collect`'s grace period must exceed the longest publication plus the store's trim delay plus host clock skew. The default 24 hours does; a grace shorter than 60 seconds is safe only while no checkpoint, fork or replay can last past 60 seconds.
 - `Store` `gc.protect` takes `(upload, reference)`.
 
 ## 0.2.0 (2026-10-14)

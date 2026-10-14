@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1 (2026-10-14)
+
+The CLI and framework release together at `0.2.1` on the `latest` npm dist-tag; see the [framework changelog](https://github.com/Rika-Labs/akter/blob/main/packages/akter/CHANGELOG.md). Pin both packages to the same version.
+
+- No CLI changes. This release ships alongside the framework's 0.2.1 storage fixes: drains no longer serialize their checkpoints, and a stranded publication epoch expires after 60 seconds.
+
 ## 0.2.0 (2026-10-14)
 
 The CLI and framework release together at `0.2.0` on the `latest` npm dist-tag; see the [framework changelog](https://github.com/Rika-Labs/akter/blob/main/packages/akter/CHANGELOG.md). Pin both packages to the same version.
