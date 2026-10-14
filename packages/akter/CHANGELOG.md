@@ -13,7 +13,7 @@ Akter 0.2 is a new engine: actors run on one S3-compatible store per environment
 
 ### The 0.2 engine
 
-- Every shard writes a create-once segment chain in the bucket; epochs fence writers, and no reply, event, view update, send, timer or job start is published before its segment is durable. A declared failure, defect, page miss or lost segment discards the action and everything it staged.
+- Every shard writes a create-once segment chain in the bucket; epochs fence writers, and no reply, event, view update, send, timer or job start is published before its segment is durable. A declared failure, defect or lost segment discards the action and everything it staged; an action that misses a list page is rerun after the page loads.
 - `Store.s3`, `Store.fileSystem` (local development) and `Store.memory` (tests) implement one store protocol. Checkpoints plus log tail drive recovery; build-matched replay, retained history with checkpoint anchors, fenced GC, actor forks and store-wide retention (`Store.setRetention`) are built in.
 - Actors have schema state and page-backed `Actor.list` collections. Durable scalar indexes back `X.find`. Jobs journal named steps, retries, deadlines and durable sleep; timers and cron run on a shard timer wheel.
 - Several runners share a store with mTLS peering, shard ownership moves on the bucket log, and `Akter.serve` adds readiness, drain, Prometheus and OTLP telemetry. Separately granted operator requests on `POST /operator` inspect, read logs and snapshots, replay and set retention, each with a create-once audit record.

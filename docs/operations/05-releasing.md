@@ -12,7 +12,7 @@ description: "Publish framework and CLI releases and main canaries through npm t
 
 ## Status
 
-`main` carries 0.2, and `0.2.0` is the first stable release published from it. [ADR 0138](https://github.com/Rika-Labs/akter/blob/a5b2c7dc171e9e1001b9e6f603a3051716f54461/docs/decisions/0138-framework-release-posture.md) records this release posture without changing package channels or evidence gates.
+`main` carries 0.2, and `0.2.0` is the first stable release published from it. [ADR 0138](https://github.com/Rika-Labs/akter/blob/main/docs/decisions/0138-framework-release-posture.md) records this release posture without changing package channels or evidence gates.
 
 A stable version such as `0.2.0` publishes directly to `latest` from a `v<version>` tag on `main`; verified `main` pushes publish `next` canaries. The `alpha` dist-tag keeps the last 0.1 alpha and the `rewrite` dist-tag keeps the last pre-swap branch canary; neither moves with a stable release. Registry tags, trusted-publisher permissions, and environment approvals must be checked at release time. Editing a workflow does not publish a package or change registry tags.
 
