@@ -1,4 +1,4 @@
-import { Clock, Context, Duration, Effect, Layer, Match, Schema, Stream } from "effect"
+import { Clock, Context, Deferred, Duration, Effect, Layer, Match, Schema, Stream } from "effect"
 import { Actor, JobFailure, user } from "../../../../packages/akter/src/index.ts"
 import type { DefOf, JobContext } from "../../../../packages/akter/src/index.ts"
 import { DurableClock } from "../../../../packages/akter/src/server.ts"
@@ -156,12 +156,25 @@ export const WorkerLive = Worker.toLayer({
   timed: work,
 })
 
-/** Instrumentation reports calls, admitted order and live external effects independently of state. */
-export const jobIO = (holdPhase?: string) => {
+/**
+ * Instrumentation reports calls, admitted order and live external effects independently of state.
+ * With `gate`, the first `gate.count` calls of `gate.phase` stay in flight until `gate.open`
+ * completes, so concurrency is observed as calls held together rather than as short sleeps that
+ * happen to overlap, which bucket latency spreads apart.
+ */
+export const jobIO = (
+  holdPhase?: string,
+  gate?: {
+    readonly phase: string
+    readonly count: number
+    readonly open: Deferred.Deferred<void>
+  },
+) => {
   const calls: Array<{ phase: string; id: string; attempt: number; at: number; key: string }> = []
   let active = 0
   let peak = 0
   let held = false
+  let gated = 0
   const layer = Layer.succeed(JobIO, {
     perform: (phase, task, attempt, key) =>
       Effect.gen(function* () {
@@ -172,6 +185,10 @@ export const jobIO = (holdPhase?: string) => {
           if (!held && phase === holdPhase) {
             held = true
             return yield* Effect.never
+          }
+          if (gate !== undefined && phase === gate.phase && gated < gate.count) {
+            gated++
+            yield* Deferred.await(gate.open)
           }
           yield* Effect.sleep("20 millis")
           if (phase !== "finish") return
@@ -187,7 +204,7 @@ export const jobIO = (holdPhase?: string) => {
         )
       }),
   })
-  return { layer, calls, peak: () => peak }
+  return { layer, calls, peak: () => peak, active: () => active }
 }
 
 /** Opens one independent process-equivalent runner over the real bucket location. */

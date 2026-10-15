@@ -187,14 +187,21 @@ export const jobConformance = <OpenError, ClientError>(
       "F19: one declaration admits in start order and never exceeds its shard limit (rejects unbounded or per-instance concurrency)",
       () =>
         Effect.gen(function* () {
-          const io = jobIO()
+          const open = yield* Deferred.make<void>()
+          const io = jobIO(undefined, { phase: "prepare", count: 2, open })
           const a = yield* started(yield* backend.location, "a", io)
-          for (let n = 0; n < 12; n++)
-            yield* submit(
+          const submitting = (n: number) =>
+            submit(
               a.engine,
               { id: `k${n}`, amount: n + 1, mode: "normal" },
               n % 2 === 0 ? "left" : "right",
             )
+          for (let n = 0; n < 4; n++) yield* submitting(n)
+          yield* jobUntil("two jobs in flight together", () => io.active() === 2)
+          yield* Effect.sleep("500 millis")
+          expect(io.calls.map((call) => call.id)).toEqual(["k0", "k1"])
+          yield* Deferred.succeed(open, undefined)
+          for (let n = 4; n < 12; n++) yield* submitting(n)
           yield* jobUntil("all accepted jobs", () => a.engine.durableImage(0)?.jobs.size === 0)
           const left = yield* jobState(a.engine, "left")
           const right = yield* jobState(a.engine, "right")
