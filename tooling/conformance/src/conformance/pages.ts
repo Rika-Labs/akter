@@ -1,5 +1,17 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Cause, Clock, Effect, Exit, Fiber, Option, Result, Schema, Scope, Stream } from "effect"
+import {
+  Cause,
+  Clock,
+  Duration,
+  Effect,
+  Exit,
+  Fiber,
+  Option,
+  Result,
+  Schema,
+  Scope,
+  Stream,
+} from "effect"
 import { TestClock } from "effect/testing"
 import { Durable } from "../../../../packages/akter/src/execution/durable.ts"
 import { PageDocuments } from "../../../../packages/akter/src/handlers/page-tree.ts"
@@ -11,6 +23,7 @@ import { Fault, Faults } from "../../../../packages/akter/src/store/faults.ts"
 import { ForkRefused } from "../../../../packages/akter/src/snapshots/forks.ts"
 import { PagePublicationBusy } from "../../../../packages/akter/src/store/gc.ts"
 import { PageCorrupt } from "../../../../packages/akter/src/store/errors.ts"
+import type { Bucket } from "../../../../packages/akter/src/store/bucket.ts"
 import type { EngineBackend } from "./engine.ts"
 import { Entry, EntryCodec } from "../../../../packages/akter/src/execution/entries.ts"
 import { jobIO, jobRunner, jobState, jobUntil, submit, Worker } from "./job-runner.ts"
@@ -21,6 +34,25 @@ import { Operators } from "../../../../packages/akter/src/runtime/operators/serv
 
 export { Library, LibraryLive, pageRunner } from "./page-runner.ts"
 import { Library, pageRunner } from "./page-runner.ts"
+/**
+ * Bucket requests the seed 900 scenario issues one after another between admitting a version and
+ * forking it (about 110 measured, with margin). Its retention must outlast them at the bucket's
+ * latency, or the version it forks as recent has really left retention by the time it is forked.
+ */
+const SCENARIO_REQUESTS = 150
+
+/** The median round trip of a listing on `bucket`, in milliseconds. */
+const listingLatency = (bucket: Bucket) =>
+  Effect.gen(function* () {
+    const samples: Array<number> = []
+    for (let sample = 0; sample < 5; sample++) {
+      const start = yield* Clock.currentTimeMillis
+      yield* bucket.list("latency-probe/")
+      samples.push((yield* Clock.currentTimeMillis) - start)
+    }
+    return samples.sort((a, b) => a - b)[2]!
+  })
+
 /** The same page-miss, fork and corruption scenarios run on filesystem and a real S3 bucket. */
 export const pageConformance = <E, E2>(backend: EngineBackend<E, E2>) => {
   describe(`Pages, history and forks on ${backend.name}`, () => {
@@ -29,8 +61,10 @@ export const pageConformance = <E, E2>(backend: EngineBackend<E, E2>) => {
       () =>
         Effect.gen(function* () {
           const bucket = yield* (yield* backend.location).bucket
+          const retention = 3_000 + SCENARIO_REQUESTS * (yield* listingLatency(bucket))
+          const expiry = Duration.millis(retention + 1_000)
           const options = {
-            retention: "3 seconds",
+            retention: Duration.millis(retention),
             validFor: "100 millis",
             trimAfter: "300 millis",
             checkpointEvery: 0,
@@ -45,7 +79,7 @@ export const pageConformance = <E, E2>(backend: EngineBackend<E, E2>) => {
           )
           yield* boundary.call("other", "fill", 7)
           yield* Scope.close(scope, Exit.void)
-          yield* Effect.sleep("4 seconds")
+          yield* Effect.sleep(expiry)
           const recent = yield* pageRunner(bucket, { ...options, writer: "retention-recent" })
           yield* recent.call("source", "change", 17)
           yield* recent.call("source", "change", 29)
@@ -106,7 +140,7 @@ export const pageConformance = <E, E2>(backend: EngineBackend<E, E2>) => {
               expired.failure.reason,
           ).toBe("retention")
           expect((yield* target.engine.drain("10 seconds")).outcome).toBe("clean")
-          yield* Effect.sleep("4 seconds")
+          yield* Effect.sleep(expiry)
           expect(
             (yield* collect(gc).pipe(Effect.provideService(Store, target.store))).outcome,
           ).toBe("collected")

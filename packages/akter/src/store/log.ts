@@ -69,6 +69,12 @@ export interface StoredSegment extends Segment {
 /** A retained checkpoint and its provider's last-modified time in epoch milliseconds. */
 export interface HistoryCheckpoint extends Manifest {
   readonly modified: number
+  /**
+   * The checkpoint's offset precedes the oldest stored segment written within retention, or no
+   * stored segment was written within it. Lost in-window segments move that boundary later, so
+   * this does not prove the checkpoint's positions are outside retention.
+   */
+  readonly expired: boolean
 }
 
 interface Known {
@@ -388,7 +394,11 @@ export const bucketLog = (settings: Settings) => {
             key,
             reason: "checkpoint offset differs from its key",
           })
-        retained.push({ ...manifest, modified })
+        retained.push({
+          ...manifest,
+          modified,
+          expired: window.first === undefined || offset < window.first,
+        })
       }
       return retained.reverse()
     }).pipe(Effect.catchTag("StorageUnavailable", (error) => Effect.fail(unavailable(error))))
