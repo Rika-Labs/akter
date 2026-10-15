@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.2 (2026-10-15)
+
+The framework and CLI release together at `0.2.2` on the `latest` npm dist-tag. Stores written by 0.2.0 and 0.2.1 open unchanged.
+
+- A fork of a position older than every retained checkpoint is refused with `ForkRefused("retention")` once retention has trimmed its log prefix. It was reported as `CorruptSegment`, as if the store had lost data. A segment missing inside retention is still `CorruptSegment`.
+- `Store.history.checkpoints` marks each checkpoint `expired` when every log position through it is outside retention.
+
 ## 0.2.1 (2026-10-14)
 
 The framework and CLI release together at `0.2.1` on the `latest` npm dist-tag. Stores written by 0.2.0 open unchanged, and a publication epoch 0.2.0 left stranded expires on its own once a 0.2.1 runner or collector reaches it. Do not run `Store.collect` against a store while a 0.2.0 runner of it is still live.
