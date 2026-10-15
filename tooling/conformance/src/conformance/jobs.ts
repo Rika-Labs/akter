@@ -6,7 +6,7 @@ import { WorkflowRecord } from "../../../../packages/akter/src/execution/workflo
 import { Fault, Faults } from "../../../../packages/akter/src/store/faults.ts"
 import type { Injection } from "../../../../packages/akter/src/store/faults.ts"
 import type { EngineBackend, EngineLocation } from "./engine.ts"
-import { jobIO, jobPoint, jobRunner, jobState, jobUntil, submit } from "./job-runner.ts"
+import { gatedJobIO, jobIO, jobPoint, jobRunner, jobState, jobUntil, submit } from "./job-runner.ts"
 
 /** Closing this runner's scope discards its memory while the bucket keeps its durable segments. */
 const started = <E>(
@@ -188,7 +188,7 @@ export const jobConformance = <OpenError, ClientError>(
       () =>
         Effect.gen(function* () {
           const open = yield* Deferred.make<void>()
-          const io = jobIO(undefined, { phase: "prepare", count: 2, open })
+          const io = gatedJobIO({ phase: "prepare", count: 2, open })
           const a = yield* started(yield* backend.location, "a", io)
           const submitting = (n: number) =>
             submit(

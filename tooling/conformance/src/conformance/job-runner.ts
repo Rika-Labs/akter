@@ -156,20 +156,19 @@ export const WorkerLive = Worker.toLayer({
   timed: work,
 })
 
+interface Gate {
+  readonly phase: string
+  readonly count: number
+  readonly open: Deferred.Deferred<void>
+}
+
 /**
  * Instrumentation reports calls, admitted order and live external effects independently of state.
- * With `gate`, the first `gate.count` calls of `gate.phase` stay in flight until `gate.open`
+ * With a gate, the first `gate.count` calls of `gate.phase` stay in flight until `gate.open`
  * completes, so concurrency is observed as calls held together rather than as short sleeps that
  * happen to overlap, which bucket latency spreads apart.
  */
-export const jobIO = (
-  holdPhase?: string,
-  gate?: {
-    readonly phase: string
-    readonly count: number
-    readonly open: Deferred.Deferred<void>
-  },
-) => {
+const instrumented = (holdPhase: string | undefined, gate: Gate | undefined) => {
   const calls: Array<{ phase: string; id: string; attempt: number; at: number; key: string }> = []
   let active = 0
   let peak = 0
@@ -206,6 +205,12 @@ export const jobIO = (
   })
   return { layer, calls, peak: () => peak, active: () => active }
 }
+
+/** Job instrumentation; `holdPhase` keeps the first call of that phase in flight forever. */
+export const jobIO = (holdPhase?: string) => instrumented(holdPhase, undefined)
+
+/** Job instrumentation whose first `gate.count` calls of `gate.phase` wait for `gate.open`. */
+export const gatedJobIO = (gate: Gate) => instrumented(undefined, gate)
 
 /** Opens one independent process-equivalent runner over the real bucket location. */
 export const jobRunner = Effect.fnUntraced(function* (
