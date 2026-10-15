@@ -77,27 +77,29 @@ const childScript = new URL("./engine-child.ts", import.meta.url)
 
 /**
  * Runs an owner process against the location until it has acknowledged `acks` calls, then kills
- * it with SIGKILL. Returns the ids it sent, in order, and the replies it acknowledged.
+ * it with SIGKILL. Returns the ids it sent, in order, and the replies it acknowledged. The child
+ * keeps sending until the signal lands, and prints each id before sending it, so its output is
+ * read to the end after the kill: an id it sent after the parent decided to kill it may be durable.
  */
 const killedOwner = (env: Readonly<Record<string, string>>, acks: number) =>
   Effect.gen(function* () {
     const child = yield* spawnFixture(childScript, env)
     const sent: Array<string> = []
     const acked = new Map<number, number>()
+    let signal: string | null | undefined
     yield* child.stdout.pipe(
       Stream.decodeText(),
       Stream.splitLines,
-      Stream.takeUntil(() => acked.size >= acks),
       Stream.runForEach((line) =>
-        Effect.sync(() => {
+        Effect.gen(function* () {
           const [kind, call, rest] = line.split(" ", 3)
           if (kind === "sent" && rest !== undefined) sent[Number(call)] = rest
           if (kind === "ack" && rest !== undefined) acked.set(Number(call), Number(rest))
+          if (signal === undefined && acked.size >= acks) signal = (yield* child.kill).signal
         }),
       ),
     )
-    const exit = yield* child.kill
-    expect(exit.signal).toBe("SIGKILL")
+    expect(signal).toBe("SIGKILL")
     expect(acked.size).toBeGreaterThanOrEqual(acks)
     return { sent, acked }
   })
