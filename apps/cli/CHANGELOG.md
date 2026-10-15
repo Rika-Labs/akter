@@ -4,7 +4,7 @@
 
 The CLI and framework release together at `0.2.2` on the `latest` npm dist-tag; see the [framework changelog](https://github.com/Rika-Labs/akter/blob/main/packages/akter/CHANGELOG.md). Pin both packages to the same version.
 
-- No CLI changes. `akter fork` of a position older than retained history now reports a retention refusal instead of `CorruptSegment`, through the framework's 0.2.2 fix.
+- No CLI changes. `akter fork` of a position older than retained history now reports a retention refusal instead of `CorruptSegment`, through the framework's 0.2.2 fix. The framework's exported `HistoryCheckpoint` type gains a new public `expired` field.
 
 ## 0.2.1 (2026-10-14)
 

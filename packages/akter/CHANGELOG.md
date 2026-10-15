@@ -5,7 +5,8 @@
 The framework and CLI release together at `0.2.2` on the `latest` npm dist-tag. Stores written by 0.2.0 and 0.2.1 open unchanged.
 
 - A fork of a position older than every retained checkpoint is refused with `ForkRefused("retention")` once retention has trimmed its log prefix. It was reported as `CorruptSegment`, as if the store had lost data. A segment missing inside retention is still `CorruptSegment`.
-- `Store.history.checkpoints` marks each checkpoint `expired` when every log position through it is outside retention.
+- The retention refusal is decided from the oldest retained checkpoint's last admitted entry, so losing in-window segments through that checkpoint is still `CorruptSegment`.
+- New public field: `HistoryCheckpoint` (exported from `@rikalabs/akter/server`) gains a required `expired` boolean. `Store.history.checkpoints` sets it when the checkpoint's offset precedes the oldest stored segment written within retention. It is informational; forks do not use it.
 
 ## 0.2.1 (2026-10-14)
 
