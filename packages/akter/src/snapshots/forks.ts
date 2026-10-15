@@ -41,6 +41,12 @@ export interface ForkOptions {
 const same = (left: Schema.Json, right: Schema.Json): boolean =>
   JSON.stringify(left) === JSON.stringify(right)
 
+/**
+ * A position no retained checkpoint can serve precedes the oldest one. When every position through
+ * that checkpoint is outside retention, so is the requested one, and its log prefix may already be
+ * trimmed, so the fork is refused for retention without reading the log. Otherwise the log is read
+ * from its start, and a segment missing there is corruption.
+ */
 const forkOnce = (target: Engine, options: ForkOptions, source: Store["Service"] = target.store) =>
   Effect.gen(function* () {
     const { actor, from, at, grant } = options
@@ -86,6 +92,8 @@ const forkOnce = (target: Engine, options: ForkOptions, source: Store["Service"]
             : snapshot === undefined || (snapshot.version ?? 0) <= at.version
       if (suitable && (base === undefined || decoded.offset > base.offset)) base = decoded
     }
+    if (base === undefined && available[0]?.expired === true)
+      return yield* ForkRefused.make({ reason: "retention" })
     const image =
       base === undefined ? Durable.empty(shard) : Checkpoints.restore(catalog, base, cache)
     const start = base?.offset ?? 0

@@ -405,14 +405,14 @@ export const storeConformance = <OpenError, ClientError>(
           const first = Option.getOrThrow(yield* raw.modified(checkpointKey(0, 2n)))
           const second = Option.getOrThrow(yield* raw.modified(checkpointKey(0, 3n)))
           expect(yield* a.store.history.checkpoints(0)).toEqual([
-            { offset: 2n, statePages: [], indexPages: [], modified: first },
-            { offset: 3n, statePages: [], indexPages: [], modified: second },
+            { offset: 2n, statePages: [], indexPages: [], modified: first, expired: false },
+            { offset: 3n, statePages: [], indexPages: [], modified: second, expired: false },
           ])
           yield* TestClock.setTime(first + a.store.meta.retentionMillis)
           expect((yield* a.store.history.checkpoints(0)).map((cp) => cp.offset)).toEqual([2n, 3n])
           yield* TestClock.setTime(Math.max(first, second) + a.store.meta.retentionMillis + 1)
           expect(yield* a.store.history.checkpoints(0)).toEqual([
-            { offset: 3n, statePages: [], indexPages: [], modified: second },
+            { offset: 3n, statePages: [], indexPages: [], modified: second, expired: true },
           ])
         }),
     )
