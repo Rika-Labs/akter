@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest"
 import { Clock, Effect, Option, Result, Schema, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { Library, LibraryLive } from "../../../../tooling/conformance/src/conformance/pages.ts"
+import { Durable } from "../execution/durable.ts"
 import { Entry, EntryCodec } from "../execution/entries.ts"
 import { CorruptSegment } from "../store/errors.ts"
 import { segmentKey } from "../store/keys.ts"
@@ -179,6 +180,60 @@ describe("fork history classification", () => {
         )
         expect(Result.isFailure(forked) && Schema.is(CorruptSegment)(forked.failure)).toBe(true)
         expect(refusal(forked)).toBeUndefined()
+      }).pipe(Effect.scoped),
+      LibraryLive,
+    ))
+
+  it("forks a position written today by a fork into a shard whose last action is older than retention (rejects judging expiry by the checkpoint's lastAt alone)", () =>
+    Simulation.run(
+      { actors: [Library], seed: 964, shards: 2, checkpointEvery: 0, runners: [{}, {}] },
+      Effect.gen(function* () {
+        const simulator = yield* SimulationService
+        const store = simulator.engine.store
+        const shardOf = (key: string) => Durable.shardOf(Durable.addressOf(Library.name, key), 2)
+        const keys = Array.from({ length: 16 }, (_, index) => `k${index}`)
+        const old = keys.find((key) => shardOf(key) === 1)!
+        const source = keys.find((key) => shardOf(key) === 0)!
+        const target = keys.filter((key) => shardOf(key) === 1 && key !== old)[0]!
+        yield* (yield* Library.client(old)).fill(7)
+        yield* Simulation.advance("8 days")
+        yield* Simulation.assign(0)
+        yield* (yield* Library.client(source)).fill(90)
+        yield* Simulation.assign(1)
+        yield* simulator.waiting(
+          Forks.fork(simulator.engine, {
+            actor: Library,
+            from: source,
+            to: target,
+            at: { version: 1 },
+            grant,
+          }),
+        )
+        yield* Simulation.drain()
+        const segments = yield* Stream.runCollect(store.read(1, 0n))
+        const written = segments.flatMap((segment) =>
+          segment.entries.flatMap((bytes, index) => {
+            const entry = Result.getOrThrow(EntryCodec.decode(bytes))
+            return Entry.guards.Forked(entry) && entry.key === target
+              ? [{ offset: Number(segment.offset), index }]
+              : []
+          }),
+        )
+        expect(written).toHaveLength(1)
+        const history = yield* store.history.checkpoints(1)
+        expect(history.map((checkpoint) => Number(checkpoint.offset))).toEqual([written[0]!.offset])
+        yield* Simulation.assign(0)
+        const again = yield* simulator.waiting(
+          Forks.fork(simulator.engine, {
+            actor: Library,
+            from: target,
+            to: "again",
+            at: written[0]!,
+            grant,
+          }).pipe(Effect.result),
+        )
+        expect(Result.isSuccess(again)).toBe(true)
+        expect((yield* Simulation.state(Library, "again")).count).toBe(90)
       }).pipe(Effect.scoped),
       LibraryLive,
     ))

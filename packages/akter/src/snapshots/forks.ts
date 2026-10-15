@@ -42,13 +42,15 @@ const same = (left: Schema.Json, right: Schema.Json): boolean =>
   JSON.stringify(left) === JSON.stringify(right)
 
 /**
- * A position no retained checkpoint can serve precedes the oldest one. When that checkpoint's last
- * admission is older than the fork's retention cutoff, every position through it, the requested one
- * included, is outside retention and its log prefix may already be trimmed, so the fork is refused
- * for retention without reading the log. The checkpoint's own contents decide this, on the same
- * clock as the admission check, because which segments survive says nothing about retention once
- * in-window segments are lost. Otherwise the log is read from its start, and a segment missing
- * there is corruption.
+ * A position no retained checkpoint can serve precedes the oldest one. When the newest position
+ * that checkpoint covers is older than the fork's retention cutoff, every position through it, the
+ * requested one included, is outside retention and its log prefix may already be trimmed, so the
+ * fork is refused for retention without reading the log. That time is the later of the shard's last
+ * action and the latest position any actor holds, because a fork installed into a shard records a
+ * position without advancing the shard's last action. The checkpoint's own contents decide this, on
+ * the same clock as the admission check, because which segments survive says nothing about
+ * retention once in-window segments are lost. Otherwise the log is read from its start, and a
+ * segment missing there is corruption.
  */
 const forkOnce = (target: Engine, options: ForkOptions, source: Store["Service"] = target.store) =>
   Effect.gen(function* () {
@@ -85,7 +87,10 @@ const forkOnce = (target: Engine, options: ForkOptions, source: Store["Service"]
       const decoded = Result.getOrThrow(
         Checkpoints.decode(yield* PagedCheckpoints.read(retained.statePages[0]!, source)),
       )
-      oldestAt ??= decoded.lastAt
+      oldestAt ??= decoded.actors.reduce(
+        (latest, candidate) => Math.max(latest, candidate.position?.at ?? 0),
+        decoded.lastAt,
+      )
       const snapshot = decoded.actors.find(
         (candidate) => candidate.actor === actor.name && same(candidate.key, from),
       )
