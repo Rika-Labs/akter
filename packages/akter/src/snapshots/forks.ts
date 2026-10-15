@@ -42,10 +42,13 @@ const same = (left: Schema.Json, right: Schema.Json): boolean =>
   JSON.stringify(left) === JSON.stringify(right)
 
 /**
- * A position no retained checkpoint can serve precedes the oldest one. When every position through
- * that checkpoint is outside retention, so is the requested one, and its log prefix may already be
- * trimmed, so the fork is refused for retention without reading the log. Otherwise the log is read
- * from its start, and a segment missing there is corruption.
+ * A position no retained checkpoint can serve precedes the oldest one. When that checkpoint's last
+ * admission is older than the fork's retention cutoff, every position through it, the requested one
+ * included, is outside retention and its log prefix may already be trimmed, so the fork is refused
+ * for retention without reading the log. The checkpoint's own contents decide this, on the same
+ * clock as the admission check, because which segments survive says nothing about retention once
+ * in-window segments are lost. Otherwise the log is read from its start, and a segment missing
+ * there is corruption.
  */
 const forkOnce = (target: Engine, options: ForkOptions, source: Store["Service"] = target.store) =>
   Effect.gen(function* () {
@@ -77,10 +80,12 @@ const forkOnce = (target: Engine, options: ForkOptions, source: Store["Service"]
     const cache = new PageCache()
     const available = yield* source.history.checkpoints(shard)
     let base: ReturnType<typeof Checkpoints.capture> | undefined
+    let oldestAt: number | undefined
     for (const retained of available) {
       const decoded = Result.getOrThrow(
         Checkpoints.decode(yield* PagedCheckpoints.read(retained.statePages[0]!, source)),
       )
+      oldestAt ??= decoded.lastAt
       const snapshot = decoded.actors.find(
         (candidate) => candidate.actor === actor.name && same(candidate.key, from),
       )
@@ -92,7 +97,7 @@ const forkOnce = (target: Engine, options: ForkOptions, source: Store["Service"]
             : snapshot === undefined || (snapshot.version ?? 0) <= at.version
       if (suitable && (base === undefined || decoded.offset > base.offset)) base = decoded
     }
-    if (base === undefined && available[0]?.expired === true)
+    if (base === undefined && oldestAt !== undefined && oldestAt < cutoff)
       return yield* ForkRefused.make({ reason: "retention" })
     const image =
       base === undefined ? Durable.empty(shard) : Checkpoints.restore(catalog, base, cache)

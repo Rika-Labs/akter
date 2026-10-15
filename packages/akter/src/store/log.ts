@@ -70,8 +70,9 @@ export interface StoredSegment extends Segment {
 export interface HistoryCheckpoint extends Manifest {
   readonly modified: number
   /**
-   * Every log position through this checkpoint is outside retention: its offset precedes the
-   * oldest segment written within retention, or no retained segment was written within it.
+   * The checkpoint's offset precedes the oldest stored segment written within retention, or no
+   * stored segment was written within it. Lost in-window segments move that boundary later, so
+   * this does not prove the checkpoint's positions are outside retention.
    */
   readonly expired: boolean
 }

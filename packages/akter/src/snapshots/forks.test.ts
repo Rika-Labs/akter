@@ -145,4 +145,41 @@ describe("fork history classification", () => {
       }).pipe(Effect.scoped),
       LibraryLive,
     ))
+
+  it("reports CorruptSegment when every segment through the oldest checkpoint is lost inside retention without a trim (rejects judging expiry by which in-window segments survive)", () =>
+    Simulation.run(
+      { actors: [Library], seed: 963, shards: 1, checkpointEvery: 0, runners: [{}, {}] },
+      Effect.gen(function* () {
+        const client = yield* Library.client("source")
+        const simulator = yield* SimulationService
+        const store = simulator.engine.store
+        yield* client.fill(90)
+        yield* Simulation.drain()
+        yield* Simulation.assign(0)
+        yield* client.change(17)
+        yield* Simulation.drain()
+        yield* TestClock.adjust("5 minutes")
+        const segments = yield* Stream.runCollect(store.read(0, 0n))
+        const filled = segments.find((segment) => segment.entries.some(ownAction))!
+        const oldest = (yield* store.history.checkpoints(0))[0]!
+        expect(oldest.offset >= filled.offset).toBe(true)
+        const lost = segments.filter((segment) => segment.offset <= oldest.offset)
+        expect(lost.length).toBeGreaterThan(1)
+        yield* simulator.bucket.inspect.delete(lost.map((segment) => segmentKey(0, segment.offset)))
+        expect((yield* store.history.checkpoints(0))[0]!.expired).toBe(true)
+        yield* Simulation.assign(1)
+        const forked = yield* simulator.waiting(
+          Forks.fork(simulator.engine, {
+            actor: Library,
+            from: "source",
+            to: "lost",
+            at: { offset: Number(filled.offset), index: filled.entries.findIndex(ownAction) },
+            grant,
+          }).pipe(Effect.result),
+        )
+        expect(Result.isFailure(forked) && Schema.is(CorruptSegment)(forked.failure)).toBe(true)
+        expect(refusal(forked)).toBeUndefined()
+      }).pipe(Effect.scoped),
+      LibraryLive,
+    ))
 })
