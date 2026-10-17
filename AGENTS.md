@@ -46,6 +46,10 @@ This is a Bun/Turbo monorepo based on `rika-labs/monorepo-project-template`.
 
 Keep the description short, about 15 lines: what changed, why, the risk, and how it was verified. The template in `.github/pull_request_template.md` has these four headings. Link evidence instead of pasting it, and put long reasoning in the code, a contract or a decision record.
 
+## Releases
+
+Publishing to npm goes through GitHub OIDC (npm trusted publishing); never mint a publish token. [Releasing](docs/operations/05-releasing.md) has the procedure.
+
 ## Verification
 
 Use the repository commands in `package.json`. Evidence for concurrency, fencing, ownership, durability and recovery is the seeded simulator plus the real bucket protocol: MinIO in CI and the chosen object-storage provider nightly. Simulator, filesystem or MinIO results are not provider results; do not claim provider behavior without provider-specific evidence, and Neki is historical, not a backend.
