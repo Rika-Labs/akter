@@ -48,7 +48,7 @@ Keep the description short, about 15 lines: what changed, why, the risk, and how
 
 ## Releases
 
-Publishing to npm goes through GitHub OIDC (npm trusted publishing); never mint a publish token. [Releasing](docs/operations/05-releasing.md) has the procedure.
+Publishing to npm goes through GitHub OIDC (npm trusted publishing); never mint a publish token for `release.yml` or any other CI publish. The only exception is the one-time bootstrap of a package that does not exist yet, which [Releasing](docs/operations/05-releasing.md) describes.
 
 ## Verification
 
