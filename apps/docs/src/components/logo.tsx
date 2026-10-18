@@ -6,7 +6,7 @@ import { siteName } from "../content/site.ts"
 
 const mark = readFileSync(join(docsDirectory, "favicon.svg"), "utf8").replace(
   "<svg ",
-  '<svg class="akter-mark" width="22" height="22" aria-hidden="true" ',
+  '<svg class="ak-mark" width="18" height="18" aria-hidden="true" ',
 )
 
 /**
@@ -16,9 +16,9 @@ const mark = readFileSync(join(docsDirectory, "favicon.svg"), "utf8").replace(
  */
 export function Logo() {
   return (
-    <span className="akter-wordmark">
-      <span className="akter-mark-frame" dangerouslySetInnerHTML={{ __html: mark }} />
-      {siteName}
-    </span>
+    <>
+      <span className="ak-mark-frame" dangerouslySetInnerHTML={{ __html: mark }} />
+      <span className="ak-wordmark-text">{siteName}</span>
+    </>
   )
 }

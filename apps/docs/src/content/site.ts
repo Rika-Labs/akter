@@ -9,6 +9,8 @@ export const signInUrl = "https://app.akter.dev/sign-in"
 
 export const repositoryUrl = "https://github.com/Rika-Labs/akter"
 
+export const xUrl = "https://x.com/rikalabs"
+
 export const repositoryBranch = "main"
 
 /** The GitHub address of a repository path; directories use `tree`, everything else `blob`. */

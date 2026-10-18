@@ -72,7 +72,7 @@ const stylesheets = await Promise.all(
   (await files(out)).filter((file) => file.endsWith(".css")).map((file) => readFile(file, "utf8")),
 )
 
-for (const family of ["Geist Sans", "Geist Mono"])
+for (const family of ["Inter", "Geist Mono"])
   if (
     !stylesheets.some((css) =>
       css.includes(`font-family:${family};src:url(data:font/woff2;base64,`),

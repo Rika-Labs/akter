@@ -1,33 +1,35 @@
 "use client"
 
-import { MarkdownCopyButton, ViewOptionsPopover } from "fumadocs-ui/layouts/notebook/page"
-
-import { repositoryLink } from "../content/site.ts"
+import { ArrowUpRight, Check, Copy } from "lucide-react"
+import { useState } from "react"
 
 /**
- * Copy the page as Markdown, or open it in an assistant or on GitHub. The Markdown is the
- * page's `.md` twin, fetched from the page's own origin when the button is pressed. The
- * public addresses that the popover links to and hands to an assistant arrive as props
- * because the build origin is only known to the server render.
+ * The two actions under a page's table of contents: copy the page as Markdown, and open the
+ * Markdown itself. The Markdown is the page's `.md` twin, fetched from the page's own origin
+ * when the button is pressed.
  */
-export function PageActions(props: {
-  readonly slug: string
-  readonly pageUrl: string
-  readonly markdownUrl: string
-  readonly sourcePath?: string
-}) {
+export function PageActions(props: { readonly slug: string }) {
+  const [copied, setCopied] = useState(false)
+  const markdownPath = `/${props.slug}.md`
+
+  const copy = async () => {
+    const response = await fetch(markdownPath)
+
+    await navigator.clipboard.writeText(await response.text())
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 2000)
+  }
+
   return (
-    <div className="page-actions">
-      <MarkdownCopyButton markdownUrl={`/${props.slug}.md`} />
-      <ViewOptionsPopover
-        markdownUrl={props.markdownUrl}
-        pageUrl={props.pageUrl}
-        githubUrl={
-          props.sourcePath === undefined
-            ? undefined
-            : repositoryLink({ path: props.sourcePath, directory: false })
-        }
-      />
+    <div className="ak-page-actions">
+      <button type="button" className="ak-page-action" onClick={() => void copy()}>
+        <span aria-live="polite">{copied ? "Copied" : "Copy page"}</span>
+        {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+      </button>
+      <a className="ak-page-action" href={markdownPath} target="_blank" rel="noopener noreferrer">
+        <span>View as Markdown</span>
+        <ArrowUpRight aria-hidden="true" />
+      </a>
     </div>
   )
 }

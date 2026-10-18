@@ -1,35 +1,38 @@
 import { createSearchAPI } from "fumadocs-core/search/server"
 
-import { tabOf } from "../../content/link-environment.ts"
-import { publishedPages } from "../../content/source.ts"
-import { welcomeDescription, welcomeSections, welcomeTitle } from "../../content/welcome.ts"
+import { generatedPages, publishedPages } from "../../content/source.ts"
+import { products, productOf } from "../../content/navigation.ts"
 
 export const dynamic = "force-static"
 
+const productTitle = (slug: string): string | undefined =>
+  products.find((product) => product.id === productOf(slug))?.title
+
 /**
- * The static search index. It holds every published page and the welcome page, tagged by
- * tab, and the browser downloads it once when search first opens.
+ * The static search index. It holds every published page and every generated page, tagged by
+ * section, and the browser downloads it once when search first opens.
  */
 export const { staticGET: GET } = createSearchAPI("advanced", {
   indexes: [
-    {
-      id: "welcome",
-      title: welcomeTitle,
-      description: welcomeDescription,
-      url: "/welcome",
+    ...generatedPages.map((page) => ({
+      id: page.slug,
+      title: page.title,
+      description: page.description,
+      url: `/${page.slug}`,
+      tag: productTitle(page.slug),
       structuredData: {
         headings: [],
-        contents: welcomeSections.flatMap((section) =>
+        contents: page.sections.flatMap((section) =>
           section.cards.map((card) => ({ heading: undefined, content: card.title })),
         ),
       },
-    },
+    })),
     ...publishedPages.map(({ slug, page }) => ({
       id: page.url,
       title: page.data.title,
       description: page.data.description,
       url: page.url,
-      tag: tabOf(slug),
+      tag: productTitle(slug),
       structuredData: page.data.structuredData,
     })),
   ],

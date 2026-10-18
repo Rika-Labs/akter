@@ -1,12 +1,13 @@
-import { DocsBody, DocsDescription, DocsPage, DocsTitle } from "fumadocs-ui/layouts/notebook/page"
 import type { Metadata } from "next"
 import { notFound } from "next/navigation"
 
-import { mdxComponents } from "../../../components/mdx-components.tsx"
 import { PageActions } from "../../../components/page-actions.tsx"
+import { mdxComponents } from "../../../components/mdx-components.tsx"
+import { Toc } from "../../../components/toc.tsx"
 import { publishedSlugs } from "../../../content/navigation.ts"
-import { markdownUrl, pageUrl } from "../../../content/page-markdown.ts"
+import { pageUrl } from "../../../content/page-markdown.ts"
 import { source } from "../../../content/source.ts"
+import { tocItems } from "../../../content/toc-items.ts"
 
 interface PageParams {
   readonly params: Promise<{ readonly slug: ReadonlyArray<string> }>
@@ -46,20 +47,27 @@ export default async function DocsPageRoute(props: PageParams) {
   if (page === undefined) notFound()
 
   const Body = page.data.body
+  const path = slug.join("/")
 
   return (
-    <DocsPage toc={page.data.toc} full={page.data.full}>
-      <DocsTitle>{page.data.title}</DocsTitle>
-      <DocsDescription>{page.data.description}</DocsDescription>
-      <PageActions
-        slug={slug.join("/")}
-        pageUrl={pageUrl(slug.join("/"))}
-        markdownUrl={markdownUrl(slug.join("/"))}
-        sourcePath={`docs/${slug.join("/")}.md`}
-      />
-      <DocsBody>
-        <Body components={mdxComponents} />
-      </DocsBody>
-    </DocsPage>
+    <div className="ak-page-grid">
+      <article className="ak-page" data-kind="doc">
+        <header className="ak-head">
+          <h1 className="ak-title">{page.data.title}</h1>
+        </header>
+        <div className="ak-prose">
+          <Body components={mdxComponents} />
+        </div>
+        <div className="ak-page-actions-mobile">
+          <PageActions slug={path} />
+        </div>
+      </article>
+      <aside className="ak-toc-col">
+        <div className="ak-page-rail">
+          <Toc items={tocItems(page.data.toc, page.data.structuredData.headings)} />
+          <PageActions slug={path} />
+        </div>
+      </aside>
+    </div>
   )
 }

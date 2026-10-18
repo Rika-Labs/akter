@@ -1,15 +1,17 @@
 import { publishedSlugs } from "../../../content/navigation.ts"
 import { renderPageMarkdown } from "../../../content/page-markdown.ts"
 import { pageBody } from "../../../content/page-body.ts"
-import { pageOf } from "../../../content/source.ts"
-import { renderWelcomeMarkdown } from "../../../content/welcome.ts"
+import { renderLandingMarkdown } from "../../../content/landing-pages.ts"
+import { generatedPages, pageOf } from "../../../content/source.ts"
 
 export const dynamic = "force-static"
 
 export const dynamicParams = false
 
 export function generateStaticParams() {
-  return [...publishedSlugs, "welcome"].map((slug) => ({ slug: slug.split("/") }))
+  return [...generatedPages.map((page) => page.slug), ...publishedSlugs].map((slug) => ({
+    slug: slug.split("/"),
+  }))
 }
 
 const markdown = (body: string) =>
@@ -21,9 +23,10 @@ export async function GET(
   context: { params: Promise<{ slug: ReadonlyArray<string> }> },
 ) {
   const slug = (await context.params).slug.join("/")
+  const generated = generatedPages.find((page) => page.slug === slug)
 
-  if (slug === "welcome")
-    return markdown(renderWelcomeMarkdown((card) => pageOf(card).data.description))
+  if (generated !== undefined)
+    return markdown(renderLandingMarkdown(generated, (card) => pageOf(card).data.description))
 
   const { data } = pageOf(slug)
 

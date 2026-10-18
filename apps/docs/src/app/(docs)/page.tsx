@@ -1,13 +1,10 @@
 import type { Metadata } from "next"
 
-import { Welcome } from "../../components/welcome.tsx"
-import { welcomePageUrl, welcomeDescription, welcomeTitle } from "../../content/welcome.ts"
+import { Landing } from "../../components/landing.tsx"
+import { landingMetadata, welcomePage } from "../../content/landing-pages.ts"
 
-export const metadata: Metadata = {
-  title: welcomeTitle,
-  description: welcomeDescription,
-  alternates: { canonical: welcomePageUrl },
-  openGraph: { url: welcomePageUrl, title: welcomeTitle, description: welcomeDescription },
+export const metadata: Metadata = landingMetadata(welcomePage)
+
+export default function Page() {
+  return <Landing page={welcomePage} />
 }
-
-export default Welcome

@@ -1,9 +1,9 @@
 import { loader } from "fumadocs-core/source"
-import type { Root } from "fumadocs-core/page-tree"
 
 import { docs } from "../../.source/server"
+import { landingPages } from "./landing-pages.ts"
 import { publishedSlugs } from "./navigation.ts"
-import { buildPageTree, type PageTitles } from "./page-tree.ts"
+import { buildSidebars, type PageTitles } from "./sidebar.ts"
 
 /** The published pages, served from the site root so a page's URL is its repository path. */
 export const source = loader({ baseUrl: "/", source: docs.toFumadocsSource() })
@@ -27,8 +27,11 @@ const titles: PageTitles = (slug) => {
   return { title: data.sidebarTitle ?? data.title, description: data.description }
 }
 
-/** The sidebar tree, one root folder per tab, built from the navigation. */
-export const pageTree: Root = buildPageTree(titles)
+/** The sidebar of each section, built from the navigation. */
+export const sidebars = buildSidebars(titles)
+
+/** The pages the app writes itself: welcome and the API reference overview. */
+export const generatedPages = landingPages(titles)
 
 /** Every published page, in navigation order. */
 export const publishedPages = publishedSlugs.map((slug) => ({ slug, page: pageOf(slug) }))

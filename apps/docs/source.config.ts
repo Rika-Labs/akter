@@ -1,9 +1,9 @@
 import { frontmatterSchema, defineConfig, defineDocs } from "fumadocs-mdx/config"
 import { readFileSync } from "node:fs"
 import { isAbsolute, join } from "node:path"
-import { createCssVariablesTheme } from "shiki"
 import { z } from "zod"
 
+import { codeThemes } from "./src/content/code-themes.ts"
 import { firstHeading } from "./src/content/headings.ts"
 import { publishedSlugs } from "./src/content/navigation.ts"
 import {
@@ -42,24 +42,18 @@ export const docs = defineDocs({
 })
 
 /**
- * Code colours are CSS variables, so one stylesheet recolours every block for light and dark
- * with no second set of spans and no script. The tokenizer's default time limit, 500 ms a
- * line, makes a loaded machine end a line's tokens early and emit the rest as one span, so
+ * Code colours are two CSS variables on every token, one per theme, so one stylesheet shows
+ * either with no second set of spans and no script. The tokenizer's default time limit, 500 ms
+ * a line, makes a loaded machine end a line's tokens early and emit the rest as one span, so
  * the same commit highlighted differently from one build to the next; zero removes the limit.
  */
-const codeTheme = createCssVariablesTheme({
-  name: "akter",
-  variablePrefix: "--ak-code-",
-  variableDefaults: {},
-  fontStyle: true,
-})
-
 export default defineConfig({
   mdxOptions: {
     remarkPlugins: [remarkLeadingHeading, remarkAdmonitionTags, remarkDocsLinks],
     rehypeCodeOptions: {
-      themes: { light: codeTheme },
-      defaultColor: "light",
+      themes: codeThemes,
+      defaultColor: false,
+      addLanguageClass: true,
       tokenizeTimeLimit: 0,
     },
   },

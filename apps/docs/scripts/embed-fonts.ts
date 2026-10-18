@@ -10,8 +10,8 @@ await mkdir(cache, { recursive: true })
 await writeFile(
   join(cache, "fonts.css"),
   fontFace({
-    family: "Geist Sans",
-    bytes: await readFile(join(fonts, "GeistSans-latin.woff2")),
+    family: "Inter",
+    bytes: await readFile(join(fonts, "Inter-latin.woff2")),
     weight: "100 900",
   }) +
     fontFace({
