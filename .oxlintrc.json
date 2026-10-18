@@ -166,6 +166,8 @@
         "effecttsgo/missing-pipeable-signature": "off",
         "effecttsgo/process-env": "off",
         "effecttsgo/global-console": "off",
+        "effecttsgo/global-fetch": "off",
+        "effecttsgo/new-promise": "off",
         "anti-slop/prefer-effect-match": "off"
       }
     }

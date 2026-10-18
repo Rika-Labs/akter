@@ -5,7 +5,7 @@ import { notFound } from "next/navigation"
 import { mdxComponents } from "../../../components/mdx-components.tsx"
 import { PageActions } from "../../../components/page-actions.tsx"
 import { publishedSlugs } from "../../../content/navigation.ts"
-import { pageUrl } from "../../../content/page-markdown.ts"
+import { markdownUrl, pageUrl } from "../../../content/page-markdown.ts"
 import { source } from "../../../content/source.ts"
 
 interface PageParams {
@@ -54,6 +54,7 @@ export default async function DocsPageRoute(props: PageParams) {
       <PageActions
         slug={slug.join("/")}
         pageUrl={pageUrl(slug.join("/"))}
+        markdownUrl={markdownUrl(slug.join("/"))}
         sourcePath={`docs/${slug.join("/")}.md`}
       />
       <DocsBody>

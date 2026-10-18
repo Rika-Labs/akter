@@ -43,5 +43,5 @@ export const fontOrigin = originFrom({
   fallback: defaultFontOrigin,
 })
 
-/** The font file the font origin serves with CORS for the docs origin. */
+/** The font file the build fetches from the font origin and embeds in the stylesheet. */
 export const polySansUrl = `${fontOrigin}/fonts/PolySans-variable.woff2`

@@ -20,19 +20,19 @@ const rule = (path: string, headers: ReadonlyArray<string>): string =>
 
 /**
  * The content security policy of every response. The export is static, so nothing is fetched
- * from any origin but the page's own, except the brand font from the font origin. Scripts
+ * from any origin but the page's own; the brand font is a `data:` URL in the stylesheet. Scripts
  * allow `'unsafe-inline'` because Next writes the page's data and bootstrap into inline
  * scripts, and a page carries dozens of them: a hash for each would overrun the 2,000
  * character limit of a header line. Styles allow it because React and the code highlighter
  * write `style` attributes.
  */
-export const contentSecurityPolicy = (fontOrigin: string): string =>
+export const contentSecurityPolicy = (): string =>
   [
     "default-src 'none'",
     "script-src 'self' 'unsafe-inline'",
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data:",
-    `font-src 'self' ${fontOrigin}`,
+    "font-src 'self' data:",
     "connect-src 'self'",
     "manifest-src 'self'",
     "base-uri 'none'",
@@ -49,10 +49,7 @@ export const contentSecurityPolicy = (fontOrigin: string): string =>
  * the immutable assets and merge with theirs; for the same reason no other rule repeats a
  * security header, since Cloudflare joins a repeated header and browsers enforce every policy.
  */
-export const renderHeaders = (input: {
-  readonly pagePaths: ReadonlyArray<string>
-  readonly fontOrigin: string
-}): string =>
+export const renderHeaders = (input: { readonly pagePaths: ReadonlyArray<string> }): string =>
   [
     rule("/*", [
       "Strict-Transport-Security: max-age=63072000; includeSubDomains",
@@ -60,7 +57,7 @@ export const renderHeaders = (input: {
       "X-Frame-Options: DENY",
       "Referrer-Policy: no-referrer",
       "Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()",
-      `Content-Security-Policy: ${contentSecurityPolicy(input.fontOrigin)}`,
+      `Content-Security-Policy: ${contentSecurityPolicy()}`,
     ]),
     rule("/_next/static/*", [IMMUTABLE]),
     ...input.pagePaths.map((path) => rule(path, [SHORT_LIVED])),

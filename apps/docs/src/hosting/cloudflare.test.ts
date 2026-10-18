@@ -14,7 +14,7 @@ describe("renderRedirects", () => {
 })
 
 describe("renderHeaders", () => {
-  const text = renderHeaders({ pagePaths: ["/", "/quickstart"], fontOrigin: "https://akter.dev" })
+  const text = renderHeaders({ pagePaths: ["/", "/quickstart"] })
   const rules = text.trim().split("\n\n")
   const catchAll = rules.find((rule) => rule.startsWith("/*\n")) ?? ""
 
@@ -73,12 +73,10 @@ describe("contentSecurityPolicy", () => {
   const directive = (policy: string, name: string) =>
     policy.split("; ").find((candidate) => candidate.startsWith(`${name} `))
 
-  it("allows the font origin to serve fonts and nothing else to leave the page's own origin", () => {
-    const policy = contentSecurityPolicy("https://akter-pr-12-site.akter-preview.workers.dev")
+  it("keeps every request on the page's own origin; the font is a data URL in the stylesheet", () => {
+    const policy = contentSecurityPolicy()
 
-    expect(directive(policy, "font-src")).toBe(
-      "font-src 'self' https://akter-pr-12-site.akter-preview.workers.dev",
-    )
+    expect(directive(policy, "font-src")).toBe("font-src 'self' data:")
     expect(directive(policy, "connect-src")).toBe("connect-src 'self'")
     expect(directive(policy, "default-src")).toBe("default-src 'none'")
     expect(directive(policy, "frame-ancestors")).toBe("frame-ancestors 'none'")
@@ -87,7 +85,7 @@ describe("contentSecurityPolicy", () => {
   })
 
   it("allows inline scripts, because the export's data and bootstrap are inline scripts", () => {
-    expect(directive(contentSecurityPolicy("https://akter.dev"), "script-src")).toBe(
+    expect(directive(contentSecurityPolicy(), "script-src")).toBe(
       "script-src 'self' 'unsafe-inline'",
     )
   })

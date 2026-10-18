@@ -4,12 +4,7 @@ import { dirname, join, relative, resolve } from "node:path"
 
 import { publishedSlugs } from "../src/content/navigation.ts"
 import { redirects } from "../src/content/redirects.ts"
-import {
-  defaultFontOrigin,
-  defaultSiteUrl,
-  fontOrigin,
-  siteUrl,
-} from "../src/content/build-origins.ts"
+import { defaultSiteUrl, siteUrl } from "../src/content/build-origins.ts"
 import { renderHeaders, renderRedirects } from "../src/hosting/cloudflare.ts"
 
 const out = resolve(import.meta.dirname, "..", "out")
@@ -38,7 +33,6 @@ await writeFile(
   join(out, "_headers"),
   renderHeaders({
     pagePaths: ["/", "/welcome", ...publishedSlugs.map((slug) => `/${slug}`)],
-    fontOrigin,
   }),
 )
 
@@ -62,10 +56,7 @@ for (const file of [
 
 if (missing.length > 0) throw new Error(`The export is missing: ${missing.join(", ")}`)
 
-const defaults = [
-  { origin: siteUrl, fallback: defaultSiteUrl, needle: defaultSiteUrl },
-  { origin: fontOrigin, fallback: defaultFontOrigin, needle: `${defaultFontOrigin}/fonts/` },
-].filter(({ origin, fallback }) => origin !== fallback)
+const forbidden = [...(siteUrl === defaultSiteUrl ? [] : [defaultSiteUrl]), "/fonts/PolySans"]
 
 const leaks: Array<string> = []
 
@@ -73,9 +64,18 @@ for (const file of await files(out))
   if (/\.(html|txt|xml|md|js|css|json)$/.test(file) || file.endsWith("_headers")) {
     const text = await readFile(file, "utf8")
 
-    for (const { needle } of defaults)
+    for (const needle of forbidden)
       if (text.includes(needle)) leaks.push(`${relative(out, file)} contains ${needle}`)
   }
 
+const stylesheets = await Promise.all(
+  (await files(out)).filter((file) => file.endsWith(".css")).map((file) => readFile(file, "utf8")),
+)
+
+if (!stylesheets.some((css) => css.includes("src:url(data:font/woff2;base64,d09GM")))
+  throw new Error("No stylesheet in the export carries PolySans")
+
 if (leaks.length > 0)
-  throw new Error(`The export still points at the production origins:\n${leaks.join("\n")}`)
+  throw new Error(
+    `The export points at an address it must not: the production site when SITE_URL is set, or a font file the stylesheet already carries:\n${leaks.join("\n")}`,
+  )
