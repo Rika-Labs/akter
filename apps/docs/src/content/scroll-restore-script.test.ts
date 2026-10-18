@@ -4,13 +4,18 @@ import { describe, expect, it } from "vitest"
 
 import { scrollRestoreScript } from "./scroll-restore-script.ts"
 
-const run = (input: { readonly navigation: string; readonly stored?: string }) => {
+const run = (input: {
+  readonly navigation: string
+  readonly stored?: string
+  readonly history?: { scrollRestoration?: string }
+}) => {
   const scrolls: Array<[number, number]> = []
   const stored = new Map<string, string>()
   const listeners: Array<() => void> = []
   const frames: Array<() => void> = []
   const fake = {
     location: { pathname: "/quickstart" },
+    history: input.history ?? { scrollRestoration: "auto" },
     performance: { getEntriesByType: () => [{ type: input.navigation }] },
     sessionStorage: {
       getItem: (key: string) => stored.get(key) ?? null,
@@ -30,6 +35,16 @@ const run = (input: { readonly navigation: string; readonly stored?: string }) =
 }
 
 describe("scrollRestoreScript", () => {
+  it("takes scroll restoration from the browser, so there is one restorer", () => {
+    const { fake } = run({ navigation: "reload", stored: "1589" })
+
+    expect(fake.history.scrollRestoration).toBe("manual")
+  })
+
+  it("still restores the saved position in a browser without the history setting", () => {
+    expect(run({ navigation: "reload", stored: "320", history: {} }).scrolls).toEqual([[0, 320]])
+  })
+
   it("scrolls a reloaded page to the saved position before anything paints", () => {
     expect(run({ navigation: "reload", stored: "1589" }).scrolls).toEqual([[0, 1589]])
   })

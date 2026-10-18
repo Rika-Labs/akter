@@ -20,7 +20,7 @@ const rule = (path: string, headers: ReadonlyArray<string>): string =>
 
 /**
  * The content security policy of every response. The export is static, so nothing is fetched
- * from any origin but the page's own; the brand font is a `data:` URL in the stylesheet. Scripts
+ * from any origin but the page's own; both fonts are `data:` URLs in the stylesheet. Scripts
  * allow `'unsafe-inline'` because Next writes the page's data and bootstrap into inline
  * scripts, and a page carries dozens of them: a hash for each would overrun the 2,000
  * character limit of a header line. Styles allow it because React and the code highlighter

@@ -8,25 +8,21 @@
 }
 
 @font-face {
-  font-family: "PolySans Fallback";
-  src: local("Arial"), local("Helvetica"), local("Liberation Sans"), local("Arimo");
-  font-weight: 300 500;
-  size-adjust: 102.29%;
-  ascent-override: 89.94%;
-  descent-override: 20.33%;
+  font-family: "Geist Sans Fallback";
+  src: local("Arial");
+  ascent-override: 94.56%;
+  descent-override: 27.76%;
   line-gap-override: 0%;
+  size-adjust: 106.28%;
 }
 
 @font-face {
-  font-family: "PolySans Fallback";
-  src:
-    local("Arial Bold"), local("Arial-BoldMT"), local("Helvetica Bold"),
-    local("Liberation Sans Bold"), local("Arimo Bold");
-  font-weight: 600 800;
-  size-adjust: 97.9%;
-  ascent-override: 93.97%;
-  descent-override: 21.25%;
+  font-family: "Geist Mono Fallback";
+  src: local("Arial");
+  ascent-override: 76.43%;
+  descent-override: 22.43%;
   line-gap-override: 0%;
+  size-adjust: 131.49%;
 }
 
 :root {
@@ -56,9 +52,10 @@
 
 @theme {
   --font-sans:
-    "PolySans Var", "PolySans Fallback", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    "Geist Sans", "Geist Sans Fallback", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
     sans-serif;
-  --font-mono: var(--font-akter-mono), ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-mono:
+    "Geist Mono", "Geist Mono Fallback", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 
   --radius-xs: 0;
   --radius-sm: 0;

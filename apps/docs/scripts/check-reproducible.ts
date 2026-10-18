@@ -1,9 +1,8 @@
 import { spawn, spawnSync } from "node:child_process"
-import { cpSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { cpSync, mkdirSync, rmSync } from "node:fs"
 import { cpus } from "node:os"
 import { join, resolve } from "node:path"
 
-import { loadFont } from "../src/hosting/polysans-source.ts"
 import { treeDifferences } from "../src/hosting/tree-differences.ts"
 
 const app = resolve(import.meta.dirname, "..")
@@ -26,11 +25,6 @@ const build = (name: string): string => {
 
 rmSync(scratch, { recursive: true, force: true })
 mkdirSync(scratch, { recursive: true })
-
-const pinnedFont = join(scratch, "polysans.woff2")
-
-writeFileSync(pinnedFont, await loadFont())
-process.env["POLYSANS_FILE"] = pinnedFont
 
 const calm = build("calm")
 

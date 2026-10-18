@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bun scripts/prepare-font.ts && next dev",
-    "build": "fumadocs-mdx && bun scripts/prepare-font.ts && next build && bun scripts/finish-export.ts",
+    "dev": "bun scripts/embed-fonts.ts && next dev",
+    "build": "fumadocs-mdx && bun scripts/embed-fonts.ts && next build && bun scripts/finish-export.ts",
     "typecheck": "fumadocs-mdx && next typegen && tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
     "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
     "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/docs/src",

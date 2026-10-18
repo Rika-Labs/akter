@@ -23,9 +23,6 @@ export const originFrom = (input: {
 /** The origin the production site is served from, used when `SITE_URL` is unset. */
 export const defaultSiteUrl = "https://docs.akter.dev"
 
-/** The origin the production brand font is served from, used when `FONT_ORIGIN` is unset. */
-export const defaultFontOrigin = "https://akter.dev"
-
 /**
  * Public origin of the documentation site, set with `SITE_URL`; canonical URLs, the sitemap,
  * `robots.txt`, `llms.txt` and the Markdown twins use it.
@@ -35,13 +32,3 @@ export const siteUrl = originFrom({
   value: process.env["SITE_URL"],
   fallback: defaultSiteUrl,
 })
-
-/** Origin that serves the brand font, set with `FONT_ORIGIN`; it must allow `siteUrl` by CORS. */
-export const fontOrigin = originFrom({
-  name: "FONT_ORIGIN",
-  value: process.env["FONT_ORIGIN"],
-  fallback: defaultFontOrigin,
-})
-
-/** The font file the build fetches from the font origin and embeds in the stylesheet. */
-export const polySansUrl = `${fontOrigin}/fonts/PolySans-variable.woff2`

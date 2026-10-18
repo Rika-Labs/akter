@@ -73,7 +73,7 @@ describe("contentSecurityPolicy", () => {
   const directive = (policy: string, name: string) =>
     policy.split("; ").find((candidate) => candidate.startsWith(`${name} `))
 
-  it("keeps every request on the page's own origin; the font is a data URL in the stylesheet", () => {
+  it("keeps every request on the page's own origin; the fonts are data URLs in the stylesheet", () => {
     const policy = contentSecurityPolicy()
 
     expect(directive(policy, "font-src")).toBe("font-src 'self' data:")

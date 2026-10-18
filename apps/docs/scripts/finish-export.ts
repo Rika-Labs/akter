@@ -56,7 +56,7 @@ for (const file of [
 
 if (missing.length > 0) throw new Error(`The export is missing: ${missing.join(", ")}`)
 
-const forbidden = [...(siteUrl === defaultSiteUrl ? [] : [defaultSiteUrl]), "/fonts/PolySans"]
+const forbidden = [...(siteUrl === defaultSiteUrl ? [] : [defaultSiteUrl]), "PolySans"]
 
 const leaks: Array<string> = []
 
@@ -72,10 +72,15 @@ const stylesheets = await Promise.all(
   (await files(out)).filter((file) => file.endsWith(".css")).map((file) => readFile(file, "utf8")),
 )
 
-if (!stylesheets.some((css) => css.includes("src:url(data:font/woff2;base64,d09GM")))
-  throw new Error("No stylesheet in the export carries PolySans")
+for (const family of ["Geist Sans", "Geist Mono"])
+  if (
+    !stylesheets.some((css) =>
+      css.includes(`font-family:${family};src:url(data:font/woff2;base64,`),
+    )
+  )
+    throw new Error(`No stylesheet in the export carries ${family}`)
 
 if (leaks.length > 0)
   throw new Error(
-    `The export points at an address it must not: the production site when SITE_URL is set, or a font file the stylesheet already carries:\n${leaks.join("\n")}`,
+    `The export holds text it must not: the production site address when SITE_URL is set, or the retired PolySans face:\n${leaks.join("\n")}`,
   )
