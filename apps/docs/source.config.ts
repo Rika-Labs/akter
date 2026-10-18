@@ -43,7 +43,9 @@ export const docs = defineDocs({
 
 /**
  * Code colours are CSS variables, so one stylesheet recolours every block for light and dark
- * with no second set of spans and no script.
+ * with no second set of spans and no script. The tokenizer's default time limit, 500 ms a
+ * line, makes a loaded machine end a line's tokens early and emit the rest as one span, so
+ * the same commit highlighted differently from one build to the next; zero removes the limit.
  */
 const codeTheme = createCssVariablesTheme({
   name: "akter",
@@ -55,6 +57,10 @@ const codeTheme = createCssVariablesTheme({
 export default defineConfig({
   mdxOptions: {
     remarkPlugins: [remarkLeadingHeading, remarkAdmonitionTags, remarkDocsLinks],
-    rehypeCodeOptions: { themes: { light: codeTheme }, defaultColor: "light" },
+    rehypeCodeOptions: {
+      themes: { light: codeTheme },
+      defaultColor: "light",
+      tokenizeTimeLimit: 0,
+    },
   },
 })

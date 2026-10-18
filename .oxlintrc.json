@@ -164,6 +164,8 @@
         "effecttsgo/node-builtin-import": "off",
         "effecttsgo/async-function": "off",
         "effecttsgo/missing-pipeable-signature": "off",
+        "effecttsgo/process-env": "off",
+        "effecttsgo/global-console": "off",
         "anti-slop/prefer-effect-match": "off"
       }
     }

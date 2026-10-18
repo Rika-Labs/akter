@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import { renderLlmsIndex, renderPageMarkdown } from "./page-markdown.ts"
+import { siteUrl } from "./build-origins.ts"
 
 describe("renderPageMarkdown", () => {
   it("puts the title once, the description as a quote, the source link, then the body", () => {
@@ -11,12 +12,12 @@ describe("renderPageMarkdown", () => {
         description: "Why.",
         body: "\nBody text\n\n",
       }),
-    ).toBe("# Title\n\n> Why.\n\nSource: https://docs.akter.dev/a/b\n\nBody text\n")
+    ).toBe(`# Title\n\n> Why.\n\nSource: ${siteUrl}/a/b\n\nBody text\n`)
   })
 
   it("omits the quote when the page has no description", () => {
     expect(renderPageMarkdown({ slug: "a", title: "T", body: "x" })).toBe(
-      "# T\n\nSource: https://docs.akter.dev/a\n\nx\n",
+      `# T\n\nSource: ${siteUrl}/a\n\nx\n`,
     )
   })
 })
@@ -30,6 +31,6 @@ describe("renderLlmsIndex", () => {
           pages: [{ slug: "quickstart", title: "Quickstart", description: "Go." }],
         },
       ]),
-    ).toContain("## Guides\n- [Quickstart](https://docs.akter.dev/quickstart.md): Go.")
+    ).toContain(`## Guides\n- [Quickstart](${siteUrl}/quickstart.md): Go.`)
   })
 })

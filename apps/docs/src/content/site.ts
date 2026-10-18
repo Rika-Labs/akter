@@ -1,6 +1,3 @@
-/** Public origin of the documentation site; canonical URLs, the sitemap and `llms.txt` use it. */
-export const siteUrl = "https://docs.akter.dev"
-
 export const siteName = "Akter"
 
 export const siteDescription =
@@ -20,6 +17,3 @@ export const repositoryLink = (input: {
   readonly directory: boolean
 }): string =>
   `${repositoryUrl}/${input.directory ? "tree" : "blob"}/${repositoryBranch}/${input.path}`
-
-/** The font file Akter serves with CORS for the docs origin. */
-export const polySansUrl = "https://akter.dev/fonts/PolySans-variable.woff2"

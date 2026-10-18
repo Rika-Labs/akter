@@ -19,20 +19,21 @@ The public docs are the static export of `apps/docs`. The page the browser recei
 
 ## Environment and method
 
-Collected on 2026-10-17 and 2026-10-18 on macOS 26.6.2 (arm64), Google Chrome 155.0.8059.80 driven by Playwright 1.63.0, Bun 1.4.2, Node 26.7.0, Next.js 16.4.2 and fumadocs-ui 16.17.5. The export was served by a small static server that applies `_redirects`; the dev run used `next dev`.
+Collected on 2026-10-17 and 2026-10-18 on macOS 26.6.2 (arm64), Google Chrome 155.0.8059.80 and Playwright's WebKit 26.6, both driven by Playwright 1.63.0, Bun 1.4.2, Node 26.7.0, Next.js 16.4.2 and fumadocs-ui 16.17.5. The export was served by a small static server that applies `_redirects` and `_headers`, so the policy was in force for the measurements; the dev run used `next dev`.
 
-The harness (the appendix) records every animation frame from document start until 3.5 s after navigation. In each frame it reads the document-coordinate rectangle and the effective opacity of every `h1`, `h2`, `h3`, `p`, `li`, `a`, `button`, `header`, `nav`, `aside`, `main`, `footer`, `iframe`, `img`, `pre` and `table`, keyed by tag and visible text, and skips elements that are `visibility: hidden`. It also records the `html` and `body` background colours, the scroll offset, which fonts are loaded, and `layout-shift` entries from the browser. A scenario passes only if all of the following hold: no element present in the first content frame differs from its settled rectangle by more than 0.5 px, none changes opacity, none appears inside the viewport later, the layout-shift total is 0, the background takes one value, and the scroll offset takes one value.
+The harness (the appendix) records every animation frame from document start until 3.5 s after navigation. In each frame it reads the document-coordinate rectangle and the effective opacity of every `h1`, `h2`, `h3`, `p`, `li`, `a`, `button`, `header`, `nav`, `aside`, `main`, `footer`, `iframe`, `img`, `pre` and `table`, keyed by tag and visible text, and skips elements that are `visibility: hidden`. It also records the `html` and `body` background colours, the scroll offset, which fonts are loaded, and `layout-shift` entries from the browser. A scenario passes only if all of the following hold: no element present in the first content frame differs from its settled rectangle by more than 0.5 px, none changes opacity, none appears inside the viewport later, the layout-shift total is 0, the background takes one value, and the scroll offset takes one value, equal to the offset before the reload, from the first content frame on.
 
-The matrix is the product of: pages `/welcome`, `/quickstart` and `/api/01-server-api`; viewports 1440 × 900 and 390 × 800; schemes dark and light; scroll top, and scrolled to the middle then reloaded so Chrome restores the offset; and PolySans blocked (request aborted), available at once, and delayed 1500 ms (answered with the CORS header the live origin sends).
+The matrix is the product of: pages `/welcome`, `/quickstart` and `/api/01-server-api`; viewports 1440 × 900 and 390 × 800; schemes dark and light; scroll top, and scrolled to the middle then reloaded so the browser restores the offset; and PolySans blocked (request aborted), available at once, and delayed 1500 ms (answered with the CORS header the live origin sends).
 
 ## Results
 
-| Build         | Scenarios | Failing | Frames recorded | Moved or resized elements | Fades | Late in viewport | Layout shift | Backgrounds seen                    | Scroll changes |
-| ------------- | --------- | ------- | --------------- | ------------------------- | ----- | ---------------- | ------------ | ----------------------------------- | -------------- |
-| Static export | 72        | 0       | 14,917          | 0                         | 0     | 0                | 0            | rgb(18, 19, 17), rgb(251, 251, 250) | 0              |
-| `next dev`    | 48        | 0       | 6,181           | 0                         | 0     | 0                | 0            | rgb(18, 19, 17), rgb(251, 251, 250) | 0              |
+| Build                   | Scenarios | Failing | Frames recorded | Moved or resized elements | Fades | Late in viewport | Layout shift | Backgrounds seen                    | Scroll changes |
+| ----------------------- | --------- | ------- | --------------- | ------------------------- | ----- | ---------------- | ------------ | ----------------------------------- | -------------- |
+| Static export, Chromium | 72        | 0       | 14,933          | 0                         | 0     | 0                | 0            | rgb(18, 19, 17), rgb(251, 251, 250) | 0              |
+| Static export, WebKit   | 72        | 0       | 14,948          | 0                         | 0     | 0                | 0            | rgb(18, 19, 17), rgb(251, 251, 250) | 0              |
+| `next dev`              | 48        | 0       | 6,181           | 0                         | 0     | 0                | 0            | rgb(18, 19, 17), rgb(251, 251, 250) | 0              |
 
-Dark scenarios saw only `rgb(18, 19, 17)` and light scenarios only `rgb(251, 251, 250)`; no scenario saw white in dark. First content appeared between 21 ms and 175 ms after navigation start on the export. In the delayed-font runs PolySans finished loading well after first content and no geometry changed. The dev run covered the delayed and blocked font cases only, and ran before the fallback calibration below.
+Dark scenarios saw only `rgb(18, 19, 17)` and light scenarios only `rgb(251, 251, 250)`; no scenario saw white in dark. First content appeared between 27 ms and 158 ms after navigation start on the export in Chromium and between 25 ms and 109 ms in WebKit. In the delayed-font runs PolySans finished loading well after first content and no geometry changed. The dev run covered the delayed and blocked font cases only, and ran before the fallback calibration below.
 
 With JavaScript disabled, the quickstart renders its heading, navbar, 20 sidebar links and code in the correct theme for both preferences, so the first paint does not depend on a script.
 
@@ -40,12 +41,14 @@ With JavaScript disabled, the quickstart renders its heading, navbar, 20 sidebar
 
 Each was reproduced, fixed at its cause and re-measured; the matrix above is the run after the last fix.
 
-| Observation                                                                                                                                                                                                                                                    | Cause                                                                                                                                                                       | Fix and result                                                                                                                                  |
-| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| On a reload that restores a scroll offset, the first frame sat at the wrong offset (an extra 86 px on mobile, double the offset on desktop) and corrected itself one to three frames later, in 8 to 23 of every 100 reloads. Content positions did not change. | Scroll anchoring during Chrome's history scroll restoration (inferred: it never occurred with page scripts removed and it stopped when anchoring was off on every element). | `overflow-anchor: none` on every element. 0 of 100 reloads on desktop and on mobile afterwards. Setting it on the root alone did not remove it. |
-| The mobile contents bar changed its label from the page name to the active heading after hydration, with a slide transition and an animating progress circle.                                                                                                  | The Fumadocs trigger renders the scroll-spy state on the client.                                                                                                            | The label is the page name only, the progress circle is hidden and transitions are off in the contents bars.                                    |
-| The mobile contents bar could paint a few milliseconds after the heading.                                                                                                                                                                                      | Chrome painted a half-parsed document.                                                                                                                                      | A render-blocking `<link rel="expect" href="#end-of-page" blocking="render">` holds the first paint until the parser reaches the end marker.    |
-| The mobile drawer appeared to move 331 px at hydration.                                                                                                                                                                                                        | It is `visibility: hidden`, replaced from the server-rendered sidebar and slid off-canvas. A harness artefact.                                                              | The harness skips hidden elements.                                                                                                              |
+| Observation                                                                                                                                                                                                                                                    | Cause                                                                                                                                                                       | Fix and result                                                                                                                                                                                          |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| On a reload that restores a scroll offset, the first frame sat at the wrong offset (an extra 86 px on mobile, double the offset on desktop) and corrected itself one to three frames later, in 8 to 23 of every 100 reloads. Content positions did not change. | Scroll anchoring during Chrome's history scroll restoration (inferred: it never occurred with page scripts removed and it stopped when anchoring was off on every element). | `overflow-anchor: none` on every element. 0 of 100 reloads on desktop and on mobile afterwards. Setting it on the root alone did not remove it.                                                         |
+| The mobile contents bar changed its label from the page name to the active heading after hydration, with a slide transition and an animating progress circle.                                                                                                  | The Fumadocs trigger renders the scroll-spy state on the client.                                                                                                            | The label is the page name only, the progress circle is hidden and transitions are off in the contents bars.                                                                                            |
+| The mobile contents bar could paint a few milliseconds after the heading.                                                                                                                                                                                      | Chrome painted a half-parsed document.                                                                                                                                      | A render-blocking `<link rel="expect" href="#end-of-page" blocking="render">` holds the first paint until the parser reaches the end marker.                                                            |
+| On a reload that restores a scroll offset, WebKit painted the first frames at the top and jumped to the offset once the page scripts had loaded: 36 of 36 reloads before the fix, with the first content frame at offset 0 every time.                         | WebKit restores its own offset only after the document finishes loading, which waits for the async page scripts, and it does not honour the `expect` link.                  | An inline script before the end marker restores the saved offset from `sessionStorage` on reload and back or forward loads. 36 of 36 reloads start at the offset afterwards, in WebKit and in Chromium. |
+| On a 390 px screen the copy button sat over the first line of 9 of 21 code blocks.                                                                                                                                                                             | The button is positioned over the top right of the block and a long first line ran under it.                                                                                | The code region has 2.75 rem of top padding below 40 rem. 0 of 21 afterwards; desktop stayed at 0 of 21.                                                                                                |
+| The mobile drawer appeared to move 331 px at hydration.                                                                                                                                                                                                        | It is `visibility: hidden`, replaced from the server-rendered sidebar and slid off-canvas. A harness artefact.                                                              | The harness skips hidden elements.                                                                                                                                                                      |
 
 ## Font fallback
 
@@ -65,24 +68,26 @@ The first calibration, from letter-frequency estimates, was 1.8% too wide at wei
 
 - Keyboard: the search shortcut opens the dialog, typing returns results, an arrow key and Enter navigate to the page; Tab walks the logo, search, Sign in, GitHub, sidebar toggle, the three tabs and the sidebar links in order, and the focused element shows a ring.
 - Code blocks colour tokens with CSS variables (four distinct colours in each theme), the copy button writes the code to the clipboard, and Copy Markdown copies the page's Markdown with its source link.
-- An unknown address returns the on-theme 404 page. The export has 38 pages and 38 Markdown twins, equal as sets, and the published set equals the old navigation.
+- An unknown address returns the on-theme 404 page with status 404 (the hosting uses 404-page handling); the file address `/404` answers 200 because it is the page file itself. The export has 38 pages and 38 Markdown twins, equal as sets, and the published set equals the old navigation.
 - A dead link or a missing anchor in a published page fails the build.
 
 ## Not verified
 
-- Safari and Firefox. The `expect` link and `overflow-anchor` are Chromium features; other engines paint as they do.
-- The Cloudflare edge itself. The export was served by a local server that emulates `_redirects`, extensionless URLs and header rules; `_headers` and the edge cache were not exercised.
+- Safari itself and Firefox. WebKit was measured through Playwright's build, which is not Safari; Firefox was not run.
+- The Cloudflare edge itself. The export was served by a local server that emulates `_redirects`, extensionless URLs and `_headers`. The policy was exercised in Chromium (no violation on 7 pages at desktop and mobile widths with search, copy and page actions used), but the edge, its header handling and its cache were not.
 - Real networks, and PolySans delivery from the live origin: the origin currently answers with `Cache-Control: max-age=0, must-revalidate`, so cold and revalidating loads are expected to use the fallback often.
 - The desktop contents list marks the active heading after hydration (a colour change and a marker, with transitions off). It is scroll-position state and is not part of first paint.
 - Hosted search quality and the cutover itself.
 
 ## Appendix: measurement harness
 
-Run `POLYSANS_FILE=<path to PolySans-variable.woff2> node measure.mjs <base URL> <label> <pages> <font modes>` with the export served at the base URL; results are written as JSON and a PASS or FAIL line per scenario is printed.
+Run `ENGINE=<chromium or webkit> POLYSANS_FILE=<path to PolySans-variable.woff2> node measure.mjs <base URL> <label> <pages> <font modes>` with the export served at the base URL; results are written as JSON and a PASS or FAIL line per scenario is printed.
 
 ```js
 import { writeFileSync, mkdirSync } from "node:fs"
-import { chromium } from "playwright"
+import playwright from "playwright"
+
+const engine = process.env.ENGINE ?? "chromium"
 
 const base = process.argv[2]
 const label = process.argv[3]
@@ -216,7 +221,7 @@ function analyse(frames, cls) {
   }
 }
 
-const browser = await chromium.launch({ channel: "chrome" })
+const browser = await playwright[engine].launch(engine === "chromium" ? { channel: "chrome" } : {})
 const results = []
 for (const fontMode of fontModes) {
   for (const [vp, w, h] of [
@@ -277,7 +282,8 @@ for (const fontMode of fontModes) {
             result.cls > 0 ||
             result.bgValues.length > 1 ||
             (scroll === "top" && result.scrollValues.some((v) => v !== 0)) ||
-            (scroll === "mid" && result.scrollValues.length > 1)
+            (scroll === "mid" &&
+              (result.scrollValues.length !== 1 || Math.abs(result.scrollValues[0] - target) > 1))
           console.log(
             (bad ? "FAIL " : "ok   ") +
               [

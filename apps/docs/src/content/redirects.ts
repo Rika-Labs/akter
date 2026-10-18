@@ -1,3 +1,5 @@
+import { repositoryLink } from "./site.ts"
+
 /** One redirect, written in Cloudflare's `_redirects` terms: `*` is a splat, `:splat` its value. */
 export interface Redirect {
   readonly source: string
@@ -6,6 +8,8 @@ export interface Redirect {
 }
 
 const github = "https://github.com/Rika-Labs/akter/blob/main"
+
+const directory = (path: string): string => repositoryLink({ path, directory: true })
 
 /**
  * Every address that used to answer on docs.akter.dev and now moves. A destination is a
@@ -35,8 +39,14 @@ export const redirects: ReadonlyArray<Redirect> = [
     destination: `${github}/docs/contracts/06-storage.md`,
     status: 301,
   },
+  { source: "/contracts", destination: directory("docs/contracts"), status: 301 },
+  { source: "/contracts/", destination: directory("docs/contracts"), status: 301 },
   { source: "/contracts/*", destination: `${github}/docs/contracts/:splat.md`, status: 301 },
+  { source: "/decisions", destination: directory("docs/decisions"), status: 301 },
+  { source: "/decisions/", destination: directory("docs/decisions"), status: 301 },
   { source: "/decisions/*", destination: `${github}/docs/decisions/:splat.md`, status: 301 },
+  { source: "/milestones", destination: directory("docs/milestones"), status: 301 },
+  { source: "/milestones/", destination: directory("docs/milestones"), status: 301 },
   { source: "/milestones/*", destination: `${github}/docs/milestones/:splat.md`, status: 301 },
   { source: "/BENCHMARKS", destination: `${github}/BENCHMARKS.md`, status: 301 },
   {
@@ -44,6 +54,8 @@ export const redirects: ReadonlyArray<Redirect> = [
     destination: `${github}/docs/product/competitive-positioning.md`,
     status: 301,
   },
+  { source: "/packages", destination: directory("packages"), status: 301 },
+  { source: "/packages/", destination: directory("packages"), status: 301 },
   { source: "/packages/*", destination: `${github}/packages/:splat`, status: 301 },
   { source: "/api/04-drizzle", destination: "/api/01-server-api", status: 301 },
   { source: "/api/05-generated-clients", destination: "/api/03-typescript-sdk", status: 301 },

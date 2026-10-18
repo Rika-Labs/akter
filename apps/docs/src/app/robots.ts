@@ -1,6 +1,6 @@
 import type { MetadataRoute } from "next"
 
-import { siteUrl } from "../content/site.ts"
+import { siteUrl } from "../content/build-origins.ts"
 
 export const dynamic = "force-static"
 

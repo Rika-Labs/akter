@@ -1,9 +1,15 @@
 import { existsSync } from "node:fs"
-import { mkdir, readdir, rename, rm, writeFile } from "node:fs/promises"
+import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises"
 import { dirname, join, relative, resolve } from "node:path"
 
 import { publishedSlugs } from "../src/content/navigation.ts"
 import { redirects } from "../src/content/redirects.ts"
+import {
+  defaultFontOrigin,
+  defaultSiteUrl,
+  fontOrigin,
+  siteUrl,
+} from "../src/content/build-origins.ts"
 import { renderHeaders, renderRedirects } from "../src/hosting/cloudflare.ts"
 
 const out = resolve(import.meta.dirname, "..", "out")
@@ -30,7 +36,10 @@ await writeFile(join(out, "_redirects"), renderRedirects(redirects))
 
 await writeFile(
   join(out, "_headers"),
-  renderHeaders(["/", "/welcome", ...publishedSlugs.map((slug) => `/${slug}`)]),
+  renderHeaders({
+    pagePaths: ["/", "/welcome", ...publishedSlugs.map((slug) => `/${slug}`)],
+    fontOrigin,
+  }),
 )
 
 const missing = ["welcome", ...publishedSlugs].flatMap((slug) =>
@@ -52,3 +61,21 @@ for (const file of [
   if (!existsSync(join(out, file))) missing.push(file)
 
 if (missing.length > 0) throw new Error(`The export is missing: ${missing.join(", ")}`)
+
+const defaults = [
+  { origin: siteUrl, fallback: defaultSiteUrl, needle: defaultSiteUrl },
+  { origin: fontOrigin, fallback: defaultFontOrigin, needle: `${defaultFontOrigin}/fonts/` },
+].filter(({ origin, fallback }) => origin !== fallback)
+
+const leaks: Array<string> = []
+
+for (const file of await files(out))
+  if (/\.(html|txt|xml|md|js|css|json)$/.test(file) || file.endsWith("_headers")) {
+    const text = await readFile(file, "utf8")
+
+    for (const { needle } of defaults)
+      if (text.includes(needle)) leaks.push(`${relative(out, file)} contains ${needle}`)
+  }
+
+if (leaks.length > 0)
+  throw new Error(`The export still points at the production origins:\n${leaks.join("\n")}`)

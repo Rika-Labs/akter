@@ -1,5 +1,6 @@
 import { markdownUrl, pageUrl } from "./page-markdown.ts"
-import { siteDescription, siteUrl } from "./site.ts"
+import { siteDescription } from "./site.ts"
+import { siteUrl } from "./build-origins.ts"
 
 /** One card on the welcome page: its own title, and the published page it opens. */
 export interface WelcomeCard {

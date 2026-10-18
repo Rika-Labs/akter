@@ -1,13 +1,6 @@
 @import "tailwindcss";
 @import "fumadocs-ui/css/preset.css";
 
-@font-face {
-  font-family: "PolySans Var";
-  src: url("https://akter.dev/fonts/PolySans-variable.woff2") format("woff2");
-  font-weight: 300 800;
-  font-display: optional;
-}
-
 *,
 ::before,
 ::after {
@@ -347,4 +340,10 @@ a[data-card]:not(:is(h1, h2, h3, h4, h5, h6) > *):hover {
 [data-toc-popover-trigger] > span > span:first-child {
   opacity: 1 !important;
   translate: none !important;
+}
+
+@media (max-width: 40rem) {
+  figure.shiki [role="region"] {
+    padding-top: 2.75rem;
+  }
 }

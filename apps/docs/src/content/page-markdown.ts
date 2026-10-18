@@ -1,4 +1,5 @@
-import { siteDescription, siteName, siteUrl } from "./site.ts"
+import { siteDescription, siteName } from "./site.ts"
+import { siteUrl } from "./build-origins.ts"
 
 /** One published page, ready to be written out as Markdown. */
 export interface MarkdownPage {

@@ -51,7 +51,11 @@ export default async function DocsPageRoute(props: PageParams) {
     <DocsPage toc={page.data.toc} full={page.data.full}>
       <DocsTitle>{page.data.title}</DocsTitle>
       <DocsDescription>{page.data.description}</DocsDescription>
-      <PageActions slug={slug.join("/")} sourcePath={`docs/${slug.join("/")}.md`} />
+      <PageActions
+        slug={slug.join("/")}
+        pageUrl={pageUrl(slug.join("/"))}
+        sourcePath={`docs/${slug.join("/")}.md`}
+      />
       <DocsBody>
         <Body components={mdxComponents} />
       </DocsBody>

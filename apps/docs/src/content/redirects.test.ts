@@ -5,6 +5,13 @@ import { redirects } from "./redirects.ts"
 
 const routes = new Set(["welcome", ...publishedSlugs])
 
+const resolve = (path: string) =>
+  redirects.find((redirect) =>
+    redirect.source.endsWith("/*")
+      ? path.startsWith(redirect.source.slice(0, -1))
+      : redirect.source === path,
+  )
+
 const legacySources = [
   "/cloud/bring-your-database",
   "/contracts/02-command-turns",
@@ -58,11 +65,23 @@ describe("redirects", () => {
       )
   })
 
-  it("lists static sources before splat sources so the specific rule wins", () => {
-    const firstSplat = redirects.findIndex((redirect) => redirect.source.includes("*"))
+  it("resolves every static source to itself, so no splat rule above it shadows it", () => {
+    for (const redirect of redirects)
+      if (!redirect.source.includes("*"))
+        expect(resolve(redirect.source)?.source, redirect.source).toBe(redirect.source)
+  })
 
-    expect(
-      redirects.slice(firstSplat).some((redirect) => redirect.source.startsWith("/contracts/0")),
-    ).toBe(false)
+  it("sends a bare directory address, with or without a slash, to the directory, not to an empty splat", () => {
+    for (const redirect of redirects.filter((candidate) => candidate.source.endsWith("/*"))) {
+      const directory = redirect.source.slice(0, -2)
+
+      for (const path of [directory, `${directory}/`]) {
+        const found = resolve(path)
+
+        expect(found, path).toBeDefined()
+        expect(found?.destination, path).not.toMatch(/\/\.md$|\/\/$/)
+        expect(found?.destination, path).not.toContain(":splat")
+      }
+    }
   })
 })
