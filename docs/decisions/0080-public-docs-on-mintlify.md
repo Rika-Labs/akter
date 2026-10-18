@@ -1,6 +1,6 @@
 # ADR 0080: Public docs on Mintlify
 
-**Status:** accepted (2026-10-03, Dallen).
+**Status:** superseded by [ADR 0140](0140-public-docs-on-fumadocs.md) (2026-10-17, Dallen). Accepted 2026-10-03.
 
 **Responsibility:** decide where Akter's public documentation is published and what the website does with it.
 

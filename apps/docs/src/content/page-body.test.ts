@@ -19,7 +19,7 @@ describe("pageBody", () => {
     expect(body).not.toContain("title:")
   })
 
-  it("turns the Mintlify warning tag into a quote and keeps its text", () => {
+  it("turns the warning tag into a quote and keeps its text", () => {
     const body = pageBody("operations/self-host")
 
     expect(body).not.toContain("<Warning>")

@@ -30,7 +30,7 @@ export const remarkLeadingHeading = () => (tree: Root) => {
 }
 
 /**
- * Turns Mintlify-style `<Warning>` blocks into callouts. The pages are parsed as plain
+ * Turns `<Warning>`, `<Note>`, `<Info>`, `<Tip>` and `<Check>` blocks into callouts. The pages are parsed as plain
  * Markdown, so these arrive as raw HTML blocks.
  */
 export const remarkAdmonitionTags = () => (tree: Root) => {
