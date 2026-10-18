@@ -1,0 +1,350 @@
+@import "tailwindcss";
+@import "fumadocs-ui/css/preset.css";
+
+@font-face {
+  font-family: "PolySans Var";
+  src: url("https://akter.dev/fonts/PolySans-variable.woff2") format("woff2");
+  font-weight: 300 800;
+  font-display: optional;
+}
+
+*,
+::before,
+::after {
+  overflow-anchor: none;
+}
+
+@font-face {
+  font-family: "PolySans Fallback";
+  src: local("Arial"), local("Helvetica"), local("Liberation Sans"), local("Arimo");
+  font-weight: 300 500;
+  size-adjust: 102.29%;
+  ascent-override: 89.94%;
+  descent-override: 20.33%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: "PolySans Fallback";
+  src:
+    local("Arial Bold"), local("Arial-BoldMT"), local("Helvetica Bold"),
+    local("Liberation Sans Bold"), local("Arimo Bold");
+  font-weight: 600 800;
+  size-adjust: 97.9%;
+  ascent-override: 93.97%;
+  descent-override: 21.25%;
+  line-gap-override: 0%;
+}
+
+:root {
+  color-scheme: light dark;
+  --ak-page: light-dark(#fbfbfa, #121311);
+  --ak-ink: light-dark(#0b0d0b, #ecebe7);
+  --ak-tile: light-dark(#f1f0ed, #1b1c1a);
+  --ak-hairline: light-dark(rgb(55 48 31 / 0.13), rgb(236 235 231 / 0.16));
+  --ak-hairline-strong: light-dark(rgb(55 48 31 / 0.28), rgb(236 235 231 / 0.32));
+  --ak-muted: light-dark(rgb(11 13 11 / 0.55), rgb(236 235 231 / 0.6));
+  --ak-body: light-dark(rgb(11 13 11 / 0.82), rgb(236 235 231 / 0.85));
+  --ak-accent: #ffc300;
+  --ak-accent-code: light-dark(#8a6400, #ffd54d);
+  --ak-code-foreground: var(--ak-ink);
+  --ak-code-background: var(--ak-tile);
+  --ak-code-token-constant: var(--ak-ink);
+  --ak-code-token-string: light-dark(#5b5a52, #cbc8b6);
+  --ak-code-token-comment: var(--ak-muted);
+  --ak-code-token-keyword: var(--ak-accent-code);
+  --ak-code-token-parameter: var(--ak-ink);
+  --ak-code-token-function: var(--ak-ink);
+  --ak-code-token-string-expression: light-dark(#5b5a52, #cbc8b6);
+  --ak-code-token-punctuation: var(--ak-muted);
+  --ak-code-token-link: var(--ak-ink);
+  background: var(--ak-page);
+}
+
+@theme {
+  --font-sans:
+    "PolySans Var", "PolySans Fallback", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    sans-serif;
+  --font-mono: var(--font-akter-mono), ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --radius-xs: 0;
+  --radius-sm: 0;
+  --radius-md: 0;
+  --radius-lg: 0;
+  --radius-xl: 0;
+  --radius-2xl: 0;
+  --radius-3xl: 0;
+  --radius-4xl: 0;
+
+  --color-fd-background: var(--ak-page);
+  --color-fd-foreground: var(--ak-ink);
+  --color-fd-muted: var(--ak-tile);
+  --color-fd-muted-foreground: var(--ak-muted);
+  --color-fd-popover: var(--ak-page);
+  --color-fd-popover-foreground: var(--ak-ink);
+  --color-fd-card: var(--ak-tile);
+  --color-fd-card-foreground: var(--ak-ink);
+  --color-fd-border: var(--ak-hairline);
+  --color-fd-primary: var(--ak-ink);
+  --color-fd-primary-foreground: var(--ak-page);
+  --color-fd-secondary: var(--ak-tile);
+  --color-fd-secondary-foreground: var(--ak-ink);
+  --color-fd-accent: light-dark(rgb(11 13 11 / 0.05), rgb(236 235 231 / 0.07));
+  --color-fd-accent-foreground: var(--ak-ink);
+  --color-fd-ring: var(--ak-accent);
+  --color-fd-overlay: rgb(0 0 0 / 0.4);
+}
+
+@theme static {
+  --color-fd-info: var(--ak-ink);
+  --color-fd-warning: var(--ak-accent);
+  --color-fd-error: light-dark(#b42318, #ff8a80);
+  --color-fd-success: light-dark(#2f7d32, #81c784);
+  --color-fd-idea: var(--ak-accent);
+  --color-fd-diff-remove: rgb(200 10 100 / 0.12);
+  --color-fd-diff-remove-symbol: rgb(230 10 100);
+  --color-fd-diff-add: rgb(14 180 100 / 0.1);
+  --color-fd-diff-add-symbol: rgb(10 200 100);
+}
+
+body {
+  background: var(--ak-page);
+  color: var(--ak-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+.akter-wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5625rem;
+  color: var(--ak-ink);
+  font-size: 1.1875rem;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  line-height: 1;
+}
+
+.akter-mark-frame {
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+}
+
+#nd-subnav {
+  background: var(--ak-page);
+  backdrop-filter: none;
+}
+
+#nd-subnav [data-header-body],
+#nd-subnav [data-header-tabs] {
+  border-color: var(--ak-hairline);
+}
+
+#nd-subnav [data-header-tabs] a {
+  font-weight: 450;
+}
+
+#nd-subnav [data-search-full] {
+  background: var(--ak-page);
+  border-color: var(--ak-hairline);
+  color: var(--ak-muted);
+}
+
+#nd-subnav [data-search-full]:hover {
+  border-color: var(--ak-hairline-strong);
+  background: var(--ak-page);
+}
+
+kbd {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  background: transparent;
+  border-color: var(--ak-hairline);
+  color: var(--ak-muted);
+}
+
+#nd-subnav a[href="https://app.akter.dev/sign-in"] {
+  display: inline-flex;
+  height: 2.125rem;
+}
+
+a[href="https://app.akter.dev/sign-in"] {
+  align-items: center;
+  padding: 0 0.875rem;
+  background: var(--ak-accent);
+  border: 1px solid var(--ak-accent);
+  color: #0b0d0b;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 400;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+a[href="https://app.akter.dev/sign-in"]:hover {
+  color: #0b0d0b;
+  filter: brightness(0.96);
+}
+
+a[href="https://github.com/Rika-Labs/akter"] {
+  border: 1px solid var(--ak-hairline);
+  color: var(--ak-ink);
+}
+
+a[href="https://github.com/Rika-Labs/akter"]:hover {
+  background: var(--ak-tile);
+}
+
+#nd-sidebar [data-radix-scroll-area-viewport] > div > p {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ak-muted);
+}
+
+#nd-sidebar a[data-active="true"] {
+  background: var(--color-fd-accent);
+  color: var(--ak-ink);
+  font-weight: 500;
+  box-shadow: inset 2px 0 0 var(--ak-accent);
+}
+
+#nd-sidebar a[data-active="false"]:hover {
+  background: var(--color-fd-accent);
+}
+
+h1,
+h2,
+h3,
+h4 {
+  letter-spacing: -0.02em;
+  color: var(--ak-ink);
+}
+
+h1 {
+  font-weight: 450;
+  letter-spacing: -0.04em;
+}
+
+h2 {
+  font-weight: 450;
+}
+
+h3,
+h4 {
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.prose :is(p, li) {
+  color: var(--ak-body);
+}
+
+.prose strong {
+  color: var(--ak-ink);
+  font-weight: 600;
+}
+
+.prose a:not([data-card]) {
+  color: var(--ak-ink);
+  font-weight: 500;
+  text-decoration-line: underline;
+  text-decoration-style: dotted;
+  text-decoration-color: var(--ak-accent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.25rem;
+}
+
+.prose a:not([data-card]):hover {
+  text-decoration-style: solid;
+}
+
+.prose :not(pre) > code {
+  background: var(--ak-tile);
+  border: 1px solid var(--ak-hairline);
+  color: var(--ak-ink);
+  font-size: 0.85em;
+}
+
+figure.shiki,
+figure:has(> div > pre) {
+  background: var(--ak-tile);
+  border: 1px solid var(--ak-hairline);
+  box-shadow: none;
+}
+
+pre,
+code {
+  font-family: var(--font-mono);
+}
+
+th {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ak-muted);
+}
+
+[data-card]:not(:is(h1, h2, h3, h4, h5, h6) > *) {
+  background: var(--ak-tile);
+  border: 1px solid var(--ak-hairline);
+  box-shadow: none;
+}
+
+a[data-card]:not(:is(h1, h2, h3, h4, h5, h6) > *):hover {
+  background: var(--ak-tile);
+  border-color: var(--ak-hairline-strong);
+}
+
+#nd-toc h3,
+[id="toc-title"] {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ak-muted);
+}
+
+.page-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid var(--ak-hairline);
+}
+
+.page-actions button {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  background: var(--ak-page);
+  border: 1px solid var(--ak-hairline);
+}
+
+.page-actions button:hover {
+  background: var(--ak-tile);
+}
+
+#nd-toc *,
+[data-toc-popover] * {
+  transition: none !important;
+}
+
+[data-toc-popover-trigger] > svg[role="progressbar"],
+[data-toc-popover-trigger] > span > span:last-child {
+  display: none;
+}
+
+[data-toc-popover-trigger] > span > span:first-child {
+  opacity: 1 !important;
+  translate: none !important;
+}
