@@ -37,6 +37,16 @@ describe("buildSidebars", () => {
     ])
   })
 
+  it("carries each page's description to its item, the home page of a section included", () => {
+    const described = buildSidebars((slug) => ({ title: "T:" + slug, description: "D:" + slug }))
+    const items = described.flatMap((sidebar) => sidebar.groups.flatMap((group) => group.items))
+
+    expect(items.find((item) => item.href === "/welcome")?.description).toBe("D:welcome")
+    expect(items.find((item) => item.href === "/api/overview")?.description).toBe("D:api/overview")
+    expect(items.find((item) => item.href === "/quickstart")?.description).toBe("D:quickstart")
+    expect(items.every((item) => item.description === "D:" + item.href.slice(1))).toBe(true)
+  })
+
   it("lists every published page once, in navigation order, under the section of its tab", () => {
     const listed = [...hrefsOf(0), ...hrefsOf(1)].filter(
       (href) => href !== "/welcome" && href !== "/api/overview",

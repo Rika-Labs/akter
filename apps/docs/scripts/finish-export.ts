@@ -46,6 +46,7 @@ for (const file of [
   "llms.txt",
   "llms-full.txt",
   "search.json",
+  "search-sections.json",
   "sitemap.xml",
   "robots.txt",
   "favicon.svg",

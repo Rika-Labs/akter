@@ -27,11 +27,17 @@ const titles: PageTitles = (slug) => {
   return { title: data.sidebarTitle ?? data.title, description: data.description }
 }
 
-/** The sidebar of each section, built from the navigation. */
-export const sidebars = buildSidebars(titles)
-
 /** The pages the app writes itself: welcome and the API reference overview. */
 export const generatedPages = landingPages(titles)
+
+/** The sidebar of each section, built from the navigation. */
+export const sidebars = buildSidebars((slug) => {
+  const generated = generatedPages.find((page) => page.slug === slug)
+
+  return generated === undefined
+    ? titles(slug)
+    : { title: generated.title, description: generated.description }
+})
 
 /** Every published page, in navigation order. */
 export const publishedPages = publishedSlugs.map((slug) => ({ slug, page: pageOf(slug) }))

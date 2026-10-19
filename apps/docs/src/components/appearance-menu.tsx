@@ -1,6 +1,6 @@
 "use client"
 
-import { Check, Contrast, Monitor, Moon, Sun, type LucideIcon } from "lucide-react"
+import { Check, Monitor, Moon, Sun, type LucideIcon } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 
 import { themeStorageKey } from "../content/theme-script.ts"
@@ -16,6 +16,23 @@ const choices: ReadonlyArray<{
   { value: "dark", label: "Dark", Icon: Moon },
   { value: "system", label: "System", Icon: Monitor },
 ]
+
+/** The Appearance icon: a circle whose right half is drawn as three vertical strokes. */
+const ContrastIcon = () => (
+  <svg
+    className="ak-icon"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 3.5v17M15 4v16M18 5.5v13" />
+  </svg>
+)
 
 const stored = (): Choice => {
   const value = window.localStorage.getItem(themeStorageKey)
@@ -100,7 +117,7 @@ export function AppearanceMenu() {
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
-        <Contrast className="ak-icon" aria-hidden="true" />
+        <ContrastIcon />
         <span className="ak-row-label">Appearance</span>
       </button>
     </div>

@@ -6,6 +6,7 @@ import { CornerDownLeft, ArrowDown, ArrowUp, FileText, Hash, Search, SearchX } f
 import Link from "next/link"
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react"
 
+import type { SearchSection } from "../content/search-sections.ts"
 import { suggestedHrefs, type Sidebar } from "../content/sidebar.ts"
 
 type Filter = "All" | "Documentation" | "API reference"
@@ -15,6 +16,7 @@ const filters: ReadonlyArray<Filter> = ["All", "Documentation", "API reference"]
 interface PageEntry {
   readonly href: string
   readonly title: string
+  readonly description?: string | undefined
   readonly group: string
   readonly product: string
 }
@@ -27,6 +29,16 @@ interface Row {
   readonly snippet?: string | undefined
   readonly trail: string
   readonly product: string
+}
+
+let sectionsRequest: Promise<Record<string, SearchSection>> | undefined
+
+const loadSections = (): Promise<Record<string, SearchSection>> => {
+  sectionsRequest ??= fetch("/search-sections.json")
+    .then((response): Promise<Record<string, SearchSection>> => response.json())
+    .catch((): Record<string, SearchSection> => ({}))
+
+  return sectionsRequest
 }
 
 const highlight = (text: string, terms: ReadonlyArray<string>): ReactNode => {
@@ -73,6 +85,11 @@ export function SearchPalette(props: {
     [filter],
   )
   const { search, onSearchChange, data } = useDocsSearch({ client })
+  const [sections, setSections] = useState<Record<string, SearchSection>>({})
+
+  useEffect(() => {
+    void loadSections().then(setSections)
+  }, [])
 
   const pages = useMemo(
     () =>
@@ -84,6 +101,7 @@ export function SearchPalette(props: {
               {
                 href: item.href,
                 title: item.title,
+                description: item.description,
                 group: group.heading ?? sidebar.product.title,
                 product: sidebar.product.title,
               },
@@ -115,38 +133,51 @@ export function SearchPalette(props: {
             ]
       })
 
-    return (data?.items ?? []).flatMap((item): ReadonlyArray<Row> => {
+    const items = data?.items ?? []
+    const listed = new Set(items.flatMap((item) => (item.type === "page" ? [item.url] : [])))
+    const paragraphs = new Set(items.flatMap((item) => (item.type === "text" ? [item.url] : [])))
+
+    return items.flatMap((item): ReadonlyArray<Row> => {
       if (item.type === "table") return []
 
-      const page = pages.get(item.url.split("#")[0] ?? "")
+      const address = item.url.split("#")[0] ?? ""
+      const page = pages.get(address)
 
       if (page === undefined) return []
 
-      if (item.type === "page")
+      const describes = item.type === "text" && item.content === page.description
+
+      if (item.type === "page" || (describes && !listed.has(address)))
         return [
           {
             key: item.id,
             href: item.url,
             kind: "page",
-            title: item.content,
+            title: item.type === "page" ? item.content : page.title,
+            snippet: page.description === undefined ? undefined : windowed(page.description, terms),
             trail: page.group,
             product: page.product,
           },
         ]
+
+      if (describes || (item.type === "heading" && paragraphs.has(item.url))) return []
+
+      const section = sections[item.url]
+      const opening = item.type === "text" ? item.content : section?.text
 
       return [
         {
           key: item.id,
           href: item.url,
           kind: "heading",
-          title: item.type === "heading" ? item.content : (item.breadcrumbs?.at(-1) ?? page.title),
-          snippet: item.type === "text" ? windowed(item.content, terms) : undefined,
-          trail: page.title,
+          title: item.type === "heading" ? item.content : (section?.title ?? page.title),
+          snippet: opening === undefined ? undefined : windowed(opening, terms),
+          trail: section?.parent === undefined ? page.title : `${page.title} › ${section.parent}`,
           product: page.product,
         },
       ]
     })
-  }, [data, pages, terms])
+  }, [data, pages, sections, terms])
 
   const groups = useMemo(() => {
     const byProduct = new Map<string, Array<Row>>()

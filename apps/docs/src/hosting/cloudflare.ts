@@ -44,8 +44,8 @@ export const contentSecurityPolicy = (): string =>
 /**
  * The `_headers` file. Every response carries the security headers of Akter's other
  * websites. Hashed build assets never change, so they cache for a year. Every page, the
- * Markdown twins, the search index and `llms.txt` revalidate on each visit, so a deploy shows
- * at once. Cache rules name pages one by one because a header rule on `/*` would also match
+ * Markdown twins, the search index with its sections and `llms.txt` revalidate on each visit, so a
+ * deploy shows at once. Cache rules name pages one by one because a header rule on `/*` would also match
  * the immutable assets and merge with theirs; for the same reason no other rule repeats a
  * security header, since Cloudflare joins a repeated header and browsers enforce every policy.
  */
@@ -65,6 +65,7 @@ export const renderHeaders = (input: { readonly pagePaths: ReadonlyArray<string>
     rule("/llms.txt", [SHORT_LIVED]),
     rule("/llms-full.txt", [SHORT_LIVED]),
     rule("/search.json", [SHORT_LIVED]),
+    rule("/search-sections.json", [SHORT_LIVED]),
     rule("/sitemap.xml", [SHORT_LIVED]),
     rule("/robots.txt", [SHORT_LIVED]),
     rule("/favicon.svg", [SHORT_LIVED]),

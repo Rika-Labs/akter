@@ -490,6 +490,7 @@ svg {
 .ak-row > .ak-icon,
 .ak-row > svg {
   color: var(--icon-muted);
+  overflow: visible;
 }
 
 .ak-row:hover,

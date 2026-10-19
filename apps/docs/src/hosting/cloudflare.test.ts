@@ -30,6 +30,11 @@ describe("renderHeaders", () => {
     expect(rules).toContain("/\n  Cache-Control: public, max-age=0, must-revalidate")
   })
 
+  it("revalidates the search index and its sections, so a deploy shows at once", () => {
+    for (const file of ["/search.json", "/search-sections.json"])
+      expect(rules).toContain(file + "\n  Cache-Control: public, max-age=0, must-revalidate")
+  })
+
   it("declares the Markdown twins' content type", () => {
     expect(text).toContain("/*.md\n  Content-Type: text/markdown; charset=utf-8")
   })

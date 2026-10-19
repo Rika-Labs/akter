@@ -10,6 +10,7 @@ export type PageTitles = (slug: string) => {
 /** One link in the sidebar. */
 export interface SidebarItem {
   readonly title: string
+  readonly description?: string | undefined
   readonly href: string
   readonly icon: IconName
 }
@@ -35,8 +36,9 @@ export const suggestedHrefs: ReadonlyArray<string> = [
   "/api/06-cli",
 ]
 
-const item = (slug: string, title: string): SidebarItem => ({
+const item = (slug: string, title: string, description: string | undefined): SidebarItem => ({
   title,
+  description,
   href: `/${slug}`,
   icon: iconOf(slug),
 })
@@ -47,7 +49,8 @@ const item = (slug: string, title: string): SidebarItem => ({
  */
 export const buildSidebars = (titles: PageTitles): ReadonlyArray<Sidebar> =>
   products.map((product) => {
-    const home = item(product.home.slice(1), product.homeTitle)
+    const homeSlug = product.home.slice(1)
+    const home = item(homeSlug, product.homeTitle, titles(homeSlug).description)
     const groups = navigation
       .filter((tab) => tab.product === product.id)
       .flatMap((tab) => tab.groups)
@@ -55,7 +58,11 @@ export const buildSidebars = (titles: PageTitles): ReadonlyArray<Sidebar> =>
         heading: group.group,
         items: [
           ...(group.group === product.homeGroup ? [home] : []),
-          ...group.pages.map((slug) => item(slug, titles(slug).title)),
+          ...group.pages.map((slug) => {
+            const page = titles(slug)
+
+            return item(slug, page.title, page.description)
+          }),
         ],
       }))
 
