@@ -2,7 +2,6 @@ import {
   Activity,
   Archive,
   ArrowRightLeft,
-  BookOpen,
   Boxes,
   Braces,
   ChartColumn,
@@ -26,28 +25,26 @@ import {
   ListFilter,
   ListTodo,
   Package,
-  Rocket,
   ScrollText,
   Send,
   Server,
-  SquareCode,
   Tag,
   Terminal,
   Type,
   UserRound,
   Variable,
   Workflow,
-  Zap,
-  type LucideIcon,
 } from "lucide-react"
+import type { ComponentType, SVGProps } from "react"
 
 import type { IconName } from "../content/page-icons.ts"
+import { ApiGlyph, BoltGlyph, BookGlyph, RocketGlyph } from "./glyphs.tsx"
 
-const icons: Readonly<Record<IconName, LucideIcon>> = {
+const icons: Readonly<Record<IconName, ComponentType<SVGProps<SVGSVGElement>>>> = {
   activity: Activity,
   archive: Archive,
   "arrow-right-left": ArrowRightLeft,
-  "book-open": BookOpen,
+  "book-open": BookGlyph,
   boxes: Boxes,
   braces: Braces,
   "chart-column": ChartColumn,
@@ -71,18 +68,18 @@ const icons: Readonly<Record<IconName, LucideIcon>> = {
   "list-filter": ListFilter,
   "list-todo": ListTodo,
   package: Package,
-  rocket: Rocket,
+  rocket: RocketGlyph,
   "scroll-text": ScrollText,
   send: Send,
   server: Server,
-  "square-code": SquareCode,
+  "square-code": ApiGlyph,
   tag: Tag,
   terminal: Terminal,
   type: Type,
   "user-round": UserRound,
   variable: Variable,
   workflow: Workflow,
-  zap: Zap,
+  zap: BoltGlyph,
 }
 
 /** A page or card icon, drawn at the size the surrounding component sets. */
@@ -95,7 +92,7 @@ export function PageIcon(props: { readonly name: IconName }) {
 /** The X logo, as a 24-unit outline. */
 export function XMark() {
   return (
-    <svg viewBox="-3 -3 30 30" fill="currentColor" aria-hidden="true">
+    <svg viewBox="-1.37 -1.37 26.74 26.74" fill="currentColor" aria-hidden="true">
       <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
     </svg>
   )

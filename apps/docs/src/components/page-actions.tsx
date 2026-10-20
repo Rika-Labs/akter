@@ -1,7 +1,8 @@
 "use client"
 
-import { ArrowUpRight, Check, Copy } from "lucide-react"
 import { useState } from "react"
+
+import { CheckGlyph, CopyGlyph, ExternalGlyph } from "./glyphs.tsx"
 
 /**
  * The two actions under a page's table of contents: copy the page as Markdown, and open the
@@ -24,11 +25,11 @@ export function PageActions(props: { readonly slug: string }) {
     <div className="ak-page-actions">
       <button type="button" className="ak-page-action" onClick={() => void copy()}>
         <span aria-live="polite">{copied ? "Copied" : "Copy page"}</span>
-        {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+        {copied ? <CheckGlyph aria-hidden="true" /> : <CopyGlyph aria-hidden="true" />}
       </button>
       <a className="ak-page-action" href={markdownPath} target="_blank" rel="noopener noreferrer">
         <span>View as Markdown</span>
-        <ArrowUpRight aria-hidden="true" />
+        <ExternalGlyph aria-hidden="true" />
       </a>
     </div>
   )

@@ -1,12 +1,13 @@
 "use client"
 
-import { ArrowUpRight, Search } from "lucide-react"
+import { FocusScope } from "@radix-ui/react-focus-scope"
 import Link from "next/link"
-import type { ReactNode } from "react"
+import type { ReactNode, Ref } from "react"
 
 import { signInUrl, repositoryUrl, xUrl } from "../content/site.ts"
 import type { Sidebar as SidebarModel, SidebarGroup } from "../content/sidebar.ts"
 import { AppearanceMenu } from "./appearance-menu.tsx"
+import { ExternalGlyph, SearchGlyph } from "./glyphs.tsx"
 import { GitHubMark, PageIcon, XMark } from "./icons.tsx"
 import { ProductSwitcher } from "./product-switcher.tsx"
 
@@ -47,56 +48,74 @@ function Rows(props: { readonly group: SidebarGroup; readonly route: string }) {
  * screen it is the drawer the top bar opens.
  */
 export function Sidebar(props: {
+  readonly ref: Ref<HTMLElement>
   readonly logo: ReactNode
   readonly sidebars: ReadonlyArray<SidebarModel>
   readonly pathname: string
+  readonly trapped: boolean
+  readonly onNavigate: () => void
   readonly onSearch: () => void
 }) {
   const current = sidebarFor(props.sidebars, props.pathname)
   const route = routeOf(props.pathname)
 
   return (
-    <aside className="ak-sidebar">
-      <div className="ak-brand">
-        <Link className="ak-wordmark" aria-label="Akter docs" href="/welcome">
-          {props.logo}
-        </Link>
-      </div>
-      <ProductSwitcher sidebars={props.sidebars} current={current.product.id} />
-      <button type="button" className="ak-search-btn" onClick={props.onSearch}>
-        <Search className="ak-icon" aria-hidden="true" />
-        <span>Search</span>
-        <kbd className="ak-kbd">⌘K</kbd>
-      </button>
-      <nav className="ak-nav" aria-label={current.product.title}>
-        {current.groups.map((group) =>
-          group.heading === undefined ? (
-            <Rows key="top" group={group} route={route} />
-          ) : (
-            <div key={group.heading} className="ak-section-group">
-              <p className="ak-section-head">
-                <span className="ak-row-label">{group.heading}</span>
-              </p>
-              <Rows group={group} route={route} />
-            </div>
-          ),
-        )}
-      </nav>
-      <div className="ak-group ak-sidebar-foot">
-        <AppearanceMenu />
-        <div className="ak-foot-row">
-          <a className="ak-row" href={signInUrl}>
-            <ArrowUpRight className="ak-icon" aria-hidden="true" />
-            <span className="ak-row-label">Open Akter</span>
-          </a>
-          <a className="ak-icon-btn" href={xUrl} aria-label="Rika Labs on X">
-            <XMark />
-          </a>
-          <a className="ak-icon-btn" href={repositoryUrl} aria-label="Akter on GitHub">
-            <GitHubMark />
-          </a>
+    <FocusScope
+      asChild
+      trapped={props.trapped}
+      loop={props.trapped}
+      onMountAutoFocus={(event) => event.preventDefault()}
+      onUnmountAutoFocus={(event) => event.preventDefault()}
+    >
+      <aside
+        ref={props.ref}
+        className="ak-sidebar"
+        onClick={(event) => {
+          if (event.target instanceof Element && event.target.closest("a[href]") !== null)
+            props.onNavigate()
+        }}
+      >
+        <div className="ak-brand">
+          <Link className="ak-wordmark" aria-label="Akter docs" href="/welcome">
+            {props.logo}
+          </Link>
         </div>
-      </div>
-    </aside>
+        <ProductSwitcher sidebars={props.sidebars} current={current.product.id} />
+        <button type="button" className="ak-search-btn" onClick={props.onSearch}>
+          <SearchGlyph className="ak-icon" aria-hidden="true" />
+          <span>Search</span>
+          <kbd className="ak-kbd">⌘K</kbd>
+        </button>
+        <nav className="ak-nav" aria-label={current.product.title}>
+          {current.groups.map((group) =>
+            group.heading === undefined ? (
+              <Rows key="top" group={group} route={route} />
+            ) : (
+              <div key={group.heading} className="ak-section-group">
+                <p className="ak-section-head">
+                  <span className="ak-row-label">{group.heading}</span>
+                </p>
+                <Rows group={group} route={route} />
+              </div>
+            ),
+          )}
+        </nav>
+        <div className="ak-group ak-sidebar-foot">
+          <AppearanceMenu />
+          <div className="ak-foot-row">
+            <a className="ak-row" href={signInUrl}>
+              <ExternalGlyph className="ak-icon" aria-hidden="true" />
+              <span className="ak-row-label">Open Akter</span>
+            </a>
+            <a className="ak-icon-btn" href={xUrl} aria-label="Rika Labs on X">
+              <XMark />
+            </a>
+            <a className="ak-icon-btn" href={repositoryUrl} aria-label="Akter on GitHub">
+              <GitHubMark />
+            </a>
+          </div>
+        </div>
+      </aside>
+    </FocusScope>
   )
 }

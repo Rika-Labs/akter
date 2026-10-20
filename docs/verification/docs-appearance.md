@@ -1,563 +1,564 @@
 # Docs appearance and first-paint evidence
 
-**Responsibility:** bound the public documentation's first-paint, theme, navigation, font-loading and reference-match claims.
+**Responsibility:** bound the public documentation's first-paint, theme, navigation, font-loading, scroll-restoration, keyboard and reference-match claims.
 
 **Authority:** evidence.
 
 **Owner role:** documentation.
 
-**Change policy:** rerun the measurement matrix below when `apps/docs` layout, its stylesheet, the Fumadocs version or the fonts change, and rerun the parity comparison when the reference site changes.
+**Change policy:** rerun the measurement matrix below when `apps/docs` layout, its stylesheet, the Fumadocs version, the fonts or the scroll-restore script change, and rerun the parity comparison when the reference site changes.
 
 ## Claims
 
 The public docs are the static export of `apps/docs`. The page the browser receives is complete: every element a reader sees on first paint is in the server-rendered HTML.
 
 1. The theme follows `prefers-color-scheme` until the reader picks Light or Dark in the Appearance menu, and a pick is applied before the first paint. No frame shows the other theme, and the page and panel backgrounds each take one value during a load.
-2. After the first paint no element moves by more than 0.5 px, changes size, or fades, on a load or a refresh, including a refresh that restores a mid-page scroll position of the panel, and including loads where the page scripts are slow or never arrive.
-3. A late font never swaps in. Inter and Geist Mono are embedded in the stylesheet, so there is no request to wait for, and the page is held hidden until both are decoded; if either fails or takes longer than 1.5 s the page shows in the fallback face for that load.
+2. After the first paint no element moves by more than 0.5 px, changes size, or fades, on a load or a refresh, including a refresh of a page scrolled to its middle, and including loads where the page scripts are slow or never arrive, the stylesheet is slow, or a font file is slow.
+3. A late font never swaps in. Inter and Geist Mono are hashed files of the export with a preload link on every page and `font-display: optional`. A face that is there for the first paint is used; one that is not is skipped for that page load, and the fallback faces have the faces' metrics, so no line changes width afterwards.
 4. Nothing animates in on load: no entrance transition, no hydration-time swap of visible text.
-5. The shell matches docs.capy.ai measurement for measurement in Akter's colours; every remaining difference is Capy's own content or brand, or an implementation detail that cannot be seen.
+5. A reload or a back or forward visit puts the page at the offset it was left at, before the first paint with scripts on and by the browser itself with scripts off, with one exception recorded under "Not verified".
+6. The menus and the drawer are operable by keyboard: arrow keys move through a menu and wrap, Escape closes it and gives focus back to its button, and the drawer holds focus, makes the page behind it inert and gives focus back when it closes.
+7. The shell matches docs.capy.ai measurement for measurement in Akter's colours; every remaining difference is Capy's own content or brand, a sub-pixel difference in a redrawn glyph, or an implementation detail that cannot be seen.
 
 ## Environment and method
 
-Collected on 2026-10-18 on macOS 26.6.2 (arm64), Google Chrome 155.0.8059.80 and Playwright's WebKit 26.6, both driven by Playwright 1.63.0, Bun 1.4.2, Node 26.7.0, Next.js 16.4.2 and fumadocs-ui 16.17.5. The export was served by a small static server that applies `_redirects` and `_headers`, so the policy was in force for the measurements.
+Collected on 2026-10-19 and 2026-10-20 on macOS 26.6.2 (arm64), Google Chrome 155.0.8059.85 and Playwright's WebKit 26.6, both driven by Playwright 1.63.0, Bun 1.4.2, Node 26.7.0, Next.js 16.4.2 and fumadocs-ui 16.17.5, on the working tree that became the commit that holds this file. The export was served by a small static server (appendix) that applies `_redirects` and `_headers`, so the policy was in force for the measurements; a second instance of it gzips text files, as Cloudflare does.
 
-The no-shift harness (the appendix) records every animation frame from document start until 3.5 s after the reload. In each frame it reads the rectangle and the effective opacity of every `h1`, `h2`, `h3`, `p`, `li`, `a`, `button`, `header`, `nav`, `aside`, `main`, `footer`, `iframe`, `img`, `pre`, `table`, `svg` and `kbd`, keyed by tag and visible text and measured in the coordinates of the scroll container the element lives in (the panel scrolls, not the window), and skips elements that are `visibility: hidden`. It also records the `html`, `body` and panel backgrounds, the panel's scroll offset, the window's scroll offset, which fonts are loaded, the paint timing entries and `layout-shift` entries. A scenario passes only if all of the following hold from the first painted frame on (the first frame at or after the first-paint entry, or the first frame with content where an engine reports none): no element differs from its settled rectangle by more than 0.5 px, none changes opacity, none appears inside the viewport later, the layout-shift total is 0, each background takes one value, the window never scrolls, and the panel's offset takes one value, equal to the offset before the reload on a mid-page reload.
+The no-shift harness (appendix) records every animation frame from document start until 2.4 s after the load. In each frame it reads the rectangle and the effective opacity of every `h1` to `h4`, `p`, `li`, `a`, `button`, `header`, `nav`, `aside`, `main`, `footer`, `img`, `pre`, `table`, `svg`, `kbd` and `input`, keyed by order, tag and visible text, in page coordinates (the document is the scroll container; fixed and sticky elements are read in viewport coordinates), and skips elements that are `visibility: hidden`. It also records the `html` and panel backgrounds, the window's scroll offset, the fonts' load state, the paint timing entries, `layout-shift` entries and `securitypolicyviolation` events. A scenario passes only if all of the following hold from the first frame with content on (the first frame at or after the first-paint entry, or the first frame with content where an engine reports none): no element differs from its settled rectangle by more than 0.5 px, none changes opacity, none appears inside the viewport later, the layout-shift total is 0, each background takes one value, the window's scroll offset takes one value equal to the offset before the reload on a mid-page reload, no policy violation or page error is raised, and the document was never held hidden by a script. Each scenario also checks that the real Inter and Geist Mono were used, by comparing the width of a probe string in each face with its fallback; the scenarios that delay a font file expect the opposite.
 
-The matrix is the product of: pages `/welcome`, `/quickstart` and `/api/01-server-api`; viewports 1440 × 900 and 390 × 844; schemes dark and light; scroll top, and the panel scrolled to the middle then reloaded so the page restores the offset; and three script conditions on the reload: scripts as served, every script file answered after 1.5 s, and every script file blocked. The last two put the main thread at rest, which is when a browser paints earliest. Two attacks run beside it: a reload 150 ms after a scroll, repeated 12 times per viewport, and a forced hydration mismatch (the heading changed before hydration, with scripts delayed 3 s) that must end on the server's text with the page never hidden after the gate lifts.
+The matrix is the product of: engines Chromium and WebKit; pages `/welcome`, `/quickstart` and `/api/01-server-api`; viewports 1440 × 900 and 390 × 844; schemes dark and light; and seven conditions:
+
+| Condition    | What it does                                                                                                                               |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `cold`       | A fresh browser context, so nothing is cached.                                                                                             |
+| `warm`       | The page is visited, then reloaded.                                                                                                        |
+| `mid`        | The page is visited, scrolled to the middle of its scroll range, then reloaded; the offset must be the same on the first frame.            |
+| `opposite`   | The reader's saved choice is the opposite of the system scheme.                                                                            |
+| `no-page-js` | Every script element is removed from the document, so the main thread is at rest, which is when a browser paints earliest.                 |
+| `css-delay`  | Every stylesheet is answered after 2.2 s.                                                                                                  |
+| `cpu4`       | Chromium with the CPU throttled four times (the WebKit rows repeat the plain load, because Playwright has no throttle control for WebKit). |
+
+A further condition, `font-delay`, answers every font file after 3 s. The interaction attacks (appendix) run beside the matrix and are listed under "Keyboard and behaviour".
 
 ## Results
 
-| Build                                      | Scenarios | Failing | Frames recorded | Moved or resized elements | Fades | Late in viewport | Layout shift |
-| ------------------------------------------ | --------- | ------- | --------------- | ------------------------- | ----- | ---------------- | ------------ |
-| Static export, Chromium                    | 72        | 0       | 15,169          | 0                         | 0     | 0                | 0            |
-| Static export, WebKit                      | 72        | 0       | 15,080          | 0                         | 0     | 0                | 0            |
-| Same export before the font gate, Chromium | 72        | 3       | 15,184          | 50                        | 0     | 0                | 0.0024       |
-| Same export before the font gate, WebKit   | 72        | 32      | 15,097          | 820                       | 0     | 0                | 0            |
+| Run                                             | Engine   | Scenarios | Failing | Frames recorded | Moved or resized elements | Fades | Late in viewport | Layout shift | Policy violations |
+| ----------------------------------------------- | -------- | --------- | ------- | --------------- | ------------------------- | ----- | ---------------- | ------------ | ----------------- |
+| Seven conditions, export served as built        | Chromium | 84        | 0       | 12,250          | 0                         | 0     | 0                | 0            | 0                 |
+| Seven conditions, export served as built        | WebKit   | 84        | 0       | 12,286          | 0                         | 0     | 0                | 0            | 0                 |
+| `font-delay`, every font file answered 3 s late | Both     | 24        | 0       | 7,642 (content) | 0                         | 0     | 0                | 0            | 0                 |
+| `mid` over gzip, as Cloudflare serves it        | WebKit   | 12        | 0       | 1,742           | 0                         | 0     | 0                | 0            | 0                 |
 
-At 1440 px wide the page is the darker surface and the panel sits on it: dark scenarios saw only `rgb(10, 10, 9)` behind the panel and `rgb(18, 19, 17)` in it, and light scenarios only `rgb(238, 238, 237)` and `rgb(251, 251, 250)`. At 390 px wide the page is the panel: dark scenarios saw only `rgb(18, 19, 17)` on the page and a transparent panel, and light scenarios only `rgb(251, 251, 250)`. Each scenario saw one value of each, and none saw white in dark. First content appeared at most 43 ms after navigation start in Chromium and between 14 and 77 ms in WebKit. All 36 reloads of a scrolled panel in each engine were at the saved offset on the first frame with content. The rapid-reload attack lost the position 0 times in 24 reloads per engine (12 at each width), and in the hydration attack the heading ended as the server wrote it and the page was hidden in none of the 14 one-second samples, at both widths in both engines.
+At 1440 px wide the page is the darker surface and the panel sits on it; at 390 px wide the page is the panel. Each scenario saw one value of each background, and none saw white in dark. First content appeared between 37 and 82 ms after navigation start in Chromium and between 11 and 86 ms in WebKit (cold, warm, mid, opposite and no-page-js); Chromium at four times the CPU cost took 119 to 155 ms. With the stylesheet held for 2.2 s the first frame with content came at 2.22 to 2.25 s in both engines and nothing before it had content, so a slow stylesheet delays the page without ever showing an unstyled one. With the fonts held for 3 s, first content came at 52 to 287 ms in the fallback faces and nothing moved when the files arrived, because a face that has not arrived by the first paint is not used for that load.
 
-The two rows "before the font gate" are the same export without the gate, measured with the harness in the appendix. Every failure was in a condition where the page scripts were slow or blocked; the 24 scenarios with scripts as served passed in both engines. In Chromium 3 of the 48 failed: two moved boxes, and one recorded a layout shift with no box moving. Counted from the first frame with content, an earlier variant of the harness, 15 of the 48 failed with 460 moved boxes. WebKit reports no paint entry, so both variants start at the first frame with content and agree: 32 of 48. The recorded movements were 0.9 to 22.4 px, in text and in everything below it, while a font face was still decoding.
+All 12 mid-page reloads in each engine started at the saved offset on the first frame with content, and so did the 12 over gzip in WebKit. The rapid-reload attack (scroll to 57% of the page, wait 150 ms, reload, twelve times) lost the position 0 times in 12 reloads at each width in both engines (48 in all). In the hydration attack (the heading changed before hydration, with the scripts delayed 3 s) the heading ended as the server wrote it and the document was never hidden or gated in any of the seven one-second samples, at both widths in both engines.
 
-With JavaScript disabled, the quickstart renders its heading, 25 sidebar links, its table of contents and highlighted code in the correct theme for both preferences in both engines, so the first paint does not depend on a script.
+With JavaScript disabled in the browser (not by removing the script elements), the quickstart renders its heading, its sidebar links, its table of contents and highlighted code in the correct theme for both preferences in both engines, and a reload 600 ms after a scroll returns to the offset in 8 of 8 cases (see "Scroll restoration" for the shorter delays).
 
 ## Defects the measurement found
 
-Each was reproduced, fixed at its cause and re-measured; the matrix above is the run after the last fix.
+Each was reproduced, fixed at its cause and re-measured. The rows marked "round 4" came from an independent verifier's run on the previous commit (168 scenarios, of which 13 of the 24 without page scripts failed, and 34 raw assertions failed in its interaction run).
 
-| Observation                                                                                                                                                                                                                                                                                                            | Cause                                                                                                                                                                                                                                                                                                            | Fix and result                                                                                                                                                                                                                                                                                                                                  |
-| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| With the page scripts slow or blocked, boxes moved by up to 22 px after the first paint: 3 of 48 scenarios in Chromium (15 of 48 counted from the first frame with content) and 32 of 48 in WebKit. Layout-shift entries stayed 0 because the movement happens before the first frame the browser counts.              | An engine decodes an embedded font face only after it has laid out the first text. With nothing else running, the first paint came before the decode, so boxes were laid out for the fallback face and moved when Inter arrived. With the scripts as served the main thread was busy and the decode usually won. | `html` is gated while the page loads: a head script sets `data-font-gate` and a style hides the page until a script before the end marker finds Inter and Geist Mono decoded (or loading fails, or 1.5 s pass). 0 of 144 scenarios fail in the two engines afterwards.                                                                          |
-| The first version of the gate left the page hidden after a forced hydration mismatch: the attribute was still on `html` at the end of the attack, in both engines and at both widths.                                                                                                                                  | The attribute was part of the markup React renders. When something changes the page before it hydrates, React discards the server markup and renders the page again, which puts the attribute back after the script has removed it.                                                                              | The attribute is set by a head script and never rendered; a unit test fails if the layout names it. The attack ends on the server's heading with the page visible, in both engines at both widths.                                                                                                                                              |
-| A reload that restored a scroll offset showed the first frame at the wrong offset, or at the top, and corrected itself later (Chrome's scroll anchoring during history restoration; WebKit restoring its own offset only after the page scripts have loaded). Found on the previous layout, where the window scrolled. | Scroll anchoring on the restored position in Chrome, and WebKit's late restoration.                                                                                                                                                                                                                              | `overflow-anchor: none` everywhere, `history.scrollRestoration` set to manual, and one inline script that restores the saved offset of the panel from `sessionStorage` before the first paint on a reload or a back or forward load. 0 of 24 rapid reloads lost the position in each engine, and 36 of 36 mid-page reloads start at the offset. |
-| Chrome could paint a half-parsed document.                                                                                                                                                                                                                                                                             | The parser had not reached the end of the body when the first frame was due.                                                                                                                                                                                                                                     | A render-blocking `<link rel="expect" href="#end-of-page" blocking="render">` holds the first paint until the end marker is parsed. WebKit does not honour it, which the gate covers.                                                                                                                                                           |
+| Observation                                                                                                                                                                            | Cause                                                                                                                                                                          | Fix and result                                                                                                                                                                                                                                                                                                       |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Round 4: with scripts removed, 12 of 12 WebKit scenarios moved boxes by up to 22 px, because the font gate that held the page was a script.                                            | An engine decodes a font face only after it has laid out the first text, and the gate that covered this needed JavaScript.                                                     | The gate and the embedded `data:` fonts are gone. The fonts are hashed files with a preload link in the head and `font-display: optional`, so the request starts before the body is parsed and a face that is late is skipped for that load. 0 of 24 `no-page-js` scenarios and 0 of 24 `font-delay` scenarios fail. |
+| Round 4: with JavaScript disabled, a reload of a page scrolled halfway returned to the top in both engines (1551 to 0 at 1440 px, 1839 to 0 at 390 px).                                | The panel inside the page scrolled, so the browser's own scroll restoration had nothing to restore, and a script owned the offset.                                             | The document is the scroll container. The inset panel is a frame layer, and the sidebar and contents rail are sticky. Chromium restores at any delay; WebKit restores when the reload is at least 400 ms after the scroll (see "Scroll restoration").                                                                |
+| In the build before the scroll-restore script was restored, 12 of 12 WebKit mid-page reloads showed the first frame at the top or at a stale offset, with the page scripts on.         | WebKit restores its own offset after the page's scripts have loaded, and from the entry it saved some time after the last scroll, so it overrode any restoration made earlier. | One inline script at the end of the body takes over restoration (see "Scroll restoration"). 12 of 12 mid-page reloads are at the offset on the first frame in each engine, over gzip too.                                                                                                                            |
+| Round 4: the menus did not move focus into themselves on ArrowDown and lost it to `BODY` on Escape or after a choice; the drawer neither took focus nor made the page behind it inert. | Hand-written menu and drawer code.                                                                                                                                             | Radix dropdown menus for Appearance and the section switcher, Radix focus scope for the drawer, `inert` on the page behind it. Both menus wrap from the last item to the first (Radix `loop`), which the earlier checks did not cover; a test now does.                                                              |
+| Round 4: choosing the current page in the drawer left it open.                                                                                                                         | The closing effect depended on a change of path.                                                                                                                               | Any link chosen in the drawer closes it, and so does widening the window. 8 of 8 checks pass.                                                                                                                                                                                                                        |
+| Round 4: a `search-sections.json` holding `null` crashed the whole shell.                                                                                                              | The map was read without checking its shape.                                                                                                                                   | The shape is checked and a bad file leaves search working without sections. Zod's fast path compiles with `new Function`, which the policy (no `'unsafe-eval'`) blocks, so `z.config({ jitless: true })` is set; a unit test fails without it. 0 policy violations in 136 checks.                                    |
+| The search palette's input took focus through `autoFocus`, which ran before the drawer's focus scope and lost the drawer's trap.                                                       | Order of focus handling.                                                                                                                                                       | The input takes focus through a ref in an effect. The drawer edge check passes.                                                                                                                                                                                                                                      |
+
+## Scroll restoration
+
+The document scrolls, not a panel inside it. With scripts off the browser restores a reloaded page by itself. With scripts on, a 444-byte inline script at the end of the body, before the `end-of-page` marker that holds the first paint in Chromium, sets `history.scrollRestoration` to `manual`, saves `scrollY` under `akter:scroll:<path>` in `sessionStorage` on `pagehide`, and scrolls to it only when the navigation entry is a reload or a back or forward visit, so a stale value cannot move a plain visit or a link to an anchor. It cannot run in the head, because the document has no height there yet.
+
+With JavaScript disabled in the browser, a page scrolled to its middle and reloaded after a delay:
+
+| Engine   | 0 ms | 150 ms | 500 ms | 1000 ms |
+| -------- | ---- | ------ | ------ | ------- |
+| Chromium | 4/4  | 4/4    | 4/4    | 4/4     |
+| WebKit   | 0/4  | 0/4    | 4/4    | 4/4     |
+
+(four pages and viewports per cell: `/quickstart` and `/api/01-server-api` at 1440 and 390 px). WebKit saves a page's offset in its history entry some time after the last scroll, so a reader who reloads within about 400 ms of scrolling, with scripts off, lands at the top. Nothing in the page can change that without a script, and the 8 failing cases are the known exception recorded under "Not verified"; the attack run, which waits 600 ms, passes 8 of 8.
 
 ## Fonts
 
-Inter (latin subset, 98.9 kB) and Geist Mono (latin subset, 10.5 kB) are committed in `docs/fonts/` with their SIL Open Font Licence texts and embedded by `bun scripts/embed-fonts.ts` as `data:` URLs in the stylesheet, which is about 146 kB of text and travels once: it is hashed, cached for a year, and no request for a font follows it. The faces are `font-display: block`. The earlier choice, `optional`, was dropped during development because a face that misses the engine's short window stays on the fallback for the life of the page, and code then draws in a proportional face; that comparison is not part of the matrix here. With `block` the line `mkdir -p .local` in a code block measured 115.1 px wide in Chromium and 115 px in WebKit in 5 of 5 cold loads of the final export in each engine.
+Inter (latin subset, 98,880 bytes) and Geist Mono (latin subset, 10,544 bytes) are committed in `docs/fonts/` with their SIL Open Font Licence texts. `next/font/local` copies each into the export as `/_next/static/media/<name>.<hash>.woff2` and writes a `@font-face` rule for each, with `font-family` `Inter` and `Geist Mono` exactly as Capy's computed families read, `font-weight: 100 900` and `font-display: optional`, into the render-blocking stylesheet. Every page, including `404.html` and `_not-found.html`, carries two preload links (`as="font"`, `type="font/woff2"`, `crossorigin`). The stylesheet also declares `Inter Fallback` and `Geist Mono Fallback` from Arial with `size-adjust` of 107.4% and 131.49% and ascent and descent overrides.
 
-The stylesheet also declares `Inter Fallback` and `Geist Mono Fallback` from Arial with `size-adjust` of 107.4% and 131.49% and ascent and descent overrides. These values come from the published metrics of the faces and were not measured here; they apply only if an embedded face fails to decode, which the 1.5 s backstop turns into a visible page.
+Checked on the final export: 39 pages plus `404.html`, `_not-found.html` and `index.html` each have exactly two font preloads; no `.html`, `.css`, `.js`, `.json` or `.txt` file holds a `data:` font URL; the `_headers` policy has `font-src 'self'` and `img-src 'self'` with no `data:`; no file names PolySans; and `/_next/static/*` caches for a year as immutable. The files are served from the same origin, so there is no third-party font request. The build fails if any of these stops being true.
+
+## Export size
+
+39 pages, 39 Markdown twins and 39 sitemap entries. Gzipped at level 9, an HTML page is 12,967 bytes on average (66,930 bytes raw), 11,698 bytes at the median, 8,904 bytes at the smallest (`api/generated-contracts`) and 24,364 bytes at the largest (`operations/05-releasing`). Welcome is 10,962 bytes and Quickstart 20,593 bytes (161,973 raw). The one stylesheet is 30,127 bytes (6,369 gzipped) and the scripts total 303.9 KB gzipped. An earlier design that embedded the fonts as `data:` URLs in the stylesheet and in every page's head raised the mean page from 12.9 KB to 124.2 KB.
+
+## Keyboard and behaviour
+
+The interaction run is 68 checks in each engine and 136 in all, with 0 failing. In both engines at 1440 and 390 px: the Appearance menu offers Light, Dark and System, ArrowDown enters it, a choice gives focus back to the Appearance button, System removes the stored override, and the arrows rove and wrap; the section switcher opens onto an item, ArrowDown moves on, Escape gives focus back to the switcher and a chosen section navigates; the search palette opens with ⌘K, Tab cycles All, Documentation and API reference, the arrow keys move the active option, Enter opens a result and Escape closes it; nine hostile queries (empty, whitespace, no result, 10,000 characters, 1 MB, Unicode, markup, SQL-like, numbers) leave the palette working and unscrolled; four broken-dependency cases (the sections file missing, stale, `null` and the search index missing) leave the page working; the drawer opens with focus inside and the page behind it inert and unscrollable, Escape closes it and returns focus to its button, any link chosen closes it, and widening the window closes it; nothing takes focus at load; the console held no error and no policy violation; and at 320 px no page scrolls sideways.
+
+The drawer's Tab trap is Radix's focus scope, which handles Tab and Shift+Tab. A separate edge check focuses the last control in the open drawer, presses Tab and expects the first, then presses Shift+Tab and expects the last: it passes in both engines (32 controls, from "Akter docs" to "Akter on GitHub"). In the interaction run, plain Tab in the Playwright WebKit build moves focus to the page body, so that run presses Alt+Tab, which Radix's scope does not handle; it counts focus on the inert page behind the drawer as escaping (it never took focus) and does not count focus moving once to the page body, which happened once in 45 presses.
 
 ## Parity with docs.capy.ai
 
-The reference was captured from docs.capy.ai on 2026-10-18 in a signed-in browser: 32 screens (1440 × 900 dark and light, 390 × 844 closed, drawer open and appearance menu open, the product switcher, the search palette empty and with results, sidebar hover and state rows, the appearance menu), with the computed style, rectangle and variables of every shell element and of the article elements. The same measurement ran on the export at the same sizes, and 30 side-by-side sheets with red difference overlays were made; two reference screens have no counterpart by decision (the colour-theme submenu and Capy's own welcome page). The numeric comparison covers the 11 captures that have a measured counterpart (welcome, environment and API reference at 1440 × 900, welcome and environment at 390 × 844 closed and with the drawer open, in the themes they were captured in) and the search results: 218 differences across 74 element and property pairs, grouped below. The other screens were compared on the sheets.
+The reference was captured from docs.capy.ai in a signed-in browser (the Appearance and switcher menus, the search palette empty and with results, the drawer, hover and state rows; 32 screens, the computed style, rectangle and variables of every shell element, and the article elements) and re-read live by an independent reviewer, who listed 19 differences that were not content or brand (B1 to B19). Each is resolved, measured on the final export:
 
-The first comparison found two differences that were ours: a result for a page or for a heading had no second line (40 px against Capy's 51.5 px), and a paragraph hit was titled with the page instead of its section. A fresh read of docs.capy.ai's search on four queries (`snapshots`, `thread`, `environment` and `machine`) gave 56 rows, every one 51.5 px high with a second line. Page rows now show the page's description and the group; heading and paragraph hits show their section's heading, the page and the heading above it, and the first paragraph or the matched text. The build writes those sections to `search-sections.json`, because the search index does not keep them. Every result row now measures 51.5 px and sits at Capy's offsets.
+| ID  | Difference                                    | Now                                                                                                                                                                                  |
+| --- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| B1  | Welcome cards in two columns, Capy's in three | Three 256 px columns with 8 px gaps in both.                                                                                                                                         |
+| B2  | API overview frame, title, rail and cards     | Article x 340, width 720, grid 48 px padding, 72 px gap, 220 px rail, title at (340, 57), mobile title at (24, 76), standalone card with 20 px and 24 px margins, as Capy's.         |
+| B3  | Search footer hints                           | Literal ↑ ↓ ↵ keycaps, 18.156, 18.156 and 19.906 px wide, with Tab 29.078 and Esc 28.516, as Capy's.                                                                                 |
+| B4  | Contents rail 6 px too long at first          | The first thumb runs 0 to 20 px in both.                                                                                                                                             |
+| B5  | Contents range and motion                     | The thumb is clipped to every heading in view and moves with `clip-path 0.2s cubic-bezier(.23, 1, .32, 1)`: four headings (64 to 180 px) on Capy's page, two (96 to 168 px) on ours. |
+| B6  | Documentation switcher icon                   | Displacement 0.5 px (was 4 px).                                                                                                                                                      |
+| B7  | API switcher icon                             | 0.25 px (was 1.25 px).                                                                                                                                                               |
+| B8  | Mobile navigation glyph                       | 0.25 px (was 1.275 px).                                                                                                                                                              |
+| B9  | Copy glyph                                    | 0.25 px.                                                                                                                                                                             |
+| B10 | Heading anchor glyph                          | 0.5 px (was 2.462 px).                                                                                                                                                               |
+| B11 | Switcher grabber                              | 0.25 px.                                                                                                                                                                             |
+| B12 | Search glyph                                  | 0.25 px.                                                                                                                                                                             |
+| B13 | External-link arrow                           | 0 px (was 1.458 px).                                                                                                                                                                 |
+| B14 | Welcome rocket                                | 0.75 px (was 1.414 px).                                                                                                                                                              |
+| B15 | Quickstart bolt                               | 0.354 px (was 1.768 px).                                                                                                                                                             |
+| B16 | Appearance sun                                | 0.25 px.                                                                                                                                                                             |
+| B17 | Appearance system glyph                       | 0.25 px (was 1.601 px).                                                                                                                                                              |
+| B18 | Selected checkmark                            | 0 px (was 1.275 px).                                                                                                                                                                 |
+| B19 | X glyph                                       | 0.25 px.                                                                                                                                                                             |
 
-Style parity was also checked on the elements the five screens do not all contain, on the pages that have them: the third-level heading, a deep contents entry, the code label and copy button, a table, a callout, inline code, links and the code block all match Capy's computed values on `/api/01-server-api` and `/operations/self-host`.
+The displacement is the largest distance from an ink pixel of one glyph to the nearest ink pixel of the other, both rendered at 4 times on the same origin; the moon, which the reviewer did not list, is 0.707 px. The ink bounds of Akter's and Capy's glyphs are equal to within 0.5 px in every case and no glyph is missing. Capy draws its icons from Central Icons, whose licence forbids shipping them where an end user can extract them, so these are redrawn from circles, rounded rectangles and lines (`apps/docs/src/components/glyphs.tsx`) and fitted to the rendered icons, which is why 0.75 px at most remains.
 
-| Difference                                                                                                                                                                                                                                                                                                                                                                                                | Why it stays                                                                                                                                                                                                                                                                   |
-| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Capy's logo image, `Open Capy` and the Discord icon have no counterpart; ours are the Akter wordmark (65.8 px wide against the image's 66 px), `Open Akter` and the GitHub icon.                                                                                                                                                                                                                          | Brand. Discord is excluded by decision, and GitHub replaces it.                                                                                                                                                                                                                |
-| The welcome page's screenshot, source grid and spotlight rows.                                                                                                                                                                                                                                                                                                                                            | Capy product content; Akter has no screenshot or sources. Cards, headings and the hero text use the same styles.                                                                                                                                                               |
-| Sidebar group heights (173 px against 144 px), the active row's position, the first card's width (388 px in a two-up row against 256 px in a three-up row), the hero title's width, table column widths, the code label's width (`Terminal` against a short language name), the API overview's layout (Akter's is a generated grid of cards on the landing layout, Capy's is prose with a contents list). | The pages hold different text and a different number of rows and headings. Heights and widths follow the content; the styles that produce them match.                                                                                                                          |
-| The active contents entry is `position: relative` in ours and static in Capy's.                                                                                                                                                                                                                                                                                                                           | The rail is drawn with pseudo-elements on the entry. The result looks the same.                                                                                                                                                                                                |
-| Search results: the method badge of an HTTP endpoint (a 38 × 18 px label against our 16 px icon), the length of the list, and the row at which the first icon sits.                                                                                                                                                                                                                                       | Capy's reference documents HTTP endpoints and ours documents TypeScript, so there are no badges. Row heights, offsets, fonts and colours match.                                                                                                                                |
-| Every text and surface colour differs.                                                                                                                                                                                                                                                                                                                                                                    | By decision: Capy's neutrals become Akter's tokens (text #ecebe7 dark and #0b0d0b light, panel #121311 and #fbfbfa), Capy's primary (links, ring, selection) becomes Akter yellow (#ffc300 dark, #8a6400 for text on light), and Capy's blue for information callouts is kept. |
+The frame behind the article matches too: its rectangle is equal at 1440 px in both schemes, the edge profile differs by at most 0.316 px (dark; 0 px in light) and the four corners differ in 0 pixels, and the contents rail's sticky top is 57 px at 1440 px (56.5 px on a 2 dppx display) with the sidebar's at 0.
+
+What still differs, and why it stays:
+
+| Difference                                                                                                                                                                                                      | Why it stays                                                                                                                                                                                                                                                                   |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Capy's logo image, `Open Capy` and the Discord icon have no counterpart; ours are the Akter wordmark (65.8 px wide against the image's 66 px), `Open Akter` and the GitHub icon.                                | Brand. Discord is excluded by decision, and GitHub replaces it.                                                                                                                                                                                                                |
+| The welcome page's screenshot, source grid and spotlight rows.                                                                                                                                                  | Capy product content; Akter has no screenshot or sources.                                                                                                                                                                                                                      |
+| Sidebar group heights (173 px against 144 px), the active row's position, the hero title's width, table column widths, the code label's width (`Terminal` against a short language name), the contents entries. | The pages hold different text and a different number of rows and headings. Heights and widths follow the content; the styles that produce them match.                                                                                                                          |
+| Search results: the method badge of an HTTP endpoint (a 38 × 18 px label against our 16 px icon), and the length of the list.                                                                                   | Capy's reference documents HTTP endpoints and ours documents TypeScript. Row heights (51.5 px), offsets, fonts and colours match.                                                                                                                                              |
+| The Appearance menu's colour-theme submenu, the Discord link and the product screenshots.                                                                                                                       | Capy-only features with no Akter counterpart, left out by decision.                                                                                                                                                                                                            |
+| Every text and surface colour differs.                                                                                                                                                                          | By decision: Capy's neutrals become Akter's tokens (text #ecebe7 dark and #0b0d0b light, panel #121311 and #fbfbfa), Capy's primary (links, ring, selection) becomes Akter yellow (#ffc300 dark, #8a6400 for text on light), and Capy's blue for information callouts is kept. |
 
 ## Other checks
 
-- Keyboard and behaviour, 55 checks in Chromium and 52 in WebKit (the three clipboard checks run in Chromium only): the appearance menu offers exactly Light, Dark and System, keeps the choice across a reload, clears it on System and closes on Escape; the product switcher swaps the sidebar to the API tree and back and opens the overview; the search palette opens with ⌘K and from both buttons, lists suggestions, highlights matches, shows the page's description on every page result and gives every result row two lines, filters with Tab (All, Documentation, API reference, back to All), moves with the arrow keys, opens a result with Enter, shows an empty message, and closes on Escape and on a click outside; the 300 px drawer opens, closes on the scrim, on Escape and when a page is chosen; Copy page copies the page's Markdown, the code copy button copies the code, View as Markdown links the `.md` twin with the right type; a contents entry scrolls the panel and is the only one marked active; a reload keeps the panel's offset, a plain visit and a sidebar click start at the top, and a deep link scrolls the panel to its heading.
-- The security policy (`font-src 'self' data:` among its directives) produced no violation on 8 pages at desktop and mobile widths with search, copy and page actions used, and both fonts loaded from the stylesheet with no font request.
-- An unknown address returns the on-theme 404 page with status 404 (the hosting uses 404-page handling); the file address `/404` answers 200 because it is the page file itself. The export has 39 pages (37 Markdown pages from `docs/` and the generated welcome page and API overview), 39 Markdown twins and 39 sitemap entries, and a 36 kB `search-sections.json` beside the 847 kB search index.
-- Two builds of one commit, the second on a fully loaded machine, are byte for byte equal.
-- A dead link or a missing anchor in a published page fails the build, and so does an export that names PolySans or lacks either embedded font.
+- Static gates on the final tree: `bun run lint` (oxlint with type information, deny warnings), `bun run typecheck`, `bun tooling/structure/src/index.ts`, `bun run lint:directives` and the format check all exit 0; the docs app's tests are 22 files and 126 tests, including the components rendered in jsdom (menus, drawer, shell) and the unit tests for the scroll-restore script, the search sections shape check, the font delivery checks and the drawer's focus rules.
+- An unknown address returns the on-theme 404 page with status 404; the file address `/404` answers 200 because it is the page file itself.
+- Two builds of one commit, the second on a fully loaded machine, are byte for byte equal (`bun run check:reproducible`, run in a copy of the tree so that a running dev server's `.next` directory was left alone).
+- A dead link or a missing anchor in a published page fails the build, and so does an export that names PolySans, lacks either font preload, names a font file the export does not hold, or carries a `data:` font URL.
 
 ## Not verified
 
-- Safari itself and Firefox. WebKit was measured through Playwright's build, which is not Safari; Firefox was not run, and neither engine's paint timing was observed on a phone.
-- The Cloudflare edge itself. The export was served by a local server that emulates `_redirects`, extensionless URLs and `_headers`. The policy was exercised in Chromium, but the edge, its header handling and its cache were not.
-- Real networks. The first paint waits for a stylesheet that carries the fonts and then for their decode; local runs show first content within 77 ms, but a slow connection waits longer for the fonts than a page with a fallback would, in return for never painting a face that will be replaced.
+- Safari itself and Firefox. WebKit was measured through Playwright's build, which is not Safari; Firefox was not run, and neither engine's paint timing was observed on a phone. Playwright has no CPU-throttle control for WebKit, so the WebKit `cpu4` rows repeat the plain load.
+- A reload within about 400 ms of a scroll, with JavaScript disabled, in WebKit: it returns to the top (8 of 8 such reloads in this run, at 0 and 150 ms). WebKit decides when it saves the offset, no script runs to take over, and the page cannot change it. This is the recorded exception; every other condition restores the offset.
+- The Cloudflare edge itself. The export was served by a local server that emulates `_redirects`, extensionless URLs, `_headers` and gzip. The policy was exercised in both engines, but the edge, its header handling and its cache were not.
+- Real networks and an operating-system-cold font cache. The first paint does not wait for a font: a face that has not arrived by then is skipped for that load, so a reader on a slow connection reads the first page in the fallback faces, with identical metrics, and the files are cached for the next.
 - The desktop contents list marks the active heading after hydration (a colour change and a marker, with transitions off). It is scroll-position state and is not part of first paint.
-- The parity comparison is a measurement of computed styles and rectangles plus a visual read of the sheets, not a pixel diff of identical content: the two sites hold different pages. The reference screens were captured once; Capy can change them.
+- The parity comparison is a measurement of computed styles and rectangles plus rendered glyph overlays, not a pixel diff of identical content: the two sites hold different pages. The reference screens were captured once; Capy can change them.
 - Windows and Linux text rendering, the sign-in, GitHub and X links (they were read, not opened), search quality, and the cutover itself.
 
 ## Appendix: measurement harness
 
-Run `ENGINE=<chromium or webkit> node matrix-r5.mjs <base URL> <label> <pages> <script modes>` with the export served at the base URL; results are written as JSON and a PASS or FAIL line per scenario is printed. `attacks-r5.mjs <base URL> <engine> <rapid or hydration> <iterations>` runs the two attacks.
+The two scripts that carry the first-paint claims are reproduced below; the export was served with the first and measured with the second, both run through the Mac's heavy-work gate. `matrix.mjs <base URL>` takes `ENGINES`, `MODES` and `LABEL` to select a part. The interaction, drawer edge, JavaScript-disabled, parity, glyph and export-size scripts are not reproduced here: they read the page the same way through Playwright, their results are the numbers above, and none is committed. `parity.mjs` and `glyphs.mjs` also read docs.capy.ai live.
+
+### `server.mjs <export directory> <port> [gzip]`
 
 ```js
-import { createRequire } from "node:module"
-import { writeFileSync, mkdirSync } from "node:fs"
-const require = createRequire(
-  "/Users/dallenpyrah/Projects/rika-labs/akter-cloud/node_modules/.bun/playwright@1.63.0/node_modules/playwright/",
-)
-const pw = require("playwright")
-const engine = process.env.ENGINE ?? "chromium"
-
-const base = process.argv[2]
-const label = process.argv[3]
-const pages = (process.argv[4] ?? "/welcome,/quickstart,/api/01-server-api").split(",")
-const scriptModes = (process.argv[5] ?? "normal,slow,blocked").split(",")
-const out = "/Users/dallenpyrah/.capy/work/akter-docs-evidence/measure"
-mkdirSync(out, { recursive: true })
-const STOP_MS = 3500
-
-const recorder =
-  "(" +
-  function (stopMs) {
-    const frames = []
-    window.__frames = frames
-    window.__cls = 0
-    window.__paints = []
-    try {
-      new PerformanceObserver((list) => {
-        for (const e of list.getEntries()) window.__paints.push([e.name, e.startTime])
-      }).observe({ type: "paint", buffered: true })
-    } catch {}
-    try {
-      new PerformanceObserver((list) => {
-        for (const e of list.getEntries()) if (!e.hadRecentInput) window.__cls += e.value
-      }).observe({ type: "layout-shift", buffered: true })
-    } catch {}
-    const selector =
-      "h1,h2,h3,p,li,a,button,header,nav,aside,main,footer,iframe,img,pre,table,svg,kbd"
-    const effectiveOpacity = (el) => {
-      let o = 1
-      for (let e = el; e; e = e.parentElement) o *= parseFloat(getComputedStyle(e).opacity)
-      return o
+import http from "node:http"
+import fs from "node:fs"
+import path from "node:path"
+import zlib from "node:zlib"
+const root = path.resolve(process.argv[2])
+const port = Number(process.argv[3])
+const gzip = process.argv[4] === "gzip"
+function config() {
+  const redirects = fs
+    .readFileSync(path.join(root, "_redirects"), "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => l.split(/\s+/))
+  const rules = []
+  for (const line of fs.readFileSync(path.join(root, "_headers"), "utf8").split("\n")) {
+    if (line.startsWith("/")) rules.push({ pattern: line, headers: {} })
+    else if (/^\s+\S/.test(line)) {
+      const i = line.indexOf(":")
+      rules.at(-1).headers[line.slice(0, i).trim()] = line.slice(i + 1).trim()
     }
-    const snap = (ts) => {
-      const root = document.documentElement
-      const body = document.body
-      const main = document.getElementById("ak-main")
-      const rects = {}
-      const counts = {}
-      let visible = 0
-      if (body) {
-        for (const el of document.querySelectorAll(selector)) {
-          const r = el.getBoundingClientRect()
-          const text = (
-            el.innerText ||
-            el.getAttribute("aria-label") ||
-            el.getAttribute("href") ||
-            ""
-          )
-            .trim()
-            .slice(0, 40)
-          const key = el.tagName + "|" + text
-          counts[key] = (counts[key] || 0) + 1
-          if (r.width === 0 && r.height === 0) continue
-          if (getComputedStyle(el).visibility === "hidden") continue
-          visible++
-          const offset = main && main.contains(el) ? main.scrollTop : window.scrollY
-          rects[key + "#" + counts[key]] = [
-            r.x + scrollX,
-            r.y + offset,
-            r.width,
-            r.height,
-            effectiveOpacity(el),
-          ]
-        }
-      }
-      frames.push({
-        t: ts,
-        scroll: main ? main.scrollTop : window.scrollY,
-        pageScroll: window.scrollY,
-        vh: window.innerHeight,
-        bg: root ? getComputedStyle(root).backgroundColor : null,
-        bodyBg: body ? getComputedStyle(body).backgroundColor : null,
-        panelBg: main ? getComputedStyle(main).backgroundColor : null,
-        visible,
-        h1: !!(body && body.querySelector("h1")),
-        loadedFonts: [...document.fonts].filter((f) => f.status === "loaded").map((f) => f.family),
-        rects,
-      })
-    }
-    const loop = (ts) => {
-      snap(ts)
-      if (ts < stopMs) requestAnimationFrame(loop)
-    }
-    requestAnimationFrame(loop)
-  } +
-  ")(" +
-  STOP_MS +
-  ")"
-
-function analyse(frames, cls, paints) {
-  const first = frames.findIndex((f) => f.h1 && Object.keys(f.rects).length > 10)
-  if (first < 0) return { error: "no content frame", frames: frames.length }
-  const settled = frames[frames.length - 1]
-  const viewportBottom = (f) => f.scroll + f.vh
-  const firstPaintEntry = paints.find((p) => p[0] === "first-paint")
-  const firstPaintAt = firstPaintEntry ? firstPaintEntry[1] : null
-  let painted = first
-  if (firstPaintAt !== null) {
-    const idx = frames.findIndex((f) => f.t >= firstPaintAt - 20)
-    painted = Math.max(first, idx < 0 ? first : idx)
   }
-  const strictMovers = []
-  for (const key of Object.keys(frames[first].rects)) {
-    let worst = 0
-    for (const f of frames.slice(first)) {
-      const r = f.rects[key]
-      const st = settled.rects[key]
-      if (!r || !st) continue
-      worst = Math.max(
-        worst,
-        Math.abs(r[0] - st[0]),
-        Math.abs(r[1] - st[1]),
-        Math.abs(r[2] - st[2]),
-        Math.abs(r[3] - st[3]),
-      )
-    }
-    if (worst > 0.5) strictMovers.push(key)
-  }
-  const movers = []
-  const fades = []
-  for (const key of Object.keys(frames[painted].rects)) {
-    let worst = 0
-    let lo = 1
-    let hi = 0
-    for (const f of frames.slice(painted)) {
-      const r = f.rects[key]
-      const s = settled.rects[key]
-      if (!r || !s) continue
-      worst = Math.max(
-        worst,
-        Math.abs(r[0] - s[0]),
-        Math.abs(r[1] - s[1]),
-        Math.abs(r[2] - s[2]),
-        Math.abs(r[3] - s[3]),
-      )
-      lo = Math.min(lo, r[4])
-      hi = Math.max(hi, r[4])
-    }
-    if (worst > 0.5) movers.push([key, +worst.toFixed(2)])
-    if (hi - lo > 0.01) fades.push([key, +lo.toFixed(2), +hi.toFixed(2)])
-  }
-  const late = []
-  for (const key of Object.keys(settled.rects)) {
-    if (frames[painted].rects[key]) continue
-    const s = settled.rects[key]
-    if (s[1] < viewportBottom(settled)) late.push(key)
-  }
-  const bgs = new Set()
-  const panels = new Set()
-  for (const f of frames) {
-    bgs.add(f.bg)
-    bgs.add(f.bodyBg)
-    if (f.panelBg) panels.add(f.panelBg)
-  }
-  const afterFirst = frames.slice(painted)
-  return {
-    frames: frames.length,
-    firstPaintMs: firstPaintAt === null ? null : Math.round(firstPaintAt),
-    firstPaintFrame: painted,
-    strictMoversFromFirstContentFrame: strictMovers.length,
-    fontAtFirstPaint: frames[painted].loadedFonts.filter(
-      (f) => f.includes("Inter") || f.includes("Geist"),
-    ),
-    firstContentFrame: first,
-    firstContentMs: Math.round(frames[first].t),
-    firstVisible: frames[first].visible,
-    settledVisible: settled.visible,
-    movers: movers.length,
-    moversDetail: movers.slice(0, 5),
-    fades: fades.length,
-    fadesDetail: fades.slice(0, 5),
-    lateInViewport: late.length,
-    lateDetail: late.slice(0, 5),
-    bgValues: [...bgs].filter(Boolean),
-    panelValues: [...panels],
-    scrollValues: [...new Set(afterFirst.map((f) => Math.round(f.scroll)))],
-    pageScrollValues: [...new Set(afterFirst.map((f) => Math.round(f.pageScroll)))],
-    cls: +cls.toFixed(4),
-    fontAtFirstContent: frames[first].loadedFonts.filter(
-      (f) => f.includes("Inter") || f.includes("Geist"),
-    ),
-    fontSettled: settled.loadedFonts.filter((f) => f.includes("Inter") || f.includes("Geist")),
-  }
+  return { redirects, rules }
 }
-
-const browser = await pw[engine].launch(engine === "chromium" ? { channel: "chrome" } : {})
-const results = []
-for (const mode of scriptModes) {
-  for (const [vp, w, h] of [
-    ["desktop", 1440, 900],
-    ["mobile", 390, 844],
-  ]) {
-    for (const scheme of ["dark", "light"]) {
-      for (const path of pages) {
-        for (const scroll of ["top", "mid"]) {
-          const ctx = await browser.newContext({
-            viewport: { width: w, height: h },
-            colorScheme: scheme,
-          })
-          const page = await ctx.newPage()
-          await page.goto(base + path, { waitUntil: "networkidle" })
-          if (scroll === "mid") {
-            await page.evaluate(() => {
-              const m = document.getElementById("ak-main")
-              m.scrollTop = Math.floor((m.scrollHeight - m.clientHeight) / 2)
-            })
-            await page.waitForTimeout(400)
-          }
-          const target = await page.evaluate(() =>
-            Math.round(document.getElementById("ak-main").scrollTop),
-          )
-          await page.addInitScript(recorder)
-          if (mode !== "normal") {
-            await ctx.route("**/*.js", async (route) => {
-              if (mode === "blocked") return route.abort()
-              await new Promise((r) => setTimeout(r, 1500))
-              return route.continue()
-            })
-          }
-          await page.reload({ waitUntil: "load" })
-          await page.waitForTimeout(STOP_MS + 400)
-          const { frames, cls, paints } = await page.evaluate(() => ({
-            frames: window.__frames,
-            cls: window.__cls,
-            paints: window.__paints,
-          }))
-          const result = {
-            label,
-            base,
-            mode,
-            vp,
-            scheme,
-            path,
-            scroll,
-            scrollTarget: target,
-            ...analyse(frames, cls, paints),
-          }
-          results.push(result)
-          const bad =
-            result.error ||
-            result.movers ||
-            result.fades ||
-            result.lateInViewport ||
-            result.cls > 0 ||
-            result.bgValues.length > 1 ||
-            result.panelValues.length > 1 ||
-            result.pageScrollValues.some((v) => v !== 0) ||
-            (scroll === "top" && result.scrollValues.some((v) => v !== 0)) ||
-            (scroll === "mid" &&
-              (result.scrollValues.length !== 1 || Math.abs(result.scrollValues[0] - target) > 1))
-          console.log(
-            (bad ? "FAIL " : "ok   ") +
-              [
-                mode,
-                vp,
-                scheme,
-                path,
-                scroll,
-                "cls=" + result.cls,
-                "mov=" + result.movers,
-                "fade=" + result.fades,
-                "late=" + result.lateInViewport,
-                "bg=" +
-                  (result.bgValues || []).join("|") +
-                  " panel=" +
-                  (result.panelValues || []).join("|"),
-                "scroll=" + (result.scrollValues || []).join(","),
-                "target=" + target,
-                "fonts=" +
-                  (result.fontAtFirstPaint || []).length +
-                  "/" +
-                  (result.fontSettled || []).length,
-                "strict=" + result.strictMoversFromFirstContentFrame,
-                "paint=" + result.firstPaintMs,
-                JSON.stringify(result.moversDetail || []),
-              ].join(" "),
-          )
-          await ctx.close()
-        }
-      }
+const pattern = (p) =>
+  new RegExp(
+    "^" +
+      p
+        .split("*")
+        .map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+        .join("(.*)") +
+      "$",
+  )
+const types = {
+  ".html": "text/html; charset=utf-8",
+  ".css": "text/css",
+  ".js": "text/javascript",
+  ".json": "application/json",
+  ".txt": "text/plain",
+  ".md": "text/markdown; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".xml": "application/xml",
+  ".woff2": "font/woff2",
+}
+const compressible = new Set([".html", ".css", ".js", ".json", ".txt", ".md", ".svg", ".xml"])
+const requests = []
+const server = http.createServer((req, res) => {
+  if (req.url === "/__requests") {
+    res.setHeader("Content-Type", "application/json")
+    res.end(JSON.stringify(requests.splice(0)))
+    return
+  }
+  if (!fs.existsSync(path.join(root, "_headers"))) {
+    res.writeHead(503)
+    res.end("Build not ready")
+    return
+  }
+  const { redirects, rules } = config()
+  const url = new URL(req.url, "http://localhost")
+  const pathname = decodeURIComponent(url.pathname)
+  for (const r of rules)
+    if (pattern(r.pattern).test(pathname))
+      for (const [k, v] of Object.entries(r.headers)) res.setHeader(k, v)
+  for (const [from, to, status] of redirects) {
+    const m = pathname.match(pattern(from))
+    if (m) {
+      res.writeHead(Number(status), { Location: to.replace(":splat", m[1] ?? "") })
+      res.end()
+      return
     }
   }
-}
-await browser.close()
-writeFileSync(out + "/" + label + ".json", JSON.stringify(results, null, 1))
-console.log(
-  "DONE",
-  results.length,
-  "scenarios; failing:",
-  results.filter(
-    (r) =>
-      r.error ||
-      r.movers ||
-      r.fades ||
-      r.lateInViewport ||
-      r.cls > 0 ||
-      r.bgValues.length > 1 ||
-      r.panelValues.length > 1,
-  ).length,
+  let filename = path.join(root, pathname === "/" ? "index.html" : pathname)
+  if (!filename.startsWith(root + "/")) {
+    res.writeHead(400)
+    res.end()
+    return
+  }
+  if (fs.existsSync(filename + ".html")) filename += ".html"
+  if (!fs.existsSync(filename) || fs.statSync(filename).isDirectory()) {
+    filename = path.join(root, "404.html")
+    res.statusCode = 404
+  }
+  const ext = path.extname(filename)
+  if (!res.hasHeader("Content-Type"))
+    res.setHeader("Content-Type", types[ext] ?? "application/octet-stream")
+  let body = fs.readFileSync(filename)
+  if (gzip && compressible.has(ext) && /\bgzip\b/.test(req.headers["accept-encoding"] ?? "")) {
+    body = zlib.gzipSync(body)
+    res.setHeader("Content-Encoding", "gzip")
+    res.setHeader("Vary", "Accept-Encoding")
+  }
+  requests.push({
+    pathname,
+    status: res.statusCode,
+    type: res.getHeader("Content-Type"),
+    bytes: body.length,
+    encoding: res.getHeader("Content-Encoding") ?? null,
+    cache: res.getHeader("Cache-Control") ?? null,
+  })
+  res.setHeader("Content-Length", body.length)
+  res.end(body)
+})
+server.listen(port, "127.0.0.1", () =>
+  console.log(JSON.stringify({ pid: process.pid, cwd: process.cwd(), root, port, gzip })),
 )
 ```
 
+### `matrix.mjs`
+
 ```js
 import { createRequire } from "node:module"
+import fs from "node:fs"
 const require = createRequire(
-  "/Users/dallenpyrah/Projects/rika-labs/akter-cloud/node_modules/.bun/playwright@1.63.0/node_modules/playwright/",
+  "/Users/dallenpyrah/Projects/rika-labs/akter-cloud/node_modules/.bun/playwright@1.63.0/node_modules/playwright/package.json",
 )
 const pw = require("playwright")
-const [base, engine, kind, iterations] = process.argv.slice(2)
-const launch = () => pw[engine].launch(engine === "chromium" ? { channel: "chrome" } : {})
-
-const rapidReload = async () => {
-  const browser = await launch()
-  let bad = 0
-  const lines = []
-  for (const [w, h] of [
-    [390, 844],
-    [1440, 900],
-  ]) {
-    let wrong = 0
-    let worst = []
-    for (let i = 0; i < Number(iterations); i++) {
-      const ctx = await browser.newContext({ viewport: { width: w, height: h } })
-      await ctx.addInitScript(
-        "(" +
-          function () {
-            window.__y = []
-            const t0 = performance.now()
-            const tick = () => {
-              const main = document.getElementById("ak-main")
-              if (document.querySelector("h1") && main) window.__y.push(Math.round(main.scrollTop))
-              if (performance.now() - t0 < 1500) requestAnimationFrame(tick)
-            }
-            requestAnimationFrame(tick)
-          } +
-          ")()",
-      )
-      const page = await ctx.newPage()
-      await page.goto(base + "/quickstart", { waitUntil: "load" })
-      await page.reload({ waitUntil: "load" })
-      const target = await page.evaluate(async () => {
-        const m = document.getElementById("ak-main")
-        m.scrollTop = Math.floor((m.scrollHeight - m.clientHeight) / 2)
-        await new Promise((r) => setTimeout(r, 150))
-        return Math.round(m.scrollTop)
-      })
-      await page.reload({ waitUntil: "load" })
-      await page.waitForTimeout(1700)
-      const ys = await page.evaluate(() => window.__y)
-      const distinct = [...new Set(ys)]
-      if (distinct.length !== 1 || Math.abs(distinct[0] - target) > 1) {
-        wrong++
-        worst = [target, distinct.slice(0, 5)]
+const base = process.argv[2]
+const out = "/Users/dallenpyrah/.capy/work/akter-docs-takeover"
+const label = process.env.LABEL ?? "matrix"
+const engines = (process.env.ENGINES ?? "webkit,chromium").split(",")
+const modes = (process.env.MODES ?? "cold,warm,mid,opposite,no-page-js,css-delay,cpu4").split(",")
+const results = []
+function recorder() {
+  window.__measure = { frames: [], shifts: [], paints: [], violations: [] }
+  document.addEventListener("securitypolicyviolation", (e) =>
+    window.__measure.violations.push([e.violatedDirective, e.blockedURI]),
+  )
+  try {
+    new PerformanceObserver((l) => {
+      for (const e of l.getEntries())
+        window.__measure.shifts.push({
+          value: e.value,
+          recent: e.hadRecentInput,
+          time: e.startTime,
+        })
+    }).observe({ type: "layout-shift", buffered: true })
+  } catch {}
+  try {
+    new PerformanceObserver((l) => {
+      for (const e of l.getEntries())
+        window.__measure.paints.push({ name: e.name, time: e.startTime })
+    }).observe({ type: "paint", buffered: true })
+  } catch {}
+  const tick = (t) => {
+    const root = document.documentElement,
+      main = document.getElementById("ak-main")
+    const rects = {}
+    let n = 0
+    for (const el of document.querySelectorAll(
+      "h1,h2,h3,h4,p,li,a,button,header,nav,aside,main,footer,img,pre,table,svg,kbd,input",
+    )) {
+      const st = getComputedStyle(el),
+        r = el.getBoundingClientRect(),
+        id =
+          el.tagName +
+          "|" +
+          n++ +
+          "|" +
+          (el.textContent || el.getAttribute("aria-label") || "").trim().slice(0, 55)
+      if (!r.width || !r.height || st.visibility === "hidden" || st.display === "none") continue
+      let opacity = 1
+      for (let p = el; p; p = p.parentElement) opacity *= Number(getComputedStyle(p).opacity)
+      let fixed = false
+      for (let q = el; q && q !== document.documentElement; q = q.parentElement) {
+        const ps = getComputedStyle(q).position
+        if (ps === "fixed" || ps === "sticky") {
+          fixed = true
+          break
+        }
       }
-      await ctx.close()
+      const offset = fixed ? 0 : scrollY
+      rects[id] = [
+        r.x,
+        r.y + offset,
+        r.width,
+        r.height,
+        opacity,
+        r.bottom > 0 && r.top < innerHeight && r.right > 0 && r.left < innerWidth,
+      ]
     }
-    bad += wrong
-    lines.push(
-      engine +
-        " " +
-        w +
-        "x" +
-        h +
-        " rapid reload (scroll midway, wait 150 ms, reload): " +
-        iterations +
-        " runs, " +
-        wrong +
-        " lost or moved the position" +
-        (wrong ? " e.g. target/observed " + JSON.stringify(worst) : ""),
-    )
+    window.__measure.frames.push({
+      t,
+      rects,
+      scroll: scrollY,
+      pageY: 0,
+      bg: root ? getComputedStyle(root).backgroundColor : null,
+      panel: main ? getComputedStyle(main).backgroundColor : null,
+      fonts: [...document.fonts].map((f) => [f.family, f.status]),
+      h1: !!document.querySelector("h1"),
+      gate: root?.hasAttribute("data-font-gate"),
+      cls: root?.className,
+    })
+    if (!window.__stopMeasure) requestAnimationFrame(tick)
   }
-  await browser.close()
-  console.log(lines.join("\n") + "\n" + (bad === 0 ? "RAPID-OK" : "RAPID-BAD"))
+  requestAnimationFrame(tick)
 }
-
-const hydration = async () => {
-  const browser = await launch()
-  let bad = 0
-  for (const [w, h] of [
-    [390, 844],
-    [1440, 900],
-  ]) {
-    const ctx = await browser.newContext({ viewport: { width: w, height: h } })
-    await ctx.route("**/*.js", async (route) => {
-      const response = await route.fetch()
-      await new Promise((r) => setTimeout(r, 3000))
-      await route.fulfill({ response })
-    })
-    await ctx.addInitScript(
-      "(" +
-        function () {
-          let changed = false
-          new MutationObserver(() => {
-            const h1 = document.querySelector("h1")
-            if (h1 && !changed) {
-              changed = true
-              h1.textContent = "Changed before hydration"
-            }
-          }).observe(document, { childList: true, subtree: true })
-        } +
-        ")()",
-    )
-    const page = await ctx.newPage()
-    const errors = []
-    page.on("console", (m) => {
-      if (m.type() === "error") errors.push(m.text().slice(0, 80))
-    })
-    const samples = []
-    await page.goto(base + "/quickstart", { waitUntil: "commit" })
-    for (let t = 0; t < 14; t++) {
-      await page.waitForTimeout(1000)
-      samples.push(
-        await page
-          .evaluate(() => {
-            const h1 = document.querySelector("h1")
-            return {
-              t: Math.round(performance.now()),
-              text: h1 ? h1.textContent : null,
-              vis: h1 ? getComputedStyle(h1).visibility : null,
-              htmlVis: getComputedStyle(document.documentElement).visibility,
-              attrs: document.documentElement.getAttributeNames().join(","),
-            }
-          })
-          .catch(() => ({ text: "navigating" })),
-      )
+function analyze(m, target) {
+  const paint = m.paints.find((p) => p.name === "first-paint")?.time
+  const frames = m.frames.filter(
+    (f) => f.h1 && Object.keys(f.rects).length > 10 && (paint === undefined || f.t >= paint),
+  )
+  if (!frames.length) return { error: "no visible content frames", frameCount: m.frames.length }
+  const first = frames[0],
+    last = frames.at(-1),
+    moving = new Map(),
+    fades = new Map(),
+    late = []
+  for (const f of frames)
+    for (const [k, r] of Object.entries(f.rects)) {
+      const settled = last.rects[k]
+      if (!settled) continue
+      const d = Math.max(...r.slice(0, 4).map((v, i) => Math.abs(v - settled[i])))
+      if (d > 0.5) moving.set(k, Math.max(moving.get(k) || 0, d))
+      if (Math.abs(r[4] - settled[4]) > 0.01) fades.set(k, [r[4], settled[4]])
     }
-    const last = samples.at(-1)
-    const recovered =
-      last.text === "Quickstart" && last.vis === "visible" && last.htmlVis === "visible"
-    const hiddenEver = samples.some((s) => s.vis === "hidden" || s.htmlVis === "hidden")
-    if (!recovered || hiddenEver) bad++
-    console.log(
-      engine +
-        " " +
-        w +
-        "x" +
-        h +
-        " delayed JS 3 s + forced mismatch: h1 first '" +
-        samples[0].text +
-        "', last '" +
-        last.text +
-        "', ever hidden=" +
-        hiddenEver +
-        ", html attributes at end '" +
-        last.attrs +
-        "', console errors seen=" +
-        errors.length,
-    )
-    await ctx.close()
+  for (const [k, r] of Object.entries(last.rects)) if (!first.rects[k] && r[5]) late.push(k)
+  const scroll = [...new Set(frames.map((f) => Math.round(f.scroll)))]
+  return {
+    frameCount: m.frames.length,
+    contentFrames: frames.length,
+    paints: m.paints,
+    firstMs: first.t,
+    firstFonts: first.fonts,
+    movers: [...moving],
+    fades: [...fades],
+    late,
+    scroll,
+    target,
+    scrollWrong: scroll.some((v) => Math.abs(v - target) > 1),
+    pageY: [...new Set(frames.map((f) => f.pageY))],
+    bg: [...new Set(frames.map((f) => f.bg))],
+    panel: [...new Set(frames.map((f) => f.panel))],
+    cls: m.shifts.reduce((s, e) => s + (e.recent ? 0 : e.value), 0),
+    shifts: m.shifts,
+    violations: m.violations,
   }
-  await browser.close()
-  console.log(bad === 0 ? "HYDRATION-ATTACK-OK" : "HYDRATION-ATTACK-BAD")
 }
-
-await (kind === "rapid" ? rapidReload() : hydration())
+for (const engine of engines) {
+  const browser = await pw[engine].launch(engine === "chromium" ? { channel: "chrome" } : {})
+  try {
+    for (const [width, height] of [
+      [1440, 900],
+      [390, 844],
+    ])
+      for (const scheme of ["dark", "light"])
+        for (const pathname of ["/welcome", "/quickstart", "/api/01-server-api"])
+          for (const mode of modes) {
+            const ctx = await browser.newContext({
+              viewport: { width, height },
+              colorScheme: scheme,
+            })
+            const page = await ctx.newPage()
+            const errors = []
+            page.on("pageerror", (e) => errors.push(e.message))
+            page.on("console", (m) => {
+              if (m.type() === "error") errors.push(m.text())
+            })
+            if (mode === "cpu4" && engine === "chromium") {
+              const session = await ctx.newCDPSession(page)
+              await session.send("Emulation.setCPUThrottlingRate", { rate: 4 })
+            }
+            if (mode === "opposite")
+              await ctx.addInitScript(
+                (v) => localStorage.setItem("akter-theme", v),
+                scheme === "dark" ? "light" : "dark",
+              )
+            let target = 0
+            if (mode === "warm" || mode === "mid") {
+              await page.goto(base + pathname, { waitUntil: "networkidle" })
+              if (mode === "mid") {
+                target = await page.evaluate(() => {
+                  const e = document.documentElement
+                  window.scrollTo(0, Math.floor((e.scrollHeight - e.clientHeight) / 2))
+                  return Math.round(window.scrollY)
+                })
+                await page.waitForTimeout(200)
+              }
+            }
+            await ctx.addInitScript(recorder)
+            if (mode === "no-page-js") {
+              await ctx.route("**/*", async (route) => {
+                if (route.request().resourceType() === "document") {
+                  const response = await route.fetch()
+                  const html = (await response.text()).replace(
+                    /<script\b[^>]*>[\s\S]*?<\/script>/gi,
+                    "",
+                  )
+                  await route.fulfill({ response, body: html })
+                } else await route.continue()
+              })
+            }
+            if (mode === "css-delay")
+              await ctx.route("**/*.css", async (route) => {
+                await new Promise((r) => setTimeout(r, 2200))
+                await route.continue()
+              })
+            if (mode === "font-delay")
+              await ctx.route("**/*.woff2", async (route) => {
+                await new Promise((r) => setTimeout(r, 3000))
+                await route.continue()
+              })
+            if (mode === "warm" || mode === "mid") await page.reload({ waitUntil: "load" })
+            else await page.goto(base + pathname, { waitUntil: "load" })
+            await page.waitForTimeout(2400)
+            const m = await page.evaluate(() => {
+              window.__stopMeasure = true
+              return window.__measure
+            })
+            const fontUsed = await page.evaluate(() => {
+              const width = (family, size, text) => {
+                const s = document.createElement("span")
+                s.style.cssText =
+                  "position:absolute;left:-9999px;top:0;white-space:nowrap;font:500 " +
+                  size +
+                  "px " +
+                  family
+                s.textContent = text
+                document.body.append(s)
+                const w = s.getBoundingClientRect().width
+                s.remove()
+                return w
+              }
+              const sans = "iiiiiiiiiiWWWWWWWWWWmmmmmmmmmmlllllll",
+                mono = "iiiiiiiiiiWWWWWWWWWW"
+              return {
+                sans:
+                  Math.abs(
+                    width("var(--font-sans)", 26, sans) - width('"Inter Fallback"', 26, sans),
+                  ) > 1,
+                mono:
+                  Math.abs(
+                    width("var(--font-mono)", 26, mono) - width('"Geist Mono Fallback"', 26, mono),
+                  ) > 1,
+              }
+            })
+            const result = {
+              engine,
+              width,
+              height,
+              scheme,
+              pathname,
+              mode,
+              cpuThrottled: mode === "cpu4" && engine === "chromium",
+              errors,
+              fontUsed,
+              gateSeen: m.frames.some((f) => f.gate),
+              ...analyze(m, target),
+            }
+            result.failed = !!(
+              result.error ||
+              result.movers?.length ||
+              result.fades?.length ||
+              result.late?.length ||
+              result.scrollWrong ||
+              result.cls ||
+              result.bg?.length > 1 ||
+              result.panel?.length > 1 ||
+              result.pageY?.some((v) => v !== 0) ||
+              result.violations?.length ||
+              result.gateSeen ||
+              errors.length
+            )
+            results.push(result)
+            fs.writeFileSync(out + "/" + label + ".json", JSON.stringify(results, null, 2))
+            console.log(
+              JSON.stringify({
+                engine,
+                width,
+                scheme,
+                pathname,
+                mode,
+                failed: result.failed,
+                movers: result.movers?.slice(0, 4),
+                scroll: result.scroll,
+                target,
+                cls: result.cls,
+                fontUsed,
+                errors: errors.slice(0, 2),
+              }),
+            )
+            if (["cold", "no-page-js"].includes(mode) && pathname === "/quickstart")
+              await page.screenshot({
+                path: `${out}/shots/${label}-${engine}-${width}-${scheme}-${mode}.png`,
+              })
+            await ctx.close()
+          }
+  } finally {
+    await browser.close()
+  }
+}
+console.log(
+  "SUMMARY",
+  results.length,
+  "scenarios",
+  results.filter((r) => r.failed).length,
+  "failed",
+  "fallback-font",
+  results.filter((r) => !r.fontUsed.sans || !r.fontUsed.mono).length,
+)
 ```

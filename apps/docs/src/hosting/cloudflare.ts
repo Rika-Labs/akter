@@ -20,7 +20,8 @@ const rule = (path: string, headers: ReadonlyArray<string>): string =>
 
 /**
  * The content security policy of every response. The export is static, so nothing is fetched
- * from any origin but the page's own; both fonts are `data:` URLs in the stylesheet. Scripts
+ * from any origin but the page's own: both fonts are files of the export, and no page, style or
+ * script names a `data:` URL, so images and fonts allow `'self'` and nothing else. Scripts
  * allow `'unsafe-inline'` because Next writes the page's data and bootstrap into inline
  * scripts, and a page carries dozens of them: a hash for each would overrun the 2,000
  * character limit of a header line. Styles allow it because React and the code highlighter
@@ -31,8 +32,8 @@ export const contentSecurityPolicy = (): string =>
     "default-src 'none'",
     "script-src 'self' 'unsafe-inline'",
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data:",
-    "font-src 'self' data:",
+    "img-src 'self'",
+    "font-src 'self'",
     "connect-src 'self'",
     "manifest-src 'self'",
     "base-uri 'none'",
@@ -43,7 +44,8 @@ export const contentSecurityPolicy = (): string =>
 
 /**
  * The `_headers` file. Every response carries the security headers of Akter's other
- * websites. Hashed build assets never change, so they cache for a year. Every page, the
+ * websites. Hashed build assets never change, so they cache for a year; the two fonts are
+ * among them, in `/_next/static/media/` under a name that carries a hash of their bytes. Every page, the
  * Markdown twins, the search index with its sections and `llms.txt` revalidate on each visit, so a
  * deploy shows at once. Cache rules name pages one by one because a header rule on `/*` would also match
  * the immutable assets and merge with theirs; for the same reason no other rule repeats a

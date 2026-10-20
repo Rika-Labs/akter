@@ -2,12 +2,13 @@
 
 import { useDocsSearch } from "fumadocs-core/search/client"
 import { staticClient } from "fumadocs-core/search/client/orama-static"
-import { CornerDownLeft, ArrowDown, ArrowUp, FileText, Hash, Search, SearchX } from "lucide-react"
+import { FileText, Hash, SearchX } from "lucide-react"
 import Link from "next/link"
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react"
 
-import type { SearchSection } from "../content/search-sections.ts"
+import { loadSearchSections, type SearchSection } from "../content/search-sections.ts"
 import { suggestedHrefs, type Sidebar } from "../content/sidebar.ts"
+import { SearchGlyph } from "./glyphs.tsx"
 
 type Filter = "All" | "Documentation" | "API reference"
 
@@ -31,12 +32,10 @@ interface Row {
   readonly product: string
 }
 
-let sectionsRequest: Promise<Record<string, SearchSection>> | undefined
+let sectionsRequest: Promise<ReadonlyMap<string, SearchSection>> | undefined
 
-const loadSections = (): Promise<Record<string, SearchSection>> => {
-  sectionsRequest ??= fetch("/search-sections.json")
-    .then((response): Promise<Record<string, SearchSection>> => response.json())
-    .catch((): Record<string, SearchSection> => ({}))
+const loadSections = (): Promise<ReadonlyMap<string, SearchSection>> => {
+  sectionsRequest ??= loadSearchSections(fetch)
 
   return sectionsRequest
 }
@@ -80,12 +79,13 @@ export function SearchPalette(props: {
   const [filter, setFilter] = useState<Filter>("All")
   const [highlighted, setHighlighted] = useState(0)
   const list = useRef<HTMLDivElement>(null)
+  const input = useRef<HTMLInputElement>(null)
   const client = useMemo(
     () => staticClient({ from: "/search.json", tag: filter === "All" ? undefined : filter }),
     [filter],
   )
   const { search, onSearchChange, data } = useDocsSearch({ client })
-  const [sections, setSections] = useState<Record<string, SearchSection>>({})
+  const [sections, setSections] = useState<ReadonlyMap<string, SearchSection>>(new Map())
 
   useEffect(() => {
     void loadSections().then(setSections)
@@ -162,7 +162,7 @@ export function SearchPalette(props: {
 
       if (describes || (item.type === "heading" && paragraphs.has(item.url))) return []
 
-      const section = sections[item.url]
+      const section = sections.get(item.url)
       const opening = item.type === "text" ? item.content : section?.text
 
       return [
@@ -188,6 +188,10 @@ export function SearchPalette(props: {
   }, [rows])
 
   const ordered = useMemo(() => groups.flatMap(([, group]) => group), [groups])
+
+  useEffect(() => {
+    input.current?.focus()
+  }, [])
 
   useEffect(() => {
     setHighlighted(0)
@@ -238,13 +242,13 @@ export function SearchPalette(props: {
           onKeyDown={onKeyDown}
         >
           <div className="ak-cmd-input-row">
-            <Search className="ak-cmd-input-icon" aria-hidden="true" />
+            <SearchGlyph className="ak-cmd-input-icon" aria-hidden="true" />
             <input
               className="ak-cmd-input"
               placeholder="Search documentation and API reference"
               spellCheck={false}
               autoComplete="off"
-              autoFocus
+              ref={input}
               role="combobox"
               aria-expanded="true"
               aria-controls="ak-cmd-list"
@@ -323,18 +327,12 @@ export function SearchPalette(props: {
           </div>
           <div className="ak-cmd-footer">
             <span className="ak-cmd-hint">
-              <kbd className="ak-kbd">
-                <ArrowUp aria-hidden="true" />
-              </kbd>
-              <kbd className="ak-kbd">
-                <ArrowDown aria-hidden="true" />
-              </kbd>
+              <kbd className="ak-kbd">↑</kbd>
+              <kbd className="ak-kbd">↓</kbd>
               Navigate
             </span>
             <span className="ak-cmd-hint">
-              <kbd className="ak-kbd">
-                <CornerDownLeft aria-hidden="true" />
-              </kbd>
+              <kbd className="ak-kbd">↵</kbd>
               Open page
             </span>
             <span className="ak-cmd-hint">

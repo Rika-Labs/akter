@@ -1,5 +1,6 @@
-import { Link as LinkIcon } from "lucide-react"
 import type { ComponentProps } from "react"
+
+import { LinkGlyph } from "./glyphs.tsx"
 
 const WORD_JOINER = "\u2060"
 
@@ -21,7 +22,7 @@ const anchored = (Tag: HeadingTag) =>
             {children}
             {WORD_JOINER}
             <span className="ak-anchor-icon">
-              <LinkIcon aria-hidden="true" />
+              <LinkGlyph aria-hidden="true" />
             </span>
           </a>
         )}

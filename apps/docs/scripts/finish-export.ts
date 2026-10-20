@@ -6,6 +6,13 @@ import { publishedSlugs } from "../src/content/navigation.ts"
 import { redirects } from "../src/content/redirects.ts"
 import { defaultSiteUrl, siteUrl } from "../src/content/build-origins.ts"
 import { renderHeaders, renderRedirects } from "../src/hosting/cloudflare.ts"
+import {
+  dataUrls,
+  fontPreloadProblems,
+  fontPreloadTags,
+  fontPreloads,
+  withFontPreloads,
+} from "../src/hosting/font-delivery.ts"
 
 const out = resolve(import.meta.dirname, "..", "out")
 
@@ -69,17 +76,47 @@ for (const file of await files(out))
       if (text.includes(needle)) leaks.push(`${relative(out, file)} contains ${needle}`)
   }
 
-const stylesheets = await Promise.all(
-  (await files(out)).filter((file) => file.endsWith(".css")).map((file) => readFile(file, "utf8")),
-)
+/**
+ * The pages Next renders for an unknown address come out with no font preload, although its font
+ * manifest lists both faces for them, so a reader who lands on one first would see the fallback
+ * face. They get the links the welcome page has, which name the same two files.
+ */
+const preloadNotFoundFonts = async () => {
+  const links = fontPreloadTags(await readFile(join(out, "welcome.html"), "utf8"))
 
-for (const family of ["Inter", "Geist Mono"])
-  if (
-    !stylesheets.some((css) =>
-      css.includes(`font-family:${family};src:url(data:font/woff2;base64,`),
-    )
+  for (const name of ["404.html", "_not-found.html"]) {
+    const file = join(out, name)
+    const html = await readFile(file, "utf8")
+
+    if (fontPreloadTags(html).length === 0) await writeFile(file, withFontPreloads(html, links))
+  }
+}
+
+await preloadNotFoundFonts()
+
+const faces = 2
+
+const delivery: Array<string> = []
+
+for (const file of (await files(out)).filter((candidate) => /\.(html|css)$/.test(candidate))) {
+  const text = await readFile(file, "utf8")
+  const name = relative(out, file)
+
+  for (const url of dataUrls(text)) delivery.push(`${name} carries a data URL (${url})`)
+
+  if (!file.endsWith(".html")) continue
+
+  for (const problem of fontPreloadProblems(text, faces)) delivery.push(`${name} ${problem}`)
+
+  for (const { href } of fontPreloads(text))
+    if (!existsSync(join(out, href)))
+      delivery.push(`${name} preloads ${href}, which is not in the export`)
+}
+
+if (delivery.length > 0)
+  throw new Error(
+    `The fonts are not delivered as hashed files with a preload, or a data URL is back:\n${delivery.slice(0, 40).join("\n")}`,
   )
-    throw new Error(`No stylesheet in the export carries ${family}`)
 
 if (leaks.length > 0)
   throw new Error(

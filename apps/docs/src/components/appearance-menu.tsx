@@ -1,20 +1,22 @@
 "use client"
 
-import { Check, Monitor, Moon, Sun, type LucideIcon } from "lucide-react"
-import { useEffect, useRef, useState } from "react"
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu"
+import { Moon } from "lucide-react"
+import { useEffect, useState, type ComponentType, type SVGProps } from "react"
 
 import { themeStorageKey } from "../content/theme-script.ts"
+import { CheckGlyph, SunGlyph, SystemGlyph } from "./glyphs.tsx"
 
 type Choice = "light" | "dark" | "system"
 
 const choices: ReadonlyArray<{
   readonly value: Choice
   readonly label: string
-  readonly Icon: LucideIcon
+  readonly Icon: ComponentType<SVGProps<SVGSVGElement>>
 }> = [
-  { value: "light", label: "Light", Icon: Sun },
+  { value: "light", label: "Light", Icon: SunGlyph },
   { value: "dark", label: "Dark", Icon: Moon },
-  { value: "system", label: "System", Icon: Monitor },
+  { value: "system", label: "System", Icon: SystemGlyph },
 ]
 
 /** The Appearance icon: a circle whose right half is drawn as three vertical strokes. */
@@ -44,38 +46,20 @@ const stored = (): Choice => {
  * The Appearance row at the foot of the sidebar and its menu of Light, Dark and System.
  * A choice sets the class the stylesheet reads on the root element and is kept in local
  * storage, where the script in the document head reads it before the first paint. System
- * removes both, so the page follows the operating system.
+ * removes both, so the page follows the operating system. The menu is a Radix dropdown, so
+ * the arrow keys move through the choices, Escape or a choice closes it, and focus goes back
+ * to the row that opened it.
  */
 export function AppearanceMenu() {
-  const [open, setOpen] = useState(false)
   const [choice, setChoice] = useState<Choice>("system")
-  const root = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     setChoice(stored())
   }, [])
 
-  useEffect(() => {
-    if (!open) return
+  const choose = (value: string) => {
+    if (value !== "light" && value !== "dark" && value !== "system") return
 
-    const onPointerDown = (event: PointerEvent) => {
-      if (event.target instanceof Node && root.current?.contains(event.target) !== true)
-        setOpen(false)
-    }
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false)
-    }
-
-    document.addEventListener("pointerdown", onPointerDown)
-    document.addEventListener("keydown", onKeyDown)
-
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown)
-      document.removeEventListener("keydown", onKeyDown)
-    }
-  }, [open])
-
-  const choose = (value: Choice) => {
     const classes = document.documentElement.classList
 
     classes.remove("light", "dark")
@@ -87,39 +71,39 @@ export function AppearanceMenu() {
     }
 
     setChoice(value)
-    setOpen(false)
   }
 
   return (
-    <div className="ak-appearance" ref={root}>
-      {open ? (
-        <div className="ak-menu" role="menu" aria-label="Appearance">
-          {choices.map(({ value, label, Icon }) => (
-            <button
-              key={value}
-              type="button"
-              role="menuitemradio"
-              aria-checked={choice === value}
-              className="ak-menu-row"
-              onClick={() => choose(value)}
-            >
-              <Icon className="ak-menu-icon" aria-hidden="true" />
-              {label}
-              {choice === value ? <Check className="ak-menu-check" aria-hidden="true" /> : null}
-            </button>
-          ))}
-        </div>
-      ) : null}
-      <button
-        type="button"
-        className="ak-row"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
-      >
-        <ContrastIcon />
-        <span className="ak-row-label">Appearance</span>
-      </button>
+    <div className="ak-appearance">
+      <DropdownMenu.Root modal={false}>
+        <DropdownMenu.Trigger asChild>
+          <button type="button" className="ak-row">
+            <ContrastIcon />
+            <span className="ak-row-label">Appearance</span>
+          </button>
+        </DropdownMenu.Trigger>
+        <DropdownMenu.Content
+          className="ak-menu"
+          aria-label="Appearance"
+          side="top"
+          align="start"
+          sideOffset={4}
+          avoidCollisions={false}
+          loop
+        >
+          <DropdownMenu.RadioGroup className="ak-menu-group" value={choice} onValueChange={choose}>
+            {choices.map(({ value, label, Icon }) => (
+              <DropdownMenu.RadioItem key={value} value={value} className="ak-menu-row">
+                <Icon className="ak-menu-icon" aria-hidden="true" />
+                {label}
+                <DropdownMenu.ItemIndicator asChild>
+                  <CheckGlyph className="ak-menu-check" aria-hidden="true" />
+                </DropdownMenu.ItemIndicator>
+              </DropdownMenu.RadioItem>
+            ))}
+          </DropdownMenu.RadioGroup>
+        </DropdownMenu.Content>
+      </DropdownMenu.Root>
     </div>
   )
 }

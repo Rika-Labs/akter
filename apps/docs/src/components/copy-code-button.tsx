@@ -1,7 +1,8 @@
 "use client"
 
-import { Check, Copy } from "lucide-react"
 import { useState } from "react"
+
+import { CheckGlyph, CopyGlyph } from "./glyphs.tsx"
 
 /** The button in a code block's header that copies the block's text. */
 export function CopyCodeButton() {
@@ -22,7 +23,7 @@ export function CopyCodeButton() {
         window.setTimeout(() => setCopied(false), 2000)
       }}
     >
-      {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+      {copied ? <CheckGlyph aria-hidden="true" /> : <CopyGlyph aria-hidden="true" />}
     </button>
   )
 }

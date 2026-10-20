@@ -73,7 +73,7 @@
 
 :root {
   color-scheme: light dark;
-  --font-sans: "Inter", "Inter Fallback", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: Inter, "Inter Fallback", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "Geist Mono", "Geist Mono Fallback", ui-monospace, monospace;
 
   --bg: light-dark(#eeeeed, #0a0a09);
@@ -244,8 +244,13 @@ html {
 html,
 body {
   overscroll-behavior: none;
-  height: 100dvh;
-  overflow: hidden;
+}
+
+@media (min-width: 768px) {
+  html {
+    scrollbar-gutter: stable;
+    scroll-padding-top: 8.5px;
+  }
 }
 
 body {
@@ -354,11 +359,10 @@ svg {
 
 .ak-shell {
   grid-template-columns: var(--ak-sidebar-w) minmax(0, 1fr);
-  height: 100dvh;
+  min-height: 100dvh;
   padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
     env(safe-area-inset-left);
   display: grid;
-  overflow: hidden;
 }
 
 .ak-sidebar > * {
@@ -366,14 +370,15 @@ svg {
 }
 
 .ak-sidebar {
-  z-index: 1;
+  z-index: 2;
   height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom));
   flex-direction: column;
+  align-self: start;
   gap: 12px;
   padding: 8px 8px 0;
   display: flex;
   position: sticky;
-  top: 0;
+  top: env(safe-area-inset-top);
 }
 
 .ak-brand {
@@ -551,23 +556,27 @@ svg {
 
 .ak-main {
   container: main / inline-size;
-  border: 0.5px solid var(--card-hairline);
-  border-radius: var(--radius-panel);
+  border: 0.5px solid transparent;
   background: var(--panel);
   min-width: 0;
-  min-height: 0;
-  box-shadow: var(--sh-card);
-  overscroll-behavior: none;
+  min-height: calc(100dvh - 16px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
   outline: none;
   margin: 8px 8px 8px 0;
   position: relative;
-  overflow: hidden auto;
+  overflow-x: clip;
 }
 
-@media (min-width: 768px) {
-  .ak-main {
-    scrollbar-gutter: stable;
-  }
+.ak-frame {
+  z-index: 1;
+  inset: calc(8px + env(safe-area-inset-top)) calc(8px + env(safe-area-inset-right))
+    calc(8px + env(safe-area-inset-bottom)) calc(var(--ak-sidebar-w) + env(safe-area-inset-left));
+  border: 0.5px solid var(--card-hairline);
+  border-radius: var(--radius-panel);
+  box-shadow:
+    var(--sh-card),
+    0 0 0 100vmax var(--bg);
+  pointer-events: none;
+  position: fixed;
 }
 
 .ak-page-grid {
@@ -643,8 +652,14 @@ svg {
 .ak-page-rail {
   max-height: calc(100dvh - 96px);
   position: sticky;
-  top: 48px;
+  top: 57px;
   overflow-y: auto;
+}
+
+@media (min-resolution: 2dppx) {
+  .ak-page-rail {
+    top: 56.5px;
+  }
 }
 
 .ak-toc {
@@ -702,60 +717,34 @@ svg {
   color: var(--text);
 }
 
-.ak-toc-item::before {
-  content: "";
-  width: 1px;
-  background: var(--border-2);
-  transition: background-color var(--duration-base) var(--ease-out-quint);
-  position: absolute;
-  top: 6px;
-  bottom: 6px;
-  left: 0;
-}
-
-.ak-toc-item:first-of-type::before {
-  top: 0;
-}
-
-.ak-toc-item:last-of-type::before {
-  bottom: 0;
-}
-
-.ak-toc-item[data-depth="3"]::before,
-.ak-toc-item[data-depth="4"]::before {
-  left: 12px;
-}
-
-.ak-toc-item[data-join-up]::before {
-  top: 0;
-}
-
-.ak-toc-item[data-join-down]::before {
-  bottom: 0;
-}
-
-.ak-toc-item[data-active="true"]::before {
-  background: var(--text);
-}
-
-.ak-toc-item[data-jog]::after {
-  content: "";
+.ak-toc-rail {
+  pointer-events: none;
   width: 14px;
-  height: 12px;
-  background: var(--border-2);
+  height: 100%;
   position: absolute;
-  top: -6px;
+  top: 0;
   left: 0;
+  overflow: visible;
 }
 
-.ak-toc-item[data-jog="in"]::after {
-  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='12'%3E%3Cpath d='M0.5 0L12.5 12' stroke='black' fill='none'/%3E%3C/svg%3E");
-  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='12'%3E%3Cpath d='M0.5 0L12.5 12' stroke='black' fill='none'/%3E%3C/svg%3E");
+.ak-toc-rail path {
+  fill: none;
+  stroke: var(--border-2);
+  stroke-width: 1px;
 }
 
-.ak-toc-item[data-jog="out"]::after {
-  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='12'%3E%3Cpath d='M12.5 0L0.5 12' stroke='black' fill='none'/%3E%3C/svg%3E");
-  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='12'%3E%3Cpath d='M12.5 0L0.5 12' stroke='black' fill='none'/%3E%3C/svg%3E");
+.ak-toc-thumb {
+  clip-path: polygon(
+    0 var(--ak-track-top, 0px),
+    100% var(--ak-track-top, 0px),
+    100% var(--ak-track-bottom, 0px),
+    0 var(--ak-track-bottom, 0px)
+  );
+  transition: clip-path var(--duration-base) var(--ease-out-quint);
+}
+
+.ak-toc-thumb path {
+  stroke: var(--text);
 }
 
 .ak-prose {
@@ -1051,6 +1040,10 @@ svg {
 
 .ak-card:hover {
   background: var(--card-hover);
+}
+
+.ak-prose > .ak-card {
+  margin: 20px 0 24px;
 }
 
 .ak-card-icon {
@@ -1420,7 +1413,7 @@ svg {
   border: 0.5px solid var(--border-2);
   border-radius: var(--radius-overlay);
   background: var(--popover);
-  width: 100%;
+  width: var(--radix-dropdown-menu-trigger-width);
   box-shadow: var(--sh-overlay);
   animation: ak-pop var(--duration-fast) var(--ease-out-quint);
   transform-origin: 0 100%;
@@ -1428,9 +1421,12 @@ svg {
   gap: 1px;
   padding: 4px;
   display: flex;
-  position: absolute;
-  bottom: calc(100% + 4px);
-  left: 0;
+}
+
+.ak-menu-group {
+  flex-direction: column;
+  gap: 1px;
+  display: flex;
 }
 
 .ak-menu-row {
@@ -1453,7 +1449,8 @@ svg {
 }
 
 .ak-menu-row:hover,
-.ak-menu-row:focus-visible {
+.ak-menu-row:focus-visible,
+.ak-menu-row[data-highlighted] {
   background: var(--popover-hover);
   outline: none;
 }
@@ -1562,7 +1559,7 @@ svg {
   border: 0.5px solid var(--border-2);
   border-radius: var(--radius-overlay);
   background: var(--popover);
-  width: 100%;
+  width: var(--radix-dropdown-menu-trigger-width);
   box-shadow: var(--sh-overlay);
   animation: ak-pop var(--duration-fast) var(--ease-out-quint);
   transform-origin: 0 0;
@@ -1570,9 +1567,6 @@ svg {
   gap: 1px;
   padding: 4px;
   display: flex;
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
 }
 
 .ak-section-option {
@@ -1581,7 +1575,8 @@ svg {
 }
 
 .ak-section-option:hover,
-.ak-section-option:focus-visible {
+.ak-section-option:focus-visible,
+.ak-section-option[data-highlighted] {
   background: var(--popover-hover);
   outline: none;
 }
@@ -1694,21 +1689,33 @@ svg {
     background: var(--panel);
   }
 
+  html {
+    scroll-padding-top: calc(44px + env(safe-area-inset-top));
+  }
+
+  html:has([data-drawer]) {
+    overflow: hidden;
+  }
+
   .ak-shell {
-    grid-template-rows: auto minmax(0, 1fr);
-    grid-template-columns: minmax(0, 1fr);
+    display: block;
+  }
+
+  .ak-frame {
+    display: none;
   }
 
   .ak-mobilebar {
     z-index: 30;
     border-bottom: 0.5px solid var(--border-1);
     background: var(--panel);
+    height: 44px;
+    top: env(safe-area-inset-top);
     justify-content: space-between;
     align-items: center;
-    height: 44px;
     padding: 0 8px;
     display: flex;
-    position: relative;
+    position: sticky;
   }
 
   .ak-mobilebar .ak-icon-btn {
@@ -1757,15 +1764,10 @@ svg {
   }
 
   .ak-main {
-    box-shadow: none;
     background: 0 0;
     border: 0;
-    border-radius: 0;
+    min-height: 0;
     margin: 0;
-  }
-
-  [data-drawer] .ak-main {
-    overflow: hidden;
   }
 }
 

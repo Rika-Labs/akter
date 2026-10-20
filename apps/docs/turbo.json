@@ -4,7 +4,7 @@
   "tasks": {
     "build": {
       "outputs": ["out/**", ".next/**", "!.next/cache/**"],
-      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/docs/**", "!**/*.test.ts"],
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/docs/**", "!**/*.test.ts", "!**/*.test.tsx"],
       "env": ["NEXT_TELEMETRY_DISABLED"]
     },
     "lint": {

@@ -1,9 +1,8 @@
 import type { Metadata } from "next"
 import { notFound } from "next/navigation"
 
-import { PageActions } from "../../../components/page-actions.tsx"
+import { DocFrame } from "../../../components/doc-frame.tsx"
 import { mdxComponents } from "../../../components/mdx-components.tsx"
-import { Toc } from "../../../components/toc.tsx"
 import { publishedSlugs } from "../../../content/navigation.ts"
 import { pageUrl } from "../../../content/page-markdown.ts"
 import { source } from "../../../content/source.ts"
@@ -50,24 +49,12 @@ export default async function DocsPageRoute(props: PageParams) {
   const path = slug.join("/")
 
   return (
-    <div className="ak-page-grid">
-      <article className="ak-page" data-kind="doc">
-        <header className="ak-head">
-          <h1 className="ak-title">{page.data.title}</h1>
-        </header>
-        <div className="ak-prose">
-          <Body components={mdxComponents} />
-        </div>
-        <div className="ak-page-actions-mobile">
-          <PageActions slug={path} />
-        </div>
-      </article>
-      <aside className="ak-toc-col">
-        <div className="ak-page-rail">
-          <Toc items={tocItems(page.data.toc, page.data.structuredData.headings)} />
-          <PageActions slug={path} />
-        </div>
-      </aside>
-    </div>
+    <DocFrame
+      title={page.data.title}
+      slug={path}
+      toc={tocItems(page.data.toc, page.data.structuredData.headings)}
+    >
+      <Body components={mdxComponents} />
+    </DocFrame>
   )
 }

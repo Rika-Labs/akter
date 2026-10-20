@@ -24,6 +24,20 @@ describe("renderHeaders", () => {
     ])
   })
 
+  it("caches the hashed fonts as an asset that never changes, by a rule no other rule repeats", () => {
+    const font = "/_next/static/media/0a1b2c3d4e5f6071-s.p.8f3e2a1b.woff2"
+    const matching = rules.filter((rule) => {
+      const [path] = rule.split("\n")
+
+      return path !== undefined && path.endsWith("*") && font.startsWith(path.slice(0, -1))
+    })
+
+    expect(matching.map((rule) => rule.split("\n")[0])).toEqual(["/*", "/_next/static/*"])
+    expect(matching.filter((rule) => rule.includes("Cache-Control"))).toEqual([
+      "/_next/static/*\n  Cache-Control: public, max-age=31536000, immutable",
+    ])
+  })
+
   it("revalidates pages and sets no cache header on the catch-all rule", () => {
     expect(catchAll).not.toContain("Cache-Control")
     expect(rules).toContain("/quickstart\n  Cache-Control: public, max-age=0, must-revalidate")
@@ -78,10 +92,11 @@ describe("contentSecurityPolicy", () => {
   const directive = (policy: string, name: string) =>
     policy.split("; ").find((candidate) => candidate.startsWith(`${name} `))
 
-  it("keeps every request on the page's own origin; the fonts are data URLs in the stylesheet", () => {
+  it("keeps every request on the page's own origin; the fonts are files of the export", () => {
     const policy = contentSecurityPolicy()
 
-    expect(directive(policy, "font-src")).toBe("font-src 'self' data:")
+    expect(directive(policy, "font-src")).toBe("font-src 'self'")
+    expect(directive(policy, "img-src")).toBe("img-src 'self'")
     expect(directive(policy, "connect-src")).toBe("connect-src 'self'")
     expect(directive(policy, "default-src")).toBe("default-src 'none'")
     expect(directive(policy, "frame-ancestors")).toBe("frame-ancestors 'none'")

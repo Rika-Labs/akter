@@ -38,7 +38,7 @@ export const welcomePage: LandingPage = {
   sections: [
     {
       heading: "Start here",
-      columns: 2,
+      columns: 3,
       cards: [
         { title: "Quickstart", slug: "quickstart" },
         { title: "Akter Cloud", slug: "cloud/get-started" },

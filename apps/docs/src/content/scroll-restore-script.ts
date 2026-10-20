@@ -1,23 +1,24 @@
 /**
- * Inline script that owns scroll restoration for a loaded page. The page scrolls inside its
- * main panel, not the window. The script takes the position away from the browser
- * (`history.scrollRestoration = 'manual'`) and puts a reloaded or revisited page back at the
- * offset it saved, while the document is still being parsed. Two restorers disagree: WebKit
- * restores its own offset after the scripts have loaded, which on a quick reload overwrites
- * the saved one with zero, and then the saved value is overwritten too. A plain visit never
- * restores, so a stale value cannot move it. The offset is saved at most once per frame,
- * under the path it belongs to.
+ * Inline script for the end of the document body. The page itself scrolls, so with scripts off
+ * the browser restores a reloaded page's offset itself. With scripts on this script takes the
+ * job (`history.scrollRestoration = 'manual'`), because the engines disagree about when to do
+ * it: WebKit restores its own offset after the page's scripts have loaded, which draws the
+ * first frame at the top, and the offset its history entry holds is the one it saved some time
+ * after the last scroll, so a reload soon after a scroll is put back at a stale one and then
+ * overrides any restoration made before it. At the end of the body the document has its full
+ * height, so scrolling then happens before the first paint of an engine that waits for the whole
+ * document. The offset is saved when the page is left, under the path it belongs to, and is read
+ * back only for a reload or a back or forward visit, so a stale value cannot move a plain visit
+ * or a link to an anchor.
  */
 export const scrollRestoreScript = [
-  "(function(){var w=window;",
+  "(function(){var w=window;try{",
   "if('scrollRestoration' in w.history)w.history.scrollRestoration='manual';",
-  "var main=w.document.getElementById('ak-main');if(!main)return;",
-  "var key=function(){return'akter:scroll:'+w.location.pathname};",
-  "try{var nav=w.performance.getEntriesByType('navigation')[0];",
-  "var y=Number(w.sessionStorage.getItem(key()));",
-  "if(nav&&(nav.type==='reload'||nav.type==='back_forward')&&y>0)main.scrollTop=y}catch(e){}",
-  "var queued=false;",
-  "main.addEventListener('scroll',function(){if(queued)return;queued=true;",
-  "w.requestAnimationFrame(function(){queued=false;",
-  "try{w.sessionStorage.setItem(key(),String(main.scrollTop))}catch(e){}})},{passive:true})})()",
+  "var key='akter:scroll:'+w.location.pathname;",
+  "var nav=w.performance.getEntriesByType('navigation')[0];",
+  "var y=Number(w.sessionStorage.getItem(key));",
+  "if(nav&&(nav.type==='reload'||nav.type==='back_forward')&&y>0)w.scrollTo(0,y);",
+  "w.addEventListener('pagehide',function(){",
+  "try{w.sessionStorage.setItem(key,String(w.scrollY))}catch(e){}})",
+  "}catch(e){}})()",
 ].join("")

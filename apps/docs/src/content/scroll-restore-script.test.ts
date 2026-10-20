@@ -1,86 +1,100 @@
 import { runInNewContext } from "node:vm"
-
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
 import { scrollRestoreScript } from "./scroll-restore-script.ts"
 
-const run = (input: {
-  readonly navigation: string
-  readonly stored?: string
-  readonly history?: { scrollRestoration?: string }
-  readonly panel?: boolean
+const key = (path: string): string => `akter:scroll:${path}`
+
+const run = (options: {
+  readonly type: string
+  readonly stored?: Record<string, string>
+  readonly path?: string
+  readonly scrollY?: number
+  readonly storageThrows?: boolean
 }) => {
-  const stored = new Map<string, string>()
-  const listeners: Array<() => void> = []
-  const frames: Array<() => void> = []
-  const main = {
-    scrollTop: 0,
-    addEventListener: (_type: string, listener: () => void) => void listeners.push(listener),
-  }
-  const fake = {
-    location: { pathname: "/quickstart" },
-    history: input.history ?? { scrollRestoration: "auto" },
-    performance: { getEntriesByType: () => [{ type: input.navigation }] },
+  const store = new Map(Object.entries(options.stored ?? {}))
+  const listeners = new Map<string, () => void>()
+  const scrollTo = vi.fn()
+  const window = {
+    location: { pathname: options.path ?? "/quickstart" },
+    performance: { getEntriesByType: () => [{ type: options.type }] },
     sessionStorage: {
-      getItem: (key: string) => stored.get(key) ?? null,
-      setItem: (key: string, value: string) => void stored.set(key, value),
+      getItem: (name: string) => {
+        if (options.storageThrows === true) throw new Error("denied")
+
+        return store.get(name) ?? null
+      },
+      setItem: (name: string, value: string) => {
+        if (options.storageThrows === true) throw new Error("denied")
+
+        store.set(name, value)
+      },
     },
-    document: {
-      getElementById: (id: string) => (id === "ak-main" && input.panel !== false ? main : null),
-    },
-    requestAnimationFrame: (frame: () => void) => void frames.push(frame),
+    scrollTo,
+    history: { scrollRestoration: "auto" },
+    scrollY: options.scrollY ?? 0,
+    addEventListener: (type: string, listener: () => void) => listeners.set(type, listener),
   }
 
-  if (input.stored !== undefined) stored.set("akter:scroll:/quickstart", input.stored)
+  runInNewContext(scrollRestoreScript, { window })
 
-  runInNewContext(scrollRestoreScript, { window: fake })
-
-  return { fake, main, stored, listeners, frames }
+  return { store, listeners, scrollTo, history: window.history }
 }
 
 describe("scrollRestoreScript", () => {
-  it("takes scroll restoration from the browser, so there is one restorer", () => {
-    const { fake } = run({ navigation: "reload", stored: "1589" })
+  it("takes scroll restoration from the browser, so a stale offset it holds cannot override", () => {
+    const { history } = run({ type: "navigate" })
 
-    expect(fake.history.scrollRestoration).toBe("manual")
+    expect(history.scrollRestoration).toBe("manual")
   })
 
-  it("still restores the saved position in a browser without the history setting", () => {
-    expect(run({ navigation: "reload", stored: "320", history: {} }).main.scrollTop).toBe(320)
+  it("scrolls a reloaded page to the offset saved for its path", () => {
+    const { scrollTo } = run({ type: "reload", stored: { [key("/quickstart")]: "1551" } })
+
+    expect(scrollTo).toHaveBeenCalledExactlyOnceWith(0, 1551)
   })
 
-  it("scrolls a reloaded page's panel to the saved position before anything paints", () => {
-    expect(run({ navigation: "reload", stored: "1589" }).main.scrollTop).toBe(1589)
+  it("scrolls a page reached by back or forward the same way", () => {
+    const { scrollTo } = run({ type: "back_forward", stored: { [key("/quickstart")]: "820" } })
+
+    expect(scrollTo).toHaveBeenCalledExactlyOnceWith(0, 820)
   })
 
-  it("scrolls a revisited page's panel to the saved position", () => {
-    expect(run({ navigation: "back_forward", stored: "320" }).main.scrollTop).toBe(320)
+  it("leaves a plain visit at the top even when an offset is saved for the path", () => {
+    const { scrollTo } = run({ type: "navigate", stored: { [key("/quickstart")]: "1551" } })
+
+    expect(scrollTo).not.toHaveBeenCalled()
   })
 
-  it("leaves a plain visit at the top even when an older position is saved", () => {
-    expect(run({ navigation: "navigate", stored: "1589" }).main.scrollTop).toBe(0)
+  it("reads only the offset saved for the path it is on", () => {
+    const { scrollTo } = run({ type: "reload", stored: { [key("/welcome")]: "300" } })
+
+    expect(scrollTo).not.toHaveBeenCalled()
   })
 
-  it("does nothing when no position was saved", () => {
-    expect(run({ navigation: "reload" }).main.scrollTop).toBe(0)
+  it("does not scroll for a missing, zero or unreadable offset", () => {
+    for (const stored of [undefined, "0", "", "far"]) {
+      const { scrollTo } = run({
+        type: "reload",
+        stored: stored === undefined ? {} : { [key("/quickstart")]: stored },
+      })
+
+      expect(scrollTo).not.toHaveBeenCalled()
+    }
   })
 
-  it("saves the panel's position under the current path once per frame while scrolling", () => {
-    const { main, stored, listeners, frames } = run({ navigation: "navigate" })
+  it("saves the offset under the path when the page is hidden", () => {
+    const { store, listeners } = run({ type: "navigate", path: "/guides/deploy", scrollY: 1234 })
 
-    main.scrollTop = 640
-    listeners[0]?.()
-    listeners[0]?.()
-    expect(frames).toHaveLength(1)
+    listeners.get("pagehide")?.()
 
-    frames[0]?.()
-    expect(stored.get("akter:scroll:/quickstart")).toBe("640")
+    expect(store.get(key("/guides/deploy"))).toBe("1234")
   })
 
-  it("does nothing on a page without the panel", () => {
-    const { fake, listeners } = run({ navigation: "reload", stored: "320", panel: false })
+  it("does nothing, and does not throw, where storage refuses", () => {
+    const { listeners, scrollTo } = run({ type: "reload", storageThrows: true })
 
-    expect(fake.history.scrollRestoration).toBe("manual")
-    expect(listeners).toHaveLength(0)
+    expect(() => listeners.get("pagehide")?.()).not.toThrow()
+    expect(scrollTo).not.toHaveBeenCalled()
   })
 })
