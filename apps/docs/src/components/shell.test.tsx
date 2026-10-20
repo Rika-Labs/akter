@@ -89,6 +89,27 @@ describe("Shell drawer", () => {
     expect(part("#ak-main")?.hasAttribute("inert")).toBe(false)
   })
 
+  it("moves focus into the drawer and back without letting it scroll the page", async () => {
+    const focus = vi.spyOn(HTMLElement.prototype, "focus")
+    const { user, opener, part } = setup()
+
+    await user.click(opener)
+    await user.keyboard("{Escape}")
+    await waitFor(() => expect(part(".ak-shell")?.hasAttribute("data-drawer")).toBe(false))
+
+    const calls = focus.mock.contexts.map((target, call) => ({
+      target,
+      preventScroll: focus.mock.calls[call]?.[0]?.preventScroll === true,
+    }))
+    const entered = calls.filter((call) => part(".ak-sidebar")?.contains(call.target as Node))
+    const returned = calls.filter((call) => call.target === opener).at(-1)
+
+    expect(entered.length).toBeGreaterThan(0)
+    expect(entered.every((call) => call.preventScroll)).toBe(true)
+    expect(returned?.preventScroll).toBe(true)
+    focus.mockRestore()
+  })
+
   it("closes on the scrim and gives focus back to the button", async () => {
     const { user, opener, part } = setup()
 

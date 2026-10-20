@@ -1,11 +1,11 @@
 "use client"
 
 import { useDocsSearch } from "fumadocs-core/search/client"
-import { staticClient } from "fumadocs-core/search/client/orama-static"
 import { FileText, Hash, SearchX } from "lucide-react"
 import Link from "next/link"
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react"
 
+import { searchClient } from "../content/search-index.ts"
 import { loadSearchSections, type SearchSection } from "../content/search-sections.ts"
 import { suggestedHrefs, type Sidebar } from "../content/sidebar.ts"
 import { SearchGlyph } from "./glyphs.tsx"
@@ -68,8 +68,9 @@ const windowed = (text: string, terms: ReadonlyArray<string>): string => {
 
 /**
  * The search palette. It searches the index the build wrote to `/search.json`, which the
- * browser downloads when the palette first opens, and every query runs in the browser. The
- * tabs narrow the search to one section, Tab cycles them, the arrows move through the
+ * browser downloads when the palette first opens, and every query runs in the browser. If that
+ * download fails the palette says so, and the next keystroke or the next opening tries again.
+ * The tabs narrow the search to one section, Tab cycles them, the arrows move through the
  * results, Enter opens one and Escape closes the palette.
  */
 export function SearchPalette(props: {
@@ -80,11 +81,8 @@ export function SearchPalette(props: {
   const [highlighted, setHighlighted] = useState(0)
   const list = useRef<HTMLDivElement>(null)
   const input = useRef<HTMLInputElement>(null)
-  const client = useMemo(
-    () => staticClient({ from: "/search.json", tag: filter === "All" ? undefined : filter }),
-    [filter],
-  )
-  const { search, onSearchChange, data } = useDocsSearch({ client })
+  const client = useMemo(() => searchClient(filter === "All" ? undefined : filter), [filter])
+  const { search, onSearchChange, data, error } = useDocsSearch({ client })
   const [sections, setSections] = useState<ReadonlyMap<string, SearchSection>>(new Map())
 
   useEffect(() => {
@@ -274,7 +272,13 @@ export function SearchPalette(props: {
             ))}
           </div>
           <div id="ak-cmd-list" role="listbox" className="ak-cmd-list" ref={list}>
-            {groups.length === 0 ? (
+            {error !== undefined ? (
+              <div className="ak-cmd-empty" role="alert">
+                <SearchX className="ak-cmd-empty-icon" aria-hidden="true" />
+                <p className="ak-cmd-empty-title">Search unavailable.</p>
+                <p className="ak-cmd-empty-body">Try again.</p>
+              </div>
+            ) : groups.length === 0 ? (
               <div className="ak-cmd-empty">
                 <SearchX className="ak-cmd-empty-icon" aria-hidden="true" />
                 <p className="ak-cmd-empty-title">No results</p>

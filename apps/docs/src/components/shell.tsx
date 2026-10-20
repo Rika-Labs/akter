@@ -16,6 +16,8 @@ import { Sidebar } from "./sidebar.tsx"
  * closes it. While the drawer is open focus is inside it and the rest of the page is inert,
  * and closing it puts focus back on the button that opened it. The search palette takes focus
  * from the drawer while it is open and gives it back to what had it when the palette closes.
+ * Focus is always moved without scrolling: the button sits in a sticky bar, and focusing it
+ * scrolls the page, which moved the offset that Back restores after a page chosen in the drawer.
  * The frame layer is drawn over the scrolling page: it paints the margin and the rounded
  * corners around the panel, which keeps the panel's look while the document itself is what
  * scrolls.
@@ -48,7 +50,8 @@ export function Shell(props: {
     searchOpen.current = false
     setSearching(false)
 
-    if (origin !== null && origin !== document.body && origin.isConnected) origin.focus()
+    if (origin !== null && origin !== document.body && origin.isConnected)
+      origin.focus({ preventScroll: true })
   }
 
   useEffect(() => {
@@ -71,8 +74,9 @@ export function Shell(props: {
 
     was.current = drawer
 
-    if (focus === "enter") sidebar.current?.querySelector<HTMLElement>("a[href], button")?.focus()
-    if (focus === "return") opener.current?.focus()
+    if (focus === "enter")
+      sidebar.current?.querySelector<HTMLElement>("a[href], button")?.focus({ preventScroll: true })
+    if (focus === "return") opener.current?.focus({ preventScroll: true })
   }, [drawer])
 
   useEffect(() => {

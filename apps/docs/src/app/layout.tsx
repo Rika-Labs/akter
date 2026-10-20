@@ -36,7 +36,9 @@ export const metadata: Metadata = {
  * page still: the document is the scroll container, so the browser restores a reloaded page's
  * offset itself, with scripts off too. Two small scripts run with scripts on: the one in the
  * head puts a reader's choice of Light or Dark on the root element before the first paint,
- * and the one before the end marker puts the offset back for an engine that restores it late.
+ * and the one before the end marker puts a reloaded page back at its offset for an engine that
+ * restores it late or scrolls to a hash afterwards. It leaves Back and Forward, which the
+ * browser restores, alone.
  */
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
