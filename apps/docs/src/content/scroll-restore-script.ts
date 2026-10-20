@@ -6,20 +6,21 @@
  * saved offset, zero included. WebKit can restore a stale native offset or scroll to a fragment
  * after this script, so competing scrolls are corrected until input, history traversal,
  * fragment navigation, pagehide or 400 ms after load. No callback changes a history entry's
- * restoration mode, and the correction cannot follow the reader into another history entry.
+ * restoration mode. The pathname is checked before each correction because a programmatic
+ * client route change need not emit input or popstate, and must release the old route's hold.
  * Ordinary visits, including links to anchors, are left alone; with scripts off the document
  * still scrolls and the browser restores it itself.
  */
 export const scrollRestoreScript = [
   "(function(){var w=window;try{",
-  "var key='akter:scroll:'+w.location.pathname;",
+  "var path=w.location.pathname,key='akter:scroll:'+path;",
   "var nav=w.performance.getEntriesByType('navigation')[0];",
   "var saved=w.sessionStorage.getItem(key),y=Number(saved);",
   "w.addEventListener('pagehide',function(){",
   "try{w.sessionStorage.setItem('akter:scroll:'+w.location.pathname,String(w.scrollY))}catch(e){}});",
   "if(!nav||nav.type!=='reload'||saved===null||saved===''||!Number.isFinite(y)||y<0)return;",
   "w.scrollTo(0,y);",
-  "var keep=function(){if(w.scrollY!==y)w.scrollTo(0,y)};",
+  "var keep=function(){if(w.location.pathname!==path){release();return}if(w.scrollY!==y)w.scrollTo(0,y)};",
   "var stops=['wheel','touchstart','keydown','mousedown','popstate','hashchange','pagehide'];",
   "var release=function(){",
   "w.removeEventListener('scroll',keep);",

@@ -61,6 +61,26 @@ const open = async (answers: ReadonlyArray<number>) => {
 }
 
 describe("SearchPalette", () => {
+  it("limits empty-query suggestions to the selected product and restores all suggestions", async () => {
+    const { user, requested, input } = await open([200])
+    const hrefs = () => screen.getAllByRole("option").map((option) => option.getAttribute("href"))
+    const documentation = ["/quickstart", "/guides/concepts", "/cloud/get-started"]
+    const api = ["/api/01-server-api", "/api/06-cli"]
+
+    expect(hrefs()).toEqual([...documentation, ...api])
+
+    await user.click(screen.getByRole("tab", { name: /^Documentation$/ }))
+    expect(hrefs()).toEqual(documentation)
+
+    await user.click(screen.getByRole("tab", { name: /^API reference$/ }))
+    expect(hrefs()).toEqual(api)
+
+    await user.click(screen.getByRole("tab", { name: /^All$/ }))
+    expect(hrefs()).toEqual([...documentation, ...api])
+    expect((input as HTMLInputElement).value).toBe("")
+    expect(requested.filter((address) => address.startsWith("/search.json"))).toEqual([])
+  })
+
   it("says search is unavailable when the index fails to load, then finds results on the next keystroke", async () => {
     const { user, requested, input } = await open([500, 200])
 

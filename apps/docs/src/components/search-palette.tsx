@@ -117,7 +117,7 @@ export function SearchPalette(props: {
       return suggestedHrefs.flatMap((href) => {
         const page = pages.get(href)
 
-        return page === undefined
+        return page === undefined || (filter !== "All" && page.product !== filter)
           ? []
           : [
               {
@@ -175,7 +175,7 @@ export function SearchPalette(props: {
         },
       ]
     })
-  }, [data, pages, sections, terms])
+  }, [data, filter, pages, sections, terms])
 
   const groups = useMemo(() => {
     const byProduct = new Map<string, Array<Row>>()

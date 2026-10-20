@@ -228,6 +228,28 @@ describe("scrollRestoreScript", () => {
     expect(history.scrollRestoration).toBe("manual")
   })
 
+  it("releases on a programmatic pathname change without input or popstate", () => {
+    const { scrollTo, fire, window, history } = run({
+      type: "reload",
+      stored: { [key("/quickstart")]: "1360" },
+    })
+
+    window.location.pathname = "/welcome"
+    window.scrollY = 90
+    fire("scroll")
+
+    expect(window.scrollY).toBe(90)
+    expect(scrollTo).toHaveBeenCalledTimes(1)
+
+    window.location.pathname = "/quickstart"
+    window.scrollY = 700
+    fire("scroll")
+
+    expect(window.scrollY).toBe(700)
+    expect(scrollTo).toHaveBeenCalledTimes(1)
+    expect(history.scrollRestoration).toBe("auto")
+  })
+
   it("ends the reload correction when the document is left or its hash changes", () => {
     for (const event of ["pagehide", "hashchange"]) {
       const { scrollTo, fire, window } = run({
