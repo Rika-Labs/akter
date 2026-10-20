@@ -18,13 +18,45 @@ describe("renderHeaders", () => {
   const rules = text.trim().split("\n\n")
   const catchAll = rules.find((rule) => rule.startsWith("/*\n")) ?? ""
 
-  it("caches hashed assets for a year and nothing else", () => {
+  const cacheDirectives = (path: string): ReadonlyArray<string> => {
+    const headers = new Headers()
+
+    for (const block of rules) {
+      const [pattern, ...lines] = block.split("\n")
+      const matcher = pattern
+        ?.split("*")
+        .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+        .join(".*")
+
+      if (matcher === undefined || !new RegExp(`^${matcher}$`).test(path)) continue
+
+      for (const line of lines) {
+        const header = line.trim()
+
+        if (header.startsWith("! ")) {
+          headers.delete(header.slice(2))
+          continue
+        }
+
+        const separator = header.indexOf(":")
+
+        headers.append(header.slice(0, separator), header.slice(separator + 1).trim())
+      }
+    }
+
+    return (headers.get("Cache-Control") ?? "")
+      .split(",")
+      .map((directive) => directive.trim())
+      .filter((directive) => directive !== "")
+  }
+
+  it("caches only hashed assets immutably for a year", () => {
     expect(rules.filter((rule) => rule.includes("immutable"))).toEqual([
-      "/_next/static/*\n  Cache-Control: public, max-age=31536000, immutable",
+      "/_next/static/*\n  ! Cache-Control\n  Cache-Control: public, max-age=31536000, immutable, no-transform",
     ])
   })
 
-  it("caches the hashed fonts as an asset that never changes, by a rule no other rule repeats", () => {
+  it("detaches the default cache policy before applying the unchanged hashed-font lifetime", () => {
     const font = "/_next/static/media/0a1b2c3d4e5f6071-s.p.8f3e2a1b.woff2"
     const matching = rules.filter((rule) => {
       const [path] = rule.split("\n")
@@ -33,20 +65,32 @@ describe("renderHeaders", () => {
     })
 
     expect(matching.map((rule) => rule.split("\n")[0])).toEqual(["/*", "/_next/static/*"])
-    expect(matching.filter((rule) => rule.includes("Cache-Control"))).toEqual([
-      "/_next/static/*\n  Cache-Control: public, max-age=31536000, immutable",
+    expect(cacheDirectives(font)).toEqual([
+      "public",
+      "max-age=31536000",
+      "immutable",
+      "no-transform",
     ])
   })
 
-  it("revalidates pages and sets no cache header on the catch-all rule", () => {
-    expect(catchAll).not.toContain("Cache-Control")
-    expect(rules).toContain("/quickstart\n  Cache-Control: public, max-age=0, must-revalidate")
-    expect(rules).toContain("/\n  Cache-Control: public, max-age=0, must-revalidate")
+  it("forbids transformation of HTML and unknown 404 paths without changing revalidation", () => {
+    for (const path of ["/", "/quickstart", "/404.html", "/missing/nested/page"])
+      expect(cacheDirectives(path), path).toEqual([
+        "public",
+        "max-age=0",
+        "must-revalidate",
+        "no-transform",
+      ])
   })
 
   it("revalidates the search index and its sections, so a deploy shows at once", () => {
     for (const file of ["/search.json", "/search-sections.json"])
-      expect(rules).toContain(file + "\n  Cache-Control: public, max-age=0, must-revalidate")
+      expect(cacheDirectives(file), file).toEqual([
+        "public",
+        "max-age=0",
+        "must-revalidate",
+        "no-transform",
+      ])
   })
 
   it("declares the Markdown twins' content type", () => {
