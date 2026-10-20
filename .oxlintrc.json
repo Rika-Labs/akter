@@ -157,6 +157,19 @@
         "effecttsgo/async-function": "off",
         "effecttsgo/strict-effect-provide": "off"
       }
+    },
+    {
+      "files": ["apps/docs/**/*.ts", "apps/docs/**/*.tsx"],
+      "rules": {
+        "effecttsgo/node-builtin-import": "off",
+        "effecttsgo/async-function": "off",
+        "effecttsgo/missing-pipeable-signature": "off",
+        "effecttsgo/process-env": "off",
+        "effecttsgo/global-console": "off",
+        "effecttsgo/global-fetch": "off",
+        "effecttsgo/new-promise": "off",
+        "anti-slop/prefer-effect-match": "off"
+      }
     }
   ],
   "ignorePatterns": [
