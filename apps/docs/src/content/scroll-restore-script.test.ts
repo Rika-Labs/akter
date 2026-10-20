@@ -17,6 +17,16 @@ const run = (options: {
   const store = new Map(Object.entries(options.stored ?? {}))
   const listeners = new Map<string, Set<Listener>>()
   const timers: Array<{ readonly run: Listener; readonly delay: number }> = []
+  const entries = [{ mode: "auto" }]
+  let active = 0
+  const history = {
+    get scrollRestoration() {
+      return entries[active]!.mode
+    },
+    set scrollRestoration(mode: string) {
+      entries[active]!.mode = mode
+    },
+  }
   const window = {
     location: { pathname: options.path ?? "/quickstart" },
     performance: { getEntriesByType: () => [{ type: options.type }] },
@@ -35,7 +45,7 @@ const run = (options: {
     scrollTo: vi.fn((_x: number, y: number) => {
       window.scrollY = y
     }),
-    history: { scrollRestoration: "auto" },
+    history,
     scrollY: options.scrollY ?? 0,
     setTimeout: (callback: Listener, delay: number) => timers.push({ run: callback, delay }),
     addEventListener: (type: string, listener: Listener) =>
@@ -50,15 +60,21 @@ const run = (options: {
     for (const listener of listeners.get(type) ?? []) listener()
   }
 
-  return { store, window, fire, timers, scrollTo: window.scrollTo, history: window.history }
+  const traverse = () => {
+    entries.push({ mode: "auto" })
+    active = entries.length - 1
+    fire("popstate")
+  }
+
+  return { store, window, fire, timers, traverse, entries, scrollTo: window.scrollTo, history }
 }
 
 describe("scrollRestoreScript", () => {
-  it("scrolls a reloaded page to the offset saved for its path and takes restoration over", () => {
+  it("scrolls a reloaded page to its saved offset without changing native restoration ownership", () => {
     const { scrollTo, history } = run({ type: "reload", stored: { [key("/quickstart")]: "1551" } })
 
     expect(scrollTo).toHaveBeenCalledExactlyOnceWith(0, 1551)
-    expect(history.scrollRestoration).toBe("manual")
+    expect(history.scrollRestoration).toBe("auto")
   })
 
   it("leaves every visit that is not a reload to the browser, so Back keeps its place", () => {
@@ -81,8 +97,8 @@ describe("scrollRestoreScript", () => {
     expect(history.scrollRestoration).toBe("auto")
   })
 
-  it("does nothing for a missing, zero or unreadable offset", () => {
-    for (const stored of [undefined, "0", "", "far"]) {
+  it("does nothing for a missing, negative, nonfinite or unreadable offset", () => {
+    for (const stored of [undefined, "", "far", "-1", "Infinity"]) {
       const { scrollTo, history } = run({
         type: "reload",
         stored: stored === undefined ? {} : { [key("/quickstart")]: stored },
@@ -132,7 +148,7 @@ describe("scrollRestoreScript", () => {
     expect(window.scrollY).toBe(1360)
   })
 
-  it("lets go, and gives restoration back, when the reader scrolls or touches the page", () => {
+  it("lets go without changing native restoration when the reader scrolls or touches the page", () => {
     for (const input of ["wheel", "touchstart", "keydown", "mousedown"]) {
       const { scrollTo, fire, window, history } = run({
         type: "reload",
@@ -158,7 +174,7 @@ describe("scrollRestoreScript", () => {
 
     expect(timers).toHaveLength(1)
     expect(timers[0]?.delay).toBe(400)
-    expect(history.scrollRestoration).toBe("manual")
+    expect(history.scrollRestoration).toBe("auto")
 
     timers[0]?.run()
     window.scrollY = 1210
@@ -166,6 +182,66 @@ describe("scrollRestoreScript", () => {
 
     expect(history.scrollRestoration).toBe("auto")
     expect(scrollTo).toHaveBeenCalledTimes(1)
+  })
+
+  it("restores a saved zero on a hash reload before the browser can expose the anchor", () => {
+    const { scrollTo, fire, window } = run({
+      type: "reload",
+      stored: { [key("/quickstart")]: "0" },
+    })
+
+    expect(scrollTo).toHaveBeenCalledExactlyOnceWith(0, 0)
+
+    window.scrollY = 1210
+    fire("scroll")
+
+    expect(window.scrollY).toBe(0)
+  })
+
+  it("ends the reload correction on native history traversal without leaving an entry manual", () => {
+    const { scrollTo, fire, traverse, entries, window } = run({
+      type: "reload",
+      stored: { [key("/quickstart")]: "1000" },
+    })
+
+    traverse()
+    window.location.pathname = "/welcome"
+    window.scrollY = 90
+    fire("scroll")
+
+    expect(window.scrollY).toBe(90)
+    expect(scrollTo).toHaveBeenCalledTimes(1)
+    expect(entries).toEqual([{ mode: "auto" }, { mode: "auto" }])
+  })
+
+  it("never lets a delayed reload release change the new history entry's restoration mode", () => {
+    const { fire, timers, traverse, history } = run({
+      type: "reload",
+      stored: { [key("/quickstart")]: "1000" },
+    })
+
+    fire("load")
+    traverse()
+    history.scrollRestoration = "manual"
+    timers[0]?.run()
+
+    expect(history.scrollRestoration).toBe("manual")
+  })
+
+  it("ends the reload correction when the document is left or its hash changes", () => {
+    for (const event of ["pagehide", "hashchange"]) {
+      const { scrollTo, fire, window } = run({
+        type: "reload",
+        stored: { [key("/quickstart")]: "1000" },
+      })
+
+      fire(event)
+      window.scrollY = 90
+      fire("scroll")
+
+      expect(window.scrollY).toBe(90)
+      expect(scrollTo).toHaveBeenCalledTimes(1)
+    }
   })
 
   it("does nothing, and does not throw, where storage refuses", () => {

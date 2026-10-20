@@ -1,37 +1,31 @@
 /**
- * Inline script for the end of the document body. The page itself scrolls, so the browser
- * restores a page it reaches by Back or Forward, whether it is a new document or a route Next
- * changed in place, and with scripts off it restores a reloaded page too. This script only
- * takes over a reload, where WebKit gets it wrong in two ways: it restores its own offset after
- * the page's scripts have loaded, from an entry it saved some time after the last scroll, so a
- * reload soon after a scroll is put back at a stale offset; and with a hash in the address it
- * scrolls to the heading the hash names after the script has run. The script saves the offset
- * under the current route's path when the page is left, and on a reload scrolls to it before the
- * first paint of an engine that waits for the whole document. It switches restoration to manual for
- * the reload so the engine's own cannot override it, puts the offset back for any scroll that
- * lands elsewhere until the reader scrolls or the page has been loaded for 400 ms, and then
- * gives restoration back to the browser, because an entry left manual would lose its place on
- * Back after the reader moves to another route. Any other visit, a link to an anchor included,
- * is left alone.
+ * Inline reload correction at the end of the body, where the document has its full height.
+ * The browser owns history restoration throughout: a manual entry can be left by the browser's
+ * Back control before a timer runs, and a later timer would change the new entry, not that one.
+ * The script saves the current route's offset on pagehide and corrects only a reload with a
+ * saved offset, zero included. WebKit can restore a stale native offset or scroll to a fragment
+ * after this script, so competing scrolls are corrected until input, history traversal,
+ * fragment navigation, pagehide or 400 ms after load. No callback changes a history entry's
+ * restoration mode, and the correction cannot follow the reader into another history entry.
+ * Ordinary visits, including links to anchors, are left alone; with scripts off the document
+ * still scrolls and the browser restores it itself.
  */
 export const scrollRestoreScript = [
-  "(function(){var w=window,h=w.history;try{",
+  "(function(){var w=window;try{",
   "var key='akter:scroll:'+w.location.pathname;",
   "var nav=w.performance.getEntriesByType('navigation')[0];",
-  "var y=Number(w.sessionStorage.getItem(key));",
+  "var saved=w.sessionStorage.getItem(key),y=Number(saved);",
   "w.addEventListener('pagehide',function(){",
   "try{w.sessionStorage.setItem('akter:scroll:'+w.location.pathname,String(w.scrollY))}catch(e){}});",
-  "if(!nav||nav.type!=='reload'||!(y>0))return;",
-  "h.scrollRestoration='manual';",
+  "if(!nav||nav.type!=='reload'||saved===null||saved===''||!Number.isFinite(y)||y<0)return;",
   "w.scrollTo(0,y);",
   "var keep=function(){if(w.scrollY!==y)w.scrollTo(0,y)};",
-  "var inputs=['wheel','touchstart','keydown','mousedown'];",
+  "var stops=['wheel','touchstart','keydown','mousedown','popstate','hashchange','pagehide'];",
   "var release=function(){",
   "w.removeEventListener('scroll',keep);",
-  "for(var i=0;i<inputs.length;i++)w.removeEventListener(inputs[i],release);",
-  "h.scrollRestoration='auto'};",
+  "for(var i=0;i<stops.length;i++)w.removeEventListener(stops[i],release)};",
   "w.addEventListener('scroll',keep);",
-  "for(var i=0;i<inputs.length;i++)w.addEventListener(inputs[i],release,{passive:true});",
+  "for(var i=0;i<stops.length;i++)w.addEventListener(stops[i],release,{passive:true});",
   "w.addEventListener('load',function(){w.setTimeout(release,400)})",
   "}catch(e){}})()",
 ].join("")
