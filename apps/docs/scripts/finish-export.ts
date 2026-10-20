@@ -36,12 +36,7 @@ await rm(join(out, "md"), { recursive: true })
 
 await writeFile(join(out, "_redirects"), renderRedirects(redirects))
 
-await writeFile(
-  join(out, "_headers"),
-  renderHeaders({
-    pagePaths: ["/", "/welcome", ...publishedSlugs.map((slug) => `/${slug}`)],
-  }),
-)
+await writeFile(join(out, "_headers"), renderHeaders())
 
 const missing = ["welcome", ...publishedSlugs].flatMap((slug) =>
   [`${slug}.html`, `${slug}.md`].filter((file) => !existsSync(join(out, file))),
