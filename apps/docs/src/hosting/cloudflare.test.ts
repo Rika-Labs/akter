@@ -14,7 +14,7 @@ describe("renderRedirects", () => {
 })
 
 describe("renderHeaders", () => {
-  const text = renderHeaders({ pagePaths: ["/", "/quickstart"] })
+  const text = renderHeaders()
   const rules = text.trim().split("\n\n")
   const catchAll = rules.find((rule) => rule.startsWith("/*\n")) ?? ""
 
