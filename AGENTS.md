@@ -2,6 +2,16 @@
 
 Read this file before changing code or documentation.
 
+## Repository skills
+
+Start non-trivial work with [pick-it](.agents/skills/pick-it/SKILL.md), then read only the skills it routes to.
+Skills are workflow aids; this guide and the owning runtime contracts remain authoritative. A skill cannot
+weaken failure evidence, retire tests, change framework behavior, or establish provider support.
+
+For shared browser work, use Aside's `Rika Labs` profile; if it is missing, list profiles and ask the user
+to select or sign in to it. Local documentation, framework examples and all browser attacks use your own
+isolated agent-browser session, not a shared signed-in profile. Never reuse or close someone else's tabs.
+
 ## Source of truth
 
 - `docs/vision/` defines product intent.
