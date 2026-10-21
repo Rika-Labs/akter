@@ -15,7 +15,8 @@ theme, and no ink is clipped. To match an outside reference, use `match-it`.
    the loaded fonts; a fallback font (often the default monospace on `kbd`) invalidates every number. Take a
    clean screenshot.
 3. **X-ray.** Run [references/measure.md](references/measure.md) on the control and on its parent.
-   Screenshot, remove the overlay, and record dx, dy, visible insets, gaps and clipping.
+   Screenshot, remove the overlay, and record dx, dy, insets, gaps and clipping. These are diagnostic
+   estimates; precise ink acceptance needs a validated raster/font method or remains INCONCLUSIVE.
 4. **Fix the cause, in this order:** structure (padding vs gap vs margin, line-height, flex or grid
    alignment, shrink, wrap, artwork outside the viewBox, inline whitespace); fonts; `text-box` trimming;
    last, an optical nudge sized from the measurement. Use the repo's tokens. No measurement or overlay in

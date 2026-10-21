@@ -1,5 +1,10 @@
 # Measure ink and draw red lines
 
+This overlay estimates bounds; it does not measure exact painted ink. Its canvas/Range baseline is an
+approximation, and transformed SVG geometry boxes do not establish stroke, clipping or filter bounds.
+Never use these estimates alone to certify a subpixel ink criterion. Validate a raster/font method for
+that criterion, or report the precise ink measurement as INCONCLUSIVE.
+
 Run in the page (`browse-it` "Run JS"). Replace `<control>` and `<label>` with selectors that match one
 visible element each. It draws a fixed, pointer-transparent overlay on `document.body`, never inside app
 markup, and returns the numbers.
@@ -103,9 +108,9 @@ JSON.stringify({
 Then screenshot and remove it: `document.getElementById('redline').remove()`.
 
 - Red outline: border box. Red lines: the box's vertical and horizontal centers. Green: padding and border.
-  Magenta: icon and text ink. Blue: text baseline.
-- `iconDy`, `textDy`, `capDy` are ink-center offsets from the box center; negative is above.
-  `visibleInset` is the padding the eye sees.
+  Magenta: estimated icon/text bounds. Blue: estimated text baseline.
+- `iconDy`, `textDy`, `capDy` are estimated offsets from the box center; negative is above.
+  `visibleInset` is an estimate, not a measured raster inset.
 - A Range rect is the line box, not glyph ink. `getBBox` alone ignores transforms and stroke.
 - For more children or margins, extend the same pattern (margin strips in orange outside the border box).
   Run it on the parent too.

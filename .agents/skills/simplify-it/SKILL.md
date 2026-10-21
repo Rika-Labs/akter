@@ -1,6 +1,6 @@
 ---
 name: simplify-it
-description: States the essence in one sentence and cuts everything that doesn't serve it, in code, UI, copy, plans or skills, without changing behavior. Use for "simplify it", "strip it down", "Rick Rubin", or when something feels busy or cluttered.
+description: States the essence and cuts code, UI, copy or plans that don't serve it, without changing behavior. Use for "simplify it", "distill it", "strip it down", "Rick Rubin", or a cluttered design.
 ---
 
 # Simplify it

@@ -16,7 +16,8 @@ arbitrary mismatches with masks. Stop a recording and remove overlays before cle
 
 ## Reusable settled-capture utilities
 
-These dependency-free scripts run with Node or Bun. They do not start a stack, launch a browser, sign in
+The utility uses Python's standard library; its tests also use Node for the actual browser-expression
+syntax and transform checks. It does not start a stack, launch a browser, sign in
 or navigate. Use `browse-it` to open the actual state in your own already-active named agent-browser
 session. Never point them at a shared/default/restored session; use sanitized content because screenshots
 can expose secrets. Pass a **new absolute directory outside the repository** for each capture.
@@ -34,24 +35,27 @@ Example configuration, saved outside the repo (selectors differ between referenc
 From the repository root, replacing the example arguments:
 
 ```bash
-node .agents/skills/match-it/scripts/capture.mjs owned-session /absolute/config.json /absolute/new-capture
-node .agents/skills/match-it/scripts/compare.mjs /absolute/reference/measurement.json /absolute/target/measurement.json /absolute/acceptance.json
-node --test .agents/skills/match-it/scripts/test/harness.test.mjs
+python3 -B .agents/skills/match-it/scripts/match.py capture owned-session /absolute/config.json /absolute/new-capture
+python3 -B .agents/skills/match-it/scripts/match.py compare /absolute/reference/measurement.json /absolute/target/measurement.json /absolute/acceptance.json
+python3 -B -m unittest discover -s .agents/skills/match-it/scripts/test -p 'test_match.py'
 ```
 
 The capture pins the active tab, waits at most the configured font deadline, then brackets a viewport
 screenshot with observations. Changed observations or target, browser errors, missing/duplicate/hidden
 selectors or regions outside the viewport fail. Output collisions fail; interrupted attempts lack
-`complete.json` and are not evidence. Never consume them. Verify its hashes before comparison. This
+`complete.json` and are not evidence. Never consume them. The comparison CLI verifies the completion
+manifest and screenshot/measurement hashes before comparing. This
 best-effort consistency check is not atomic: an intervening change that returns to the same state may
 escape it. It does not establish hydration/image completion or stability between observations.
 
 The JSON contains only allowlisted computed properties, boxes and font metadata, never cookies, storage,
 HTML, text content or page URLs. DOM visibility does not establish absence of occlusion. Captures record
 visual-viewport scale and offsets; this scale is not browser zoom. Record browser zoom separately.
-For an Aside reference, generate the same page expression with `node scripts/measure.mjs config.json`
+For an Aside reference, generate the same page expression with `python3 -B scripts/match.py source config.json`
 (script path relative to this skill), evaluate it through `browse-it`, and bracket an owned screenshot
-with identical observations manually. Preserve the same context and consistency evidence.
+with identical observations manually. Preserve the same context and consistency evidence in a hashed
+bundle; do not bypass the CLI's manifest check. Compare loaded observations through the module's
+`compare(reference, target, acceptance)` function only after that manual evidence review.
 
 Example acceptance file; declare checks for **all** required metrics, not only these examples:
 
@@ -72,7 +76,7 @@ Example acceptance file; declare checks for **all** required metrics, not only t
 }
 ```
 
-`compare.mjs` validates the whole checklist, context and observations, rejects unknown metrics and
+The comparator validates the whole checklist, context and observations, rejects unknown metrics and
 fails on missing/hidden regions, mismatched states or unready fonts. Geometry is an inclusive absolute
 delta; styles require exact equality or both declared mapped values. It returns only
 `MEASUREMENTS_PASS` for **declared geometry/style checks**; this is not full visual/behavioral acceptance.
