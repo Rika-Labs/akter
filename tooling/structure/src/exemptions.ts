@@ -11,6 +11,12 @@ export interface Exemption {
 /** Every deviation from the structure rules, each with the reason it exists. */
 export const exemptions: ReadonlyArray<Exemption> = [
   {
+    path: ".agents/skills/match-it/scripts/test/harness.test.mjs",
+    rule: "tests-beside-sources",
+    reason:
+      "The portable repository skill keeps its dependency-free Node test with its capture and comparison utilities, outside workspace runtime packages.",
+  },
+  {
     path: "tooling/oxlint/anti-slop",
     rule: "tests-beside-sources",
     reason:
