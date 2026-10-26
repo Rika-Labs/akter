@@ -1,22 +1,62 @@
 ---
 title: "Observability"
-description: "Inspect durable actors and shards with audited grants and bounded telemetry."
+description: "Inspect durable actors and shards with audited operator grants, and export traces, metrics, and usage."
 ---
 
 # Observability
 
-Inspect durable state, checkpoints, and the segment log rather than speculative memory. The implemented operator surface is `inspect actor`, `inspect shard`, `log tail`, `log export`, `snapshot`, and `replay` through separate `POST /operator`. [Actor forks](../api/forks.md) use a separately granted server/CLI interface directly over a store, not that HTTP endpoint.
+Inspect what is durable, not what is in memory: state, checkpoints, and the segment log. This page covers operator access, audit records, and telemetry.
+
+## Operator commands
+
+Operator requests use a separate `POST /operator` endpoint and the [`akter` CLI](../api/06-cli.md#operator-commands): `inspect actor`, `inspect shard`, `log tail`, `log export`, `snapshot`, `replay`, and `retention`. [Forks](../api/forks.md) use a separate interface that opens a store directly.
 
 ## Grants and audit
 
-Operators are separate from application `Caller` values. Each operation requires its own capability and scope. `inspect` shows outcome tags, not stored values; `outcomes.read`, `log.read`, `snapshot.read`, `fork`, and `replay` are separate grants. Reads create an audit record; answering only after it is written, and failing closed when it cannot be, are the target's requirements but have no test yet. Mutations commit their audit entry with their effect. Scope denials are audited too.
+Operators are separate from application callers. Each operation needs its own capability, scoped to a tenant and optionally to an actor type, actor id, or command id:
 
-Audit records contain the operator, action, capability, target, reason, and outcome, never credentials or payload values. A customer bearer token or an actor's `System` caller is not an operator grant.
+| Capability                       | Allows                                                                 |
+| -------------------------------- | ---------------------------------------------------------------------- |
+| `inspect`                        | Actor state, lists, pending work, and outcome tags (not stored values) |
+| `outcomes.read`                  | Stored success and failure values                                      |
+| `log.read`                       | Retained log entries                                                   |
+| `snapshot.read`                  | Checkpoints and pages                                                  |
+| `fork`                           | Forking an actor                                                       |
+| `replay`                         | Replaying a refused shard                                              |
+| `retention.set`                  | Changing store-wide retention                                          |
+| `export`, `delete`, `audit.read` | Further grantable actions in the grant model                           |
 
-## Telemetry names
+A customer bearer token and an actor's `System` caller never become an operator grant.
 
-Stable target spans are `akter.admission`, `akter.<Actor>/<action>`, `akter.commit`, `akter.job/<Actor>/<job>`, and `akter.delivery`. Metrics include `akter.actions`, `akter.action.duration_ms`, `akter.batch.entries`, `akter.append.duration_ms`, `akter.append.ambiguous`, `akter.shard.opens`, `akter.replay.entries`, `akter.page.misses`, `akter.activations`, `akter.jobs`, `akter.job.seconds`, `akter.admission.refused`, and `akter.gc.deleted`.
+Every read writes an audit record, and denied scopes are audited too. A mutation commits its audit record together with its effect. Audit records contain the operator, action, capability, target, reason, and outcome, and never credentials or payload values.
 
-Prometheus replaces dots with underscores. Metric labels are designed to exclude tenant, actor id, and command id; tests check stable names and labels but do not yet assert that exclusion. Logs and spans redact credentials and payloads. Import `Telemetry` from `@rikalabs/akter/server` and compose `Telemetry.layer({ otlp: { baseUrl, headers? }, devtools: { url? } })`. `Telemetry.prometheus()` returns the body, and `Akter.serve({ prometheus: true, ... })` serves `/metrics`. No OTLP logs exporter is provided. E7 tests exercise grant denial, audit records for allowed and denied reads, DevTools span delivery, Prometheus/OTLP export, and redaction, but not answer-after-audit ordering or span names; they do not certify a hosted provider. [ADR 0137](https://github.com/Rika-Labs/akter/blob/main/docs/decisions/0137-inspection-audited-operations-telemetry.md) defines the names and boundaries.
+<Note>
+The contract also requires that a read answers only after its audit record is written, and fails closed if it cannot be written. No test covers that ordering yet, so do not rely on it.
+</Note>
 
-`Telemetry.usage` reads typed, cumulative per-runner attribution from the live runtime, independently of the Effect process-wide metric registry. Its action count excludes durable declared failures and defects; `akter.actions` retains those diagnostic outcome series. Job seconds round up separately for each local attempt interval. Drain includes optional cumulative `actions` and `jobSeconds` after interrupting attempts. Persist deltas by runner incarnation and reconcile gaps; these counters are not billing authority. See the [server API](../api/01-server-api.md#runner-usage).
+## Traces and metrics
+
+Import `Telemetry` from `@rikalabs/akter/server` and compose `Telemetry.layer`:
+
+```ts
+import { Telemetry } from "@rikalabs/akter/server"
+
+const telemetry = Telemetry.layer({
+  otlp: { baseUrl: "https://otel.example", headers: { authorization: "Bearer ..." } },
+  devtools: { url: "ws://localhost:34437" },
+})
+```
+
+OTLP exports traces to `/v1/traces` and metrics to `/v1/metrics` under `baseUrl`. There is no OTLP logs exporter. Logs and spans redact credentials and payloads.
+
+`Akter.serve({ prometheus: true, ... })` serves `/metrics`, and `Telemetry.prometheus()` returns the same text. Prometheus replaces dots in names with underscores.
+
+**Spans:** `akter.admission`, `akter.<Actor>/<action>`, `akter.commit`, `akter.job/<Actor>/<job>`, `akter.delivery`.
+
+**Metrics:** `akter.actions`, `akter.action.duration_ms`, `akter.batch.entries`, `akter.append.duration_ms`, `akter.append.ambiguous`, `akter.shard.opens`, `akter.replay.entries`, `akter.page.misses`, `akter.activations`, `akter.jobs`, `akter.job.seconds`, `akter.admission.refused`, and `akter.gc.deleted`.
+
+Metric labels are designed to exclude the tenant, actor id, and command id. Tests check the stable names and labels but not that exclusion.
+
+## Usage counters
+
+`Telemetry.usage` reads cumulative per-runner action and job-second counts from the live runtime. Its action count excludes declared failures and defects, which `akter.actions` still records as diagnostic series. Persist deltas by runner incarnation and reconcile gaps. These counters are attribution, not billing authority. See [Runner usage](../api/01-server-api.md#runner-usage).

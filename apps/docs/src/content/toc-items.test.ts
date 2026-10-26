@@ -21,6 +21,15 @@ describe("tocItems", () => {
     ])
   })
 
+  it("drops the backticks of inline code but keeps the code and the rest of the heading", () => {
+    expect(
+      tocItems(
+        [{ url: "#akter-login", depth: 3 }],
+        [{ id: "akter-login", content: "Sign in with `akter login` and `whoami`" }],
+      ),
+    ).toEqual([{ title: "Sign in with akter login and whoami", id: "akter-login", depth: 3 }])
+  })
+
   it("shows the anchor of a heading it has no text for", () => {
     expect(tocItems([{ url: "#stop", depth: 2 }], [])).toEqual([
       { title: "stop", id: "stop", depth: 2 },

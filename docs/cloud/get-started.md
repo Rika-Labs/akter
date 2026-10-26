@@ -1,19 +1,27 @@
 ---
 title: "Get started with Akter Cloud"
-description: "Connect the CLI and deploy a 0.2 app into an isolated environment store."
+description: "Sign in, create a project, and deploy an Akter app from the CLI."
 ---
 
 # Get started with Akter Cloud
 
-Akter Cloud consumes published framework and CLI packages and runs managed runners. The 0.2 design gives each environment a store bucket; you do not provide `DATABASE_URL`. Hosted rollout, provider validation, prices, and quotas are E8 gates, not established by this framework guide.
+Akter Cloud builds your app, runs it, and gives each environment its own private store. You do not provide a bucket or a `DATABASE_URL`. This page takes you from a local app to a deployment.
 
-## Prepare the application
+## Before you start
 
-Build an `App.make` export from actor contracts and their `toLayer` implementations. Use schema state with decoding defaults, synchronous actions, Effect jobs for I/O, and the single Effect client. Follow the [quickstart](../quickstart.md) locally before deploying.
+You need an app that works locally. Finish the [quickstart](../quickstart.md) first. Your app must default-export an `App.make(...)` value from `src/app.ts`, because that is the file Akter Cloud serves. Install the CLI at the same version as the framework:
 
-Pin matching framework and CLI rewrite versions; the moving `rewrite` tag identifies candidates but is not a deployment lock. The [release guide](../operations/05-releasing.md#rewrite-canaries) describes that channel.
+```sh
+bun add -d @rikalabs/akter-cli
+```
 
-## Connect the CLI
+With Node, use `npx akter` wherever this page says `bunx akter`.
+
+## Create a project
+
+Sign in to the console and create a project. The project's settings show its project ID. The CLI needs the ID; a project slug does not work in its place. To stop passing `--project` on every command, set `AKTER_PROJECT` to the ID.
+
+## Sign in and deploy
 
 ```sh
 bunx akter login
@@ -21,6 +29,16 @@ bunx akter whoami
 bunx akter deploy --project PROJECT_ID --env production
 ```
 
-Approve the browser device code only when it matches the login you initiated. `--api-url` selects a preview control plane; remote endpoints require HTTPS. The saved API and session are used by later commands. Keep the credential directory private and out of your source upload.
+`login` prints a URL and a code. Open the URL, confirm that the code matches the one in your terminal, and approve the sign-in. `whoami` shows who you are signed in as and which organizations you belong to. `deploy` uploads the app directory, builds it, and prints each step until the deployment is live.
 
-Configure other secrets through [environment variables](./environment-variables.md); platform store credentials are injected separately. Read [storage](./storage.md) for data custody and [deploy](./deploy.md) for release handoff. `akter logout` removes the saved session but does not delete projects or data.
+If `deploy` stops with "Akter Cloud deployments are not open for this organization yet", your organization is not enabled yet. Nothing was created, and you can run the command again once it is.
+
+## Next steps
+
+- Add configuration and secrets with [environment variables](./environment-variables.md).
+- Read how deployments work, and what happens when one fails, in [Deploy to Akter Cloud](./deploy.md).
+- Read [Environment storage](./storage.md) to learn where your data lives.
+- Watch your app's output with [runner logs](./logs.md).
+- Compare plans and limits in [Pricing and limits](./pricing-and-limits.md).
+
+`akter logout` removes the saved session. It does not delete projects or data.

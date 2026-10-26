@@ -1,11 +1,11 @@
 ---
 title: "Lists and find"
-description: "Page-backed list fields and id-only queries over durable scalar state."
+description: "Store unbounded collections with Actor.list, and find actor ids by their scalar state."
 ---
 
 # Lists and find
 
-Use `Actor.list` for data that can grow without bound. Use `X.find` to discover actor ids by their top-level scalar state. Neither is a relational table or a SQL query interface.
+Use `Actor.list` for data that can grow without bound. Use `X.find` to discover actor ids by their top-level scalar state. Neither is a relational table or a SQL interface.
 
 ## Lists
 
@@ -27,22 +27,47 @@ const RoomLive = Room.toLayer({
 })
 ```
 
-The key and order fields must be strings or numbers. When `key` is omitted, it defaults to `by`. `put` inserts or replaces by key, `get` reads one item, `delete` removes it, and `deleteBefore(by)` removes items before an order value. `range({ from, to, limit, reverse })` is inclusive at `from` and exclusive at `to`; equal order values are ordered by key.
+- `key` and `by` name item fields that are strings or numbers. If you omit `key`, it defaults to `by`.
+- Items are ordered by `by`. Items with equal `by` values are ordered by key.
+- In an action: `put` inserts or replaces by key, `get` reads one item, `delete` removes one, and `deleteBefore(by)` removes items before an order value. `range({ from, to, limit, reverse })` includes `from` and excludes `to`.
+- List writes belong to the action's draft and disappear if the action is discarded.
+- Lists are stored in content-addressed pages outside the 256 KiB state limit.
 
-List writes are part of the action draft and disappear with a discarded action. Pages are loaded outside the synchronous handler. A missing cached page causes the handler to rerun with the same recorded inputs after loading. That the stopped run leaks no partial changes is the contract's target and has no test yet. Clients use `handle.messages.range(...)` for reads and `handle.messages.watch(...)` for live windows; lists do not appear in `handle.state`.
+If an action reads a page that is not cached, the engine loads it and runs the action again with the same recorded inputs.
 
-E6 implements two copy-on-write list trees, a byte-bounded clean-page cache and invocation-local page resolution. [E6 evidence](https://github.com/Rika-Labs/akter/blob/main/docs/verification/e6-pages-history.md) covers corrupt leaves, owner moves and GC races on the named local backends. A cold read raises `PageMiss` and the rerun completes once (`handlers/page-tree.test.ts` and seed 8110 in `runtime/telemetry/usage.test.ts`); that nothing staged by the stopped run survives is the [actions contract](https://github.com/Rika-Labs/akter/blob/main/docs/contracts/02-actions.md)'s target and has no test yet. Production-provider and 50 GB measurements are not inferred from those passes.
+Clients read a list with `handle.messages.range(...)` and watch a live window with `handle.messages.watch(...)`. Lists are not part of `handle.state`.
+
+The page-backed lists, retained history, and GC have local test evidence only. Production-provider and 50 GB measurements are not established. See the [evidence](https://github.com/Rika-Labs/akter/blob/main/docs/verification/e6-pages-history.md).
 
 ## Find
 
 ```ts
-const ids = yield * Room.find({ limit: 100 })
+import { Effect, Schema } from "effect"
+import { Actor } from "@rikalabs/akter"
+
+const Ticket = Actor.make("Ticket", {
+  state: Schema.Struct({
+    queue: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+    replies: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
+  }),
+  actions: { reply: Actor.action() },
+})
+
+const busiest = Ticket.find({
+  where: { queue: "support", replies: { gte: 2 } },
+  orderBy: { field: "replies", direction: "desc" },
+  limit: 50,
+})
 ```
 
-`find` returns ids only. A type with scalar state can use `where: { title: "Support", count: { gte: 2 } }` and `orderBy: { field: "count", direction: "desc" }`; equality uses the value directly, and bounds use `eq`, `gt`, `gte`, `lt`, `lte`, or `in`. `limit` accepts 0–1,000. Lists, arrays, records, and nested structs are not query fields. No explicit `index` declaration exists. Equal ordered values are tied stably by actor id.
+`find` returns an Effect of actor ids, never state.
 
-Owners update their indexes only from durable states, persist them at checkpoints, and recover them with the tail. The gateway queries every shard and merges the results. Each shard answers at its own durable point; there is no cross-shard snapshot or `after` token. A completed action is visible to a subsequent query, but a concurrent action can appear in one shard's answer and not another's.
+- **Fields.** Only top-level scalar fields are queryable. Lists, arrays, records, and nested structs are not. You do not declare an index.
+- **Conditions.** A bare value means equality. A condition object can use `eq`, `gt`, `gte`, `lt`, `lte`, and `in`. Conditions combine with AND.
+- **Limit.** `limit` is from 0 to 1,000, and 1,000 when omitted.
+- **Order.** Equal values are ordered by actor id.
+- **Strings.** An index keeps the first 64 UTF-8 bytes of a string, so strings that share a 64-byte prefix cannot be told apart.
 
-Checkpoint upload uses up to 32 independent actor page graphs at once. This changes upload scheduling, not the snapshot: the owner captures one durable prefix first and publishes its checkpoint only after every referenced page is stored. It does not promise a fixed drain duration for an arbitrarily large actor set.
+Each shard answers from its own durable state, and the gateway merges the answers. There is no cross-shard snapshot and no `after` token. A completed action is visible to a later query, but an action running at the same time may appear in one shard's answer and not another's.
 
-The 0.2 target truncates indexed strings to a 64-byte UTF-8 prefix, so strings sharing a prefix compare equal in the index. `find` performs tenant-scoped access with request kind `find`; it does not authorize subsequent reads of returned ids. Hosted tenant isolation and production-provider index evidence require their own verification.
+`find` checks access with request kind `find`. It does not authorize reading the returned ids. The server serves only the `default` tenant.

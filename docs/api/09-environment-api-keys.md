@@ -1,31 +1,63 @@
 ---
 title: "Environment API keys"
-description: "Create, list and revoke keys for a deployed application's environment."
+description: "Create, list, and revoke the keys that authorize calls to a deployed app's environment."
 ---
 
 # Environment API keys
 
-The public `@rikalabs/akter-cli/cloud-api` entry exports `CloudApi`, `EnvironmentApiKeysGroup`, `EnvironmentApiKey`, `CreateEnvironmentApiKey`, `CreatedEnvironmentApiKey` and `EnvironmentApiKeyTenant`. These are control-plane routes authenticated with the stored session or a control-plane API key, not with the application key they create.
+An environment API key authorizes calls to one environment of your deployed app. It is not a control-plane credential: it cannot call the cloud API, and the cloud API's session or organization key cannot call your app.
 
-## Routes and wire models
+`@rikalabs/akter-cli/cloud-api` exports `CloudApi`, `EnvironmentApiKeysGroup`, `EnvironmentApiKey`, `CreateEnvironmentApiKey`, `CreatedEnvironmentApiKey`, and `EnvironmentApiKeyTenant`. To use keys from a terminal, see [`akter keys`](./06-cli.md#akter-keys).
 
-All routes use `/api/projects/:projectId/environments/:environment`, where `environment` is `production`, `staging` or `dev`.
+## Routes
 
-| Method and suffix         | Request                             | Success                                          |
-| ------------------------- | ----------------------------------- | ------------------------------------------------ |
-| `POST /api-keys`          | `{ name: string, tenant?: string }` | `200 { key: EnvironmentApiKey, secret: string }` |
-| `GET /api-keys`           | None                                | `200 EnvironmentApiKey[]`                        |
-| `DELETE /api-keys/:keyId` | None                                | `204`, no body                                   |
-| `GET /endpoints`          | None                                | `200 ProjectEndpoints`                           |
+Every route is under `/api/projects/:projectId/environments/:environment`, where `environment` is `production`, `staging`, or `dev`. They are control-plane routes, authorized with a session or an organization API key.
 
-`name` uses the contract's `Name` schema (1–100 characters without leading or trailing blanks). A supplied tenant must be 1–128 characters drawn from `[A-Za-z0-9._:-]`; omission selects `default`. The key metadata is `{ id: string, name: string, tenant: string, createdAt: Timestamp, revokedAt: Timestamp | null }`. Timestamps are ISO strings on the wire and Effect `DateTime.Utc` values after decoding. Only the creation response contains `secret`; save it then. Listing includes revoked keys, ordered by creation time and id. An environment without a live deployment lists no keys, and creation fails with `Conflict` until deployed. Revoking an existing revoked key succeeds again; a key absent from the environment's live deployment fails with `NotFound` (`resource: "api-key"`). Creation and revocation require project admin access; listing requires project read access.
+| Method and path           | Request                             | Success                                          | Access |
+| ------------------------- | ----------------------------------- | ------------------------------------------------ | ------ |
+| `POST /api-keys`          | `{ name: string, tenant?: string }` | `200 { key: EnvironmentApiKey, secret: string }` | Admin  |
+| `GET /api-keys`           | none                                | `200 EnvironmentApiKey[]`                        | Read   |
+| `DELETE /api-keys/:keyId` | none                                | `204`, no body                                   | Admin  |
+| `GET /endpoints`          | none                                | `200 ProjectEndpoints`                           | Read   |
 
-Use the application key as `Authorization: Bearer <secret>` at the environment's public host. Its tenant and subject are fixed by the key, and it remains attached to the environment across deployment activation. It cannot authenticate another project's host.
+A key has this shape:
 
-The already-published `projects.getEndpoints` operation returns `ProjectEndpoints`: `{ httpBaseUrl: string, webSocketUrl: string, openApiPath: string, mcpPath: string }`. The existing endpoint schema permits `https://<environment-host>`, `wss://<environment-host>`, and empty strings for both paths, which means those paths are not advertised. In 0.2 the application interface is `/rpc`; append it to a base host URL when configuring `AkterClient.layer`. The legacy endpoint fields do not create OpenAPI or MCP support. A control plane without a public host returns `NotImplemented` (`operation: "projects.getEndpoints"`); do not construct a hostname from the project id.
+```ts
+{ id: string, name: string, tenant: string, createdAt: Timestamp, revokedAt: Timestamp | null }
+```
 
-Read operations declare `Unauthorized` (401), `Forbidden` (403), `NotFound` (404), `NotImplemented` (501) and `Unavailable` (503). Writes declare those plus `Conflict` (409). These use the shared tagged error schemas, not an additional environment-key error envelope.
+`name` is 1 to 100 characters with no leading or trailing blanks. `tenant` is 1 to 128 characters from `A-Z`, `a-z`, `0-9`, `.`, `_`, `:`, and `-`, and defaults to `default`. Timestamps are ISO strings on the wire.
 
-See [`akter keys`](./06-cli.md#akter-keys) for CLI usage. The cloud consumption of this contract follows publication; this contract addition does not migrate the cloud routes by itself.
+Only the create response contains `secret`. Save it then; Akter cannot show it again. A secret starts with `akrun_`.
 
-The hosted key model permits tenant selectors, but the current framework server fails closed for tenants other than `default`. A schema-valid tenant is not proof that general tenant-scoped serving has landed.
+## Behavior
+
+- A key belongs to the environment's live deployment, and it moves to the next deployment when one is activated, so a deploy does not invalidate your keys.
+- An environment with no live deployment lists no keys. Creating a key there fails with `Conflict`, so deploy first.
+- The list includes revoked keys, ordered by creation time.
+- Revoking a key that is already revoked succeeds. Revoking a key that is not in the environment's live deployment fails with `NotFound` and `resource: "api-key"`.
+- Creating a key is refused with `Conflict` while the organization is being deleted.
+
+## Use a key
+
+Send the secret as a bearer token to your environment's host:
+
+```http
+Authorization: Bearer akrun_…
+```
+
+The key fixes the tenant and the caller, and it works only on its own environment's host. The application interface is `/rpc`: append it to the base URL when you configure `AkterClient.layer`.
+
+`GET /endpoints` returns the environment's base URLs:
+
+```ts
+{ httpBaseUrl: string, webSocketUrl: string, openApiPath: string, mcpPath: string }
+```
+
+`httpBaseUrl` is `https://<environment host>` and `webSocketUrl` is `wss://<environment host>`. `openApiPath` and `mcpPath` are empty strings, which means the environment advertises no OpenAPI or MCP path. If the control plane has no public host for the environment, the route answers 501 `NotImplemented`. Do not build a hostname from the project ID.
+
+The framework server accepts only the `default` tenant today, so a key with another tenant name is valid but cannot serve requests yet.
+
+## Errors
+
+Reads can answer 401 `Unauthorized`, 403 `Forbidden`, 404 `NotFound`, 501 `NotImplemented`, and 503 `Unavailable`. Writes can also answer 409 `Conflict`.

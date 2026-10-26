@@ -1,14 +1,36 @@
 ---
 title: "History retention and GC"
-description: "Retain recoverable segment chains and collect only unreachable pages."
+description: "How long Akter keeps recoverable history, how to change it, and how garbage collection removes pages."
 ---
 
 # History retention and GC
 
-The store descriptor records retention; the framework default is seven days. 0.2 history is retained segments and checkpoints, not event feeds or relational receipt rows. A live event is not stored and cannot be resumed from a historical cursor.
+Akter keeps history as retained segments and checkpoints. This page explains how long they are kept, how to change that, and when garbage collection (GC) deletes data.
 
-Trim deletes a segment only when it is outside retention and covered by an old-enough checkpoint. It stops at the checkpoint anchor preceding the first in-window entry and keeps the complete chain after it, even when boundary segments are older than retention. The history catalogue exposes that anchor; requested actor positions still must be in-window. Each shard's newest checkpoint also stays a root even when expired.
+## What is retained
 
-GC uses a create-once collector epoch and verifies that no newer epoch exists before deletion batches. It marks every retained checkpoint, each shard's newest checkpoint and retained fork/replay roots, then deletes only unreachable pages older than the grace period. Immutable publication and deletion phases exclude PUT/DELETE races; a plain PUT refresh alone cannot fence a DELETE that was already selected. An unknown deletion outcome leaves collection and publication blocked rather than risking a reachable page. An unknown publication outcome blocks them for 60 seconds: a publisher confirms its epoch after its uploads and before its reference, so the epoch can expire safely. Provider lifecycle expiry is not a substitute.
+A new store keeps history for seven days. The default comes from `StoreOptions.retention`, and the store records it. 0.2 history is not an event feed or a set of receipt rows. A live event is not stored and cannot be resumed from a cursor.
 
-The implemented local page/fork/GC cases are recorded in [E6 evidence](https://github.com/Rika-Labs/akter/blob/main/docs/verification/e6-pages-history.md); [ADR 0127](https://github.com/Rika-Labs/akter/blob/main/docs/decisions/0127-snapshots-pages-lists-history-gc.md) owns the anchor rule. The boundary advances to newer anchors so old roots are not retained forever. Production-provider and 50 GB gates remain unverified. Actor erasure waits until no retained checkpoint or anchor references its pages and GC's grace rule permits removal. No tenant-wide erasure API exists in 0.2.0.
+## Change retention
+
+Retention can be set from 1 to 365 days with `Store.setRetention` or `akter retention`. It needs a store-wide `retention.set` operator grant. See [Store retention](../api/01-server-api.md#store-retention).
+
+Widening keeps history that is still stored but cannot restore history already trimmed.
+
+## How trimming works
+
+Trim deletes a segment only when it is outside retention and covered by a checkpoint that is old enough. It stops at the checkpoint anchor before the first in-window entry and keeps the complete chain after that anchor, even if segments near the boundary are older than retention. Each shard's newest checkpoint also stays a root even when it has expired. The history catalogue exposes the anchor, and a requested actor position must still be in the window.
+
+## How GC works
+
+GC takes a create-once collector epoch and checks that no newer epoch exists before each batch of deletions. It marks every retained checkpoint, each shard's newest checkpoint, and the retained fork and replay roots. It then deletes only unreachable pages older than the grace period.
+
+Publication and deletion run in separate phases, so a plain PUT refresh cannot protect a page whose deletion was already selected. If the outcome of a deletion is unknown, collection and publication stay blocked rather than risk deleting a reachable page. If the outcome of a publication is unknown, they are blocked for 60 seconds.
+
+Do not use a provider lifecycle rule to expire objects. It cannot replace GC.
+
+## Erase an actor's data
+
+Actor erasure waits until no retained checkpoint or anchor references its pages and the GC grace period allows removal. There is no tenant-wide erasure API in 0.2.
+
+Local evidence covers pages, forks, and GC ([evidence](https://github.com/Rika-Labs/akter/blob/main/docs/verification/e6-pages-history.md)). Production-provider and 50 GB runs are not yet established.

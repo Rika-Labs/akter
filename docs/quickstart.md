@@ -1,13 +1,13 @@
 ---
 title: "Quickstart"
-description: "Create, serve, call, and test a bucket-backed Akter 0.2 actor."
+description: "Build a counter actor, serve it on your machine, call it from an Effect client, and test it."
 ---
 
 # Quickstart
 
-This tutorial creates a counter actor, serves it over `/rpc`, calls it with the Effect client, and runs a seeded test. Local development uses a filesystem store; no Postgres, PGlite, Drizzle, React, Python client, or migration command is involved.
+In this tutorial you build a counter actor, serve it locally, call it with the Effect client, and test it with a seeded simulation. You need Bun 1.4.2 or later, or Node 24 or later.
 
-## 1. Create a project
+## Create a project
 
 ```sh
 mkdir akter-counter && cd akter-counter
@@ -16,9 +16,11 @@ bun add @rikalabs/akter effect @effect/platform-bun
 bun add -d @rikalabs/akter-cli
 ```
 
-Both packages release together at one version, starting with 0.2.0. Keep them matched and commit the lockfile; do not deploy from moving dist-tags. Node 24+ works too: install `@effect/platform-node` and use `NodeRuntime`/`NodeServices` instead of the Bun imports below.
+<Note>
+`@rikalabs/akter` and `@rikalabs/akter-cli` release together at the same version. Keep them matched and commit your lockfile. On Node, install `@effect/platform-node` instead of `@effect/platform-bun`.
+</Note>
 
-## 2. Declare the actor
+## Declare the actor
 
 Create `src/counter.ts`:
 
@@ -43,9 +45,9 @@ export const CounterLive = Counter.toLayer({
 })
 ```
 
-State is decoded from `{}`. Every non-list field needs a decoding default or `Schema.optional`; there is no `initial` or `migrate` member. `add` is synchronous and deterministic. It does not return an Effect or perform I/O.
+A new actor starts from the decoded value of `{}`, so every field that is not a list needs a decoding default or `Schema.optional`. An action is a plain synchronous function: it edits a draft of the state and returns the reply. It does not return an Effect or perform I/O.
 
-## 3. Serve locally
+## Serve it
 
 Create `src/server.ts`:
 
@@ -60,6 +62,7 @@ const app = App.make({ actors: [Counter], layer: CounterLive })
 
 const server = Akter.serve({
   app,
+  hostname: "127.0.0.1",
   auth: Auth.make(() =>
     Effect.succeed({
       caller: User.make({ subject: "quickstart" }),
@@ -80,11 +83,22 @@ const main = Effect.scoped(
 BunRuntime.runMain(main)
 ```
 
-Run it with `bun run src/server.ts`, then call `GET /ready`. The server creates `.data` using the same create-once protocol as a durable bucket, but this local adapter is a one-host development store. The fixed user is only for the tutorial.
+Start it and check that it is ready:
 
-The server exposes one RPC group at `http://127.0.0.1:8080/rpc`: HTTP POST uses NDJSON. Change the client URL to `ws://.../rpc` for a JSON WebSocket session.
+```sh
+bun run src/server.ts
+curl http://127.0.0.1:8080/ready
+```
 
-## 4. Call it
+`/ready` answers `200` with `{"ready":true}`. The server listens on port 8080 and serves one RPC endpoint at `/rpc`. Press Ctrl+C to stop it: the runner finishes in-flight work and prints a `DRAINED` report before it exits.
+
+<Warning>
+This tutorial authenticates every request as the same user, and `Akter.serve` listens on all interfaces unless you set `hostname`. Use a real credential check before you expose a server. See [Server API](api/01-server-api.md#serve).
+</Warning>
+
+`Store.fileSystem` keeps the data in `./.data`. It is for local development and tests, on one host.
+
+## Call it
 
 Create `src/call.ts`:
 
@@ -110,9 +124,11 @@ const program = Effect.gen(function* () {
 await Effect.runPromise(program)
 ```
 
-`X.client(id)` returns a scoped handle. Action methods are Effects; `state` is a Stream beginning with a full frame; list ranges and views are reads; events are live and non-persisted. The client retries a lost response with the same command id for ten minutes, so the second delivery returns the stored outcome instead of adding twice.
+With the server running, `bun run src/call.ts` prints `2` and then `5`.
 
-## 5. Test the durable boundary
+`Counter.client("main")` returns a scoped handle for the actor with id `main`. Its actions are Effects. The client keeps the same command id for a call across retries, so if a reply is lost, the retry returns the stored result instead of adding twice. Use a `ws://` or `wss://` URL to open a WebSocket session instead of HTTP requests.
+
+## Test it
 
 Create `src/counter.test.ts`:
 
@@ -137,17 +153,10 @@ test("adds once and exposes durable state", async () => {
 })
 ```
 
-Run `bun test` or `node --test src/counter.test.ts`. This smoke rejects an action that fails to persist its result, but does not test retry identity. For failure evidence, add a lost append, a declared failure, a page miss, restart, or same-id retry and assert the final durable state and obligations. The simulator is not provider evidence.
+Run it with `bun test` or `node --test src/counter.test.ts`. `Simulation` runs the real engine over an in-memory bucket with a seeded scheduler, so the test is repeatable. To test failures, see [Testing](guides/testing.md).
 
-## 6. Check a durable bucket
+## Next steps
 
-```sh
-bunx akter storage check --directory ./.data --json
-bunx akter storage check --bucket my-akter-store --endpoint https://s3.example --region us-east-1
-```
-
-Use `AKTER_STORAGE_*` environment variables for credentials. The check writes only under `check/<run>/`, creates no store descriptor, and exits 1 when a required bucket property fails. Passing locally does not certify the hosted provider; save provider-specific output in the support matrix.
-
-## Next
-
-Read [actions and jobs](guides/actions-and-jobs.md), [lists and find](api/lists-and-find.md), [deployment](guides/deploy.md), and [self-host operations](operations/self-host.md). 0.2 starts empty and has no migration path from the 0.1 relational runtime.
+- Learn how actions and jobs divide work in [Actions and jobs](guides/actions-and-jobs.md).
+- Store unbounded data with [lists](api/lists-and-find.md).
+- Move to a real bucket with [Deploy](guides/deploy.md), or run on [Akter Cloud](cloud/get-started.md).

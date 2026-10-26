@@ -1,6 +1,6 @@
 import { z } from "zod"
 
-import type { PageHeading, PageTocEntry } from "./toc-items.ts"
+import { plainText, type PageHeading, type PageTocEntry } from "./toc-items.ts"
 
 /** One section of a page as the search palette shows it. */
 export interface SearchSection {
@@ -35,7 +35,7 @@ export const searchSections = (
       const parents = new Map<string, string>()
       const above: Array<{ readonly depth: number; readonly title: string }> = []
       const titles = new Map(
-        page.structuredData.headings.map((heading) => [heading.id, heading.content]),
+        page.structuredData.headings.map((heading) => [heading.id, plainText(heading.content)]),
       )
 
       for (const entry of page.toc) {
@@ -51,14 +51,18 @@ export const searchSections = (
         above.push({ depth: entry.depth, title })
       }
 
-      return page.structuredData.headings.map((heading): [string, SearchSection] => [
-        `${page.url}#${heading.id}`,
-        {
-          title: heading.content,
-          parent: parents.get(heading.id),
-          text: page.structuredData.contents.find((part) => part.heading === heading.id)?.content,
-        },
-      ])
+      return page.structuredData.headings.map((heading): [string, SearchSection] => {
+        const text = page.structuredData.contents.find((part) => part.heading === heading.id)
+
+        return [
+          `${page.url}#${heading.id}`,
+          {
+            title: plainText(heading.content),
+            parent: parents.get(heading.id),
+            text: text === undefined ? undefined : plainText(text.content),
+          },
+        ]
+      })
     }),
   )
 

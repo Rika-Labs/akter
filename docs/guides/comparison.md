@@ -1,24 +1,36 @@
 ---
 title: "Comparison"
-description: "Compare Akter's durable action model with Durable Objects, Rivet, Restate, and Temporal."
+description: "How Akter's durable action model differs from Durable Objects, Rivet, Restate, and Temporal."
 ---
 
 # Comparison
 
-Choose by the authority and recovery boundary your application needs, not by a list of actor-shaped APIs. Akter 0.2 combines deterministic actions, journaled jobs, page-backed data, and live Effect clients over a bucket store. Its production provider and performance targets remain evidence gates.
+Choose a tool by the authority and recovery boundary your application needs, not by whether its API looks like actors. This page describes Akter's choices so you can compare them with the product you are evaluating. Check each product's own documentation for its guarantees.
+
+## What Akter chooses
+
+| Choice              | In Akter                                                                                        |
+| ------------------- | ----------------------------------------------------------------------------------------------- |
+| Where state lives   | One bucket per environment. The create-once segment in that bucket is the publication boundary. |
+| What an action is   | A short, synchronous, deterministic function. Failure discards everything it staged.            |
+| Where I/O runs      | In jobs with journaled steps.                                                                   |
+| How clients connect | One Effect client over a single `/rpc` endpoint.                                                |
+| Where it runs       | A Bun or Node process with an S3-compatible bucket, or Akter Cloud.                             |
 
 ## Cloudflare Durable Objects
 
-Durable Objects integrate per-object coordination and storage with Cloudflare's platform. Choose them when that platform integration is the primary requirement. Akter's framework runs in a Bun or Node process with an S3-compatible store and mTLS peers; a durable reply waits for its shard segment. Self-hosting flexibility is not proof of equivalent global placement or latency.
+Durable Objects tie per-object coordination and storage to Cloudflare's platform. Choose them when that integration is your main requirement. Akter does not provide Cloudflare's global placement.
 
 ## Rivet Actors
 
-Both models expose addressable stateful instances. Akter makes the create-once segment, not resident state or a periodic save, the publication boundary. Evaluate the actual persistence and retry policies of the deployment being compared; do not infer another product's durability from its actor vocabulary.
+Both expose addressable stateful instances. In Akter, a reply waits for the durable segment rather than for a periodic save. Compare the persistence and retry policy of the deployment you are evaluating instead of inferring them from the actor vocabulary.
 
 ## Restate and Temporal
 
-Durable execution systems are a good fit when a long-running workflow is the primary abstraction. Akter keeps an action short and synchronous, and moves I/O into jobs with journaled steps. It is not a general workflow product: no compensation or public workflow-run handle is offered in 0.2.0.
+These are durable execution systems, a good fit when a long-running workflow is the main abstraction. Akter keeps actions short and moves I/O into jobs with journaled steps. It is not a workflow product: it has no compensation and no workflow-run handle.
 
 ## Use another tool when
 
-Use a relational database for arbitrary joins and global transactions, a stream log for retained subscriber history, and provider idempotency for external exactly-once effects. `X.find` returns actor ids from scalar state, and live events are not an event archive.
+- You need joins or global transactions: use a relational database.
+- You need retained subscriber history: use a stream log. Akter events are live only.
+- You need exactly-once effects in another system: use that system's idempotency keys.

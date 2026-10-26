@@ -1,16 +1,22 @@
 ---
 title: "0.2 upgrade notes"
-description: "Move 0.1 applications to fresh 0.2 stores without converting runtime records."
+description: "Move a 0.1 application to a fresh 0.2 store."
 ---
 
 # 0.2 upgrade notes
 
-0.2 starts empty. Keep 0.1 deployments and their backups isolated; redeploy using the 0.2 actor and store model instead of trying to convert their runtime records.
+0.2 starts with an empty store. Keep your 0.1 deployments and backups separate, and redeploy with the 0.2 actor and store model. Do not try to convert 0.1 runtime records.
 
-- Replace owned rows and relational queries with schema state, `Actor.list`, and id-only `X.find`.
-- Replace Effect command handlers with synchronous actions; move I/O into jobs in the same `toLayer`.
-- Replace old client factories with `X.client(id)` and `AkterClient.layer`.
-- Replace database configuration with one store bucket per environment, or filesystem storage for local development.
-- Replace SQL inspector and repair operations with separately granted audited actor, shard, log, snapshot, fork, and replay operations.
+## What changes
 
-Defaulted fields and Schema transformations are the state-evolution mechanism. No migration CLI, adoption path, Promise facade, or generated Python/React client is carried forward. Read [upgrades](./02-migrations.md) before a release handoff.
+| In 0.1                              | In 0.2                                                                                    |
+| ----------------------------------- | ----------------------------------------------------------------------------------------- |
+| Owned rows and relational queries   | Schema state, `Actor.list`, and id-only `X.find`                                          |
+| Effect command handlers             | Synchronous actions, with I/O in jobs declared in the same `toLayer`                      |
+| Client factories                    | `X.client(id)` and `AkterClient.layer`                                                    |
+| Database configuration              | One store bucket per environment, or a directory for local development                    |
+| SQL inspector and repair operations | Separately granted, audited operators for actors, shards, log, snapshot, fork, and replay |
+
+State evolves through decoding defaults and Schema transformations. See [Upgrades and schema changes](./02-migrations.md) before you hand off a release.
+
+There is no migration CLI and no adoption path. The Promise facade and the generated Python and React clients are not part of 0.2.

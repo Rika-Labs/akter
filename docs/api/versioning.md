@@ -1,12 +1,18 @@
 ---
 title: "API and protocol versioning"
-description: "How Akter 0.2 contracts, wire data, builds, and retained history evolve."
+description: "How actor schemas, the wire protocol, builds, and retained history change over time."
 ---
 
 # API and protocol versioning
 
-Actor state is decoded from `{}` using field decoding defaults. Adding a defaulted or optional field is compatible; reshape a field with a Schema transformation. There is no actor migration hook and no `akter migrate` command.
+## Actor state
 
-The `/rpc` group is generated from actor contracts. WebSocket JSON and HTTP NDJSON share tags and schemas. Command ids are retained for ten minutes, and retries use the same id while the client considers a call live.
+State is decoded from stored bytes using the current schema, and a new actor starts from the decoded value of `{}`. Adding a field with a decoding default, or an optional field, is compatible. Reshape a field with a Schema transformation. There is no migration hook and no `akter migrate` command. See [Upgrades and schema changes](../operations/02-migrations.md).
 
-Every segment records the application bundle, framework version, JavaScript engine and platform build. Replay requires a matching build unless an operator explicitly chooses current-build replay. Retained segments and checkpoints are history, not a second write authority.
+## Wire protocol
+
+The `/rpc` group is generated from actor contracts. WebSocket JSON and HTTP NDJSON share the same tags and schemas. Command ids are retained for ten minutes, and retries use the same id while the client considers a call live.
+
+## Builds and history
+
+Every segment records the application bundle, framework version, JavaScript engine, and platform build. Replay requires a matching build unless an operator explicitly chooses current-build replay. Retained segments and checkpoints are history, not a second source of write authority.

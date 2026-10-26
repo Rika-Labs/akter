@@ -1,47 +1,129 @@
 ---
 title: "The akter CLI"
 sidebarTitle: "CLI"
-description: "Cloud client commands, storage checks, local development, and audited 0.2 operations."
+description: "Reference for every akter command: local development, Akter Cloud, storage checks, and operator tools."
 ---
 
 # The `akter` CLI
 
-Install `@rikalabs/akter-cli` at the same pinned 0.2 rewrite version as the framework, then use `bunx akter` or `npx akter`. Bun 1.4.2+ and Node 24+ are the runtime floors. Every command uses Effect's `effect/cli`; `akter --help` and `<command> --help` are the executable flag reference.
+The `akter` command runs an app locally, deploys it to Akter Cloud, checks a bucket, and inspects durable state. Install `@rikalabs/akter-cli` at the same version as `@rikalabs/akter`, then run it with `bunx akter` or `npx akter`. It needs Bun 1.4.2 or later, or Node 24 or later.
 
-## Current command groups
+`akter --help` and `akter <command> --help` list every flag. This page explains what the commands do and what they print.
 
-This checkout implements cloud `login`, `logout`, `whoami`, `deploy`, `env`, `keys`, `logs`, `storage check`, filesystem-backed `dev`, and the audited operator forms below. There is no `migrate`, `adopt`, fleet, SQL inspector, receipt, or dead-letter repair command in 0.2.
-
-## Operator commands
-
-| Form                                                | Separate capability | Result                                                          |
-| --------------------------------------------------- | ------------------- | --------------------------------------------------------------- |
-| `akter inspect actor <Type> <id>`                   | `inspect`           | Durable actor state, lists, and pending work; outcome tags only |
-| `akter inspect shard <n>`                           | `inspect`           | Durable head, checkpoints, and owner                            |
-| `akter log tail <shard> [--from offset] [--follow]` | `log.read`          | Retained segment entries, optionally followed                   |
-| `akter log export <shard> [--from offset]`          | `log.read`          | Retained entries as NDJSON                                      |
-| `akter snapshot <shard>`                            | `snapshot.read`     | Checkpoint, manifest, and page data                             |
-| `akter fork <Type> <id> --at <version>`             | `fork`              | Actor branch from retained history; default excludes work       |
-| `akter replay <shard> [--current]`                  | `replay`            | Replay a refused shard; `--current` is explicit opt-in          |
-| `akter retention <duration>`                        | `retention.set`     | Set store-wide history retention from one through 365 days      |
-
-Stored success/failure values require `outcomes.read` independently of `inspect`; `export`, `delete`, and `audit.read` also have distinct grants in the operator target. Served operator requests use separate `POST /operator`, never `/rpc`. The server composes `Akter.serve({ app, auth, operatorAuth?, prometheus? })`; `OperatorAuth.tokens([{ token: Redacted.make(...), grant: { operator, capabilities } }])` maps bearer tokens to grants. The served commands default to `http://127.0.0.1:8080`, tenant `default`, and `AKTER_OPERATOR_TOKEN`; `--url`, `--tenant`, `--reason`, and `--token-env` override those values. Application credentials and `System` callers never become operator grants. Capabilities scope tenant, actor type/id, and optionally command id.
-
-`fork` instead loads an application module with `authorizeOperator(token)` and operates directly on a directory or bucket/prefix. It accepts version, timestamp or qualified offset/index positions, a target id/store, and opt-in `--with-work`. It is not a hosted operator request. See [operator forks](./forks.md) for flags, key-schema decoding and scope limits.
-
-Reads write a create-once audit record, and scope denials are audited; tests check both records. Mutations include `Audit` in the same segment as their effect, so a crash leaves both or neither. Answering only after the audit is written, and refusing when it cannot be written, are the target's requirements but have no test yet. [ADR 0137](https://github.com/Rika-Labs/akter/blob/main/docs/decisions/0137-inspection-audited-operations-telemetry.md) defines this target; [runbooks](../operations/runbooks.md) describe safe recovery.
-
-`akter retention "30 days" --url https://runner.example --reason "paid plan"` uses the existing separate operator endpoint and `AKTER_OPERATOR_TOKEN` (or `--token-env`). It is store-wide, so it has no `--tenant` flag and requires `retention.set` with `tenant: "*"`, unrestricted by actor/command. Its request is `{ operation: "retention", target: { store: true }, tenant: "*", reason, retentionMillis }`. The response contains `retentionMillis` and `revision`. The audit is atomic with the CAS policy record, not a shard log entry. Invalid durations are usage errors; denied/conflicting writes exit 1. Widening does not restore already-trimmed history; an active GC pass finishes with its captured old value. Local dev does not grant this capability implicitly.
+| Group       | Commands                                                     |
+| ----------- | ------------------------------------------------------------ |
+| Local       | `dev`                                                        |
+| Akter Cloud | `login`, `logout`, `whoami`, `deploy`, `env`, `keys`, `logs` |
+| Storage     | `storage check`                                              |
+| Operators   | `inspect`, `log`, `snapshot`, `fork`, `replay`, `retention`  |
 
 ## Local development
 
-`akter dev --entry src/app.ts --dir .akter/store --port 8080` loads a default-exported `App.make(...)` over loopback HTTP. Those entry, directory, and port values are the defaults. `--devtools` enables the telemetry connection and `--devtools-url ws://localhost:34437` selects its default URL. The operator endpoint is disabled unless `AKTER_OPERATOR_TOKEN` is provided. Its local grant allows inspect, log, snapshot, outcomes, audit, and replay for tenant `default`, not fork/delete/export. DevTools is a telemetry connection, not an unaudited inspector.
+```sh
+bunx akter dev --entry src/app.ts --dir .akter/store --port 8080
+```
 
-Local `dev` uses `Auth.none`, so application calls are anonymous and still pass through actor access. An actor's default access rejects them; opt into anonymous access deliberately for local testing or use the authenticated server example in the quickstart.
+`dev` imports the entry module, which must default-export an `App.make(...)` app, and serves it on `127.0.0.1` with a filesystem store. The values above are the defaults.
 
-## Telemetry
+| Flag             | Default                | Meaning                           |
+| ---------------- | ---------------------- | --------------------------------- |
+| `--entry`        | `src/app.ts`           | The app module                    |
+| `--dir`          | `.akter/store`         | The store directory               |
+| `--port`         | `8080`                 | The port to listen on             |
+| `--devtools`     | off                    | Send telemetry to Effect DevTools |
+| `--devtools-url` | `ws://localhost:34437` | Where DevTools listens            |
 
-Import `Telemetry` from `@rikalabs/akter/server` and compose `Telemetry.layer({ otlp: { baseUrl, headers? }, devtools: { url? } })` for traces and metrics. `Telemetry.prometheus()` returns a Prometheus exposition body; `Akter.serve({ prometheus: true, ... })` serves it at `/metrics`. Akter has no OTLP logs exporter; payloads and credentials must not be sent to telemetry.
+`dev` serves with `Auth.none`, so every caller is anonymous and still goes through the actor's access rules. An actor's default access rejects anonymous callers, so grant anonymous access deliberately while you test locally.
+
+`dev` also serves `/metrics`. It enables the operator endpoint only when `AKTER_OPERATOR_TOKEN` is set. That token's grant covers `inspect`, `log.read`, `snapshot.read`, `outcomes.read`, `audit.read`, and `replay` for tenant `default`. It does not cover `fork`, `export`, `delete`, or `retention.set`.
+
+## Akter Cloud commands
+
+Every cloud command except `login` uses the session that `login` stored. Pass `--project` (or set `AKTER_PROJECT`) to commands that act on a project. `--env` is `production`, `staging`, or `dev`, and defaults to `production`.
+
+The project ID is shown in the console under the project's settings. A slug does not work in its place.
+
+### `akter login`
+
+```sh
+bunx akter login
+```
+
+`login` prints a verification URL and a code. Open the URL in a browser, check that the code matches, and approve the sign-in. The CLI waits for the approval, then stores the session.
+
+`--api-url` selects the control plane. It defaults to `AKTER_API_URL`, then `https://api.akter.dev`. A control plane must use HTTPS, except on a loopback host such as `localhost`, where plain HTTP is allowed so a session token never crosses a network unencrypted.
+
+The session lives in `credentials.json` inside the configuration directory, which is `AKTER_CONFIG_DIR` when set, otherwise `$XDG_CONFIG_HOME/akter` (default `~/.config/akter`). The file is created with owner-only permissions, and the CLI refuses to use it if other users can read it. Later commands send the token only to the control plane saved at login.
+
+### `akter whoami`
+
+Prints the signed-in email and control plane, then one line per organization with its slug, your role, and its ID.
+
+### `akter logout`
+
+Signs the session out at the control plane and deletes the stored credentials. The credentials are deleted even when the control plane cannot be reached, and the CLI says so; the session then ends when it expires. Logging out does not delete projects or data.
+
+### `akter deploy`
+
+```sh
+bunx akter deploy --project PROJECT_ID --env production
+```
+
+`deploy` packs the app directory, uploads it, starts a deployment, and follows it until it is live.
+
+| Flag        | Default                  | Meaning                                         |
+| ----------- | ------------------------ | ----------------------------------------------- |
+| `--project` | `AKTER_PROJECT`          | The project to deploy to                        |
+| `--env`     | `production`             | The environment                                 |
+| `--context` | current directory        | The app directory; it must contain `src/app.ts` |
+| `--commit`  | the context's git `HEAD` | The commit SHA to label the deployment with     |
+| `--message` | the commit's subject     | The deployment's message                        |
+| `--timeout` | `900`                    | Seconds to follow the rollout                   |
+
+The upload honors `.akterignore` if it exists, otherwise `.gitignore`, and always leaves out `.git`. A file your ignore file excludes is not uploaded, including `src/app.ts` if you exclude it by mistake. The compressed upload can be at most 64 MiB. `--commit` and `--message` only label the deployment; the platform builds what you uploaded.
+
+`--timeout` limits how long the CLI waits, not how long the platform works. When it passes, the command exits with status 1 and the rollout continues on the control plane. The command prints the build log and each rollout step as they happen. If a deployment fails, it exits with status 1 and reports the step that failed. The previous deployment, if any, keeps serving. See [Deploy to Akter Cloud](../cloud/deploy.md).
+
+### `akter env`
+
+```sh
+bunx akter env list --project PROJECT_ID --env production
+bunx akter env set SERVICE_TOKEN --project PROJECT_ID --env production --file ./service-token.txt
+printf '%s' "$SERVICE_TOKEN" | bunx akter env set SERVICE_TOKEN --project PROJECT_ID --env production
+bunx akter env unset SERVICE_TOKEN --project PROJECT_ID --env production
+bunx akter env import ./cloud.env --project PROJECT_ID --env production
+```
+
+- `list` prints variable names and update times. Values cannot be read back.
+- `set` reads the value from `--file` or from piped stdin. It refuses to read from a terminal and never takes the value as an argument, so a secret stays out of your shell history. A value can be at most 64 KiB.
+- `unset` removes a variable.
+- `import` reads a dotenv file, or stdin when you give no file or `-`. The file can be at most 1 MiB. It creates or updates the names in the file, leaves other names alone, and either applies everything or nothing. It prints how many variables it created and updated.
+
+Changes apply on the next deployment. See [Environment variables](../cloud/environment-variables.md) for names, limits, and reserved variables.
+
+### `akter keys`
+
+```sh
+bunx akter keys create "web client" --project PROJECT_ID --env production --tenant default
+bunx akter keys list --project PROJECT_ID --env production
+bunx akter keys revoke KEY_ID --project PROJECT_ID --env production
+```
+
+`keys` manages the keys that your deployed app accepts as bearer tokens. They are not control-plane credentials.
+
+- `create` prints the key's secret on stdout, once, and a confirmation on stderr. Save the secret then; it cannot be read again. `--tenant` names the application tenant and defaults to `default`.
+- `list` prints each key's ID, name, tenant, creation time, and `active` or its revocation time. Revoked keys stay in the list. It never prints a secret.
+- `revoke` revokes a key by ID.
+
+See [Environment API keys](./09-environment-api-keys.md) for the HTTP routes.
+
+### `akter logs`
+
+```sh
+bunx akter logs --project PROJECT_ID --env production --follow
+```
+
+`logs` reads recent output from your app's runners. See [Runner logs](../cloud/logs.md) for the flags, limits, and output format.
 
 ## `akter storage check`
 
@@ -50,49 +132,81 @@ bunx akter storage check --directory ./.data
 bunx akter storage check --bucket BUCKET --endpoint https://S3-ENDPOINT --region REGION --json
 ```
 
-Choose a directory or bucket, not both. Flags are `--bucket`, `--endpoint`, `--region`, `--prefix`, `--directory`, `--writers`, `--rounds`, `--writes`, `--settle-ms`, and `--json`. Defaults are 16 race writers, 10 rounds, 10 writes, and 2,000 ms settle time. The settle time must exceed the provider timestamp resolution.
+`storage check` runs the storage probes against one bucket or one directory and prints each verdict with its measured numbers. Use it before you serve from a bucket. Name a bucket with `--bucket` or `AKTER_STORAGE_BUCKET`, or a directory with `--directory`, not both.
 
-Credentials are read from `AKTER_STORAGE_ACCESS_KEY_ID`, `AKTER_STORAGE_SECRET_ACCESS_KEY`, and `AKTER_STORAGE_SESSION_TOKEN`, falling back to the corresponding `AWS_*` variables or the SDK credential chain. Target configuration uses `AKTER_STORAGE_BUCKET`, `AKTER_STORAGE_ENDPOINT`, `AKTER_STORAGE_REGION`, and `AKTER_STORAGE_PREFIX`; AWS endpoint and region variables are also accepted. Do not put credentials in an endpoint URL or command argument.
+| Flag          | Default | Meaning                                                                  |
+| ------------- | ------- | ------------------------------------------------------------------------ |
+| `--bucket`    |         | The bucket to check                                                      |
+| `--endpoint`  |         | The S3 endpoint, for a provider other than AWS                           |
+| `--region`    |         | The bucket's region                                                      |
+| `--prefix`    |         | A key prefix inside the bucket                                           |
+| `--directory` |         | Check a directory instead of a bucket                                    |
+| `--writers`   | `16`    | Concurrent writers in each race round                                    |
+| `--rounds`    | `10`    | Rounds of each race and of the listing probe                             |
+| `--writes`    | `10`    | Back-to-back writes to one key in the write-rate probe                   |
+| `--settle-ms` | `2000`  | Milliseconds between the two identical writes of the last-modified probe |
+| `--json`      | off     | Print one JSON document                                                  |
 
-The seven probes cover conditional-create races, CAS races, create/delete listing visibility, ordered paginated listing, per-key write rate, and overwrite last-modified refresh. It opens no store, creates no `meta/store` or audit record, and writes only under its temporary `check/<run>/` prefix. It removes probe objects; filesystem CAS tombstones and empty directories may remain to prevent stale ETags reviving deleted objects.
+Credentials come only from the environment, never from flags or the endpoint URL. The CLI reads `AKTER_STORAGE_ACCESS_KEY_ID`, `AKTER_STORAGE_SECRET_ACCESS_KEY`, and `AKTER_STORAGE_SESSION_TOKEN`, then falls back to the matching `AWS_*` variables. Set the access key ID and the secret together, or neither, to use the AWS credential chain. The target settings are `AKTER_STORAGE_BUCKET`, `AKTER_STORAGE_ENDPOINT` (or `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL`), `AKTER_STORAGE_REGION` (or `AWS_REGION`, `AWS_DEFAULT_REGION`), and `AKTER_STORAGE_PREFIX`. The CLI removes secrets from any provider message before printing it.
 
-Text output prints each verdict and measured values. JSON includes CLI version, timestamp, sanitized target, overall verdict, and probe details. Exit 0 means all passed, 1 means a probe failed, and 2 means usage or reachability prevented the check. Passing is evidence for the named provider and configuration only; save the report in the [provider matrix](https://github.com/Rika-Labs/akter/blob/main/docs/verification/store-providers.md) before making a support claim.
+The seven probes are:
 
-## Cloud commands
+1. Conditional create race: concurrent writes with `If-None-Match` produce exactly one winner.
+2. Compare-and-swap race: concurrent writes with `If-Match` produce at most one winner.
+3. List after write: a created key is listed and a deleted key is not.
+4. Ordered listing: keys list in byte order and page correctly with a limit and a start-after key.
+5. Overwrite refreshes last-modified: rewriting identical bytes moves the timestamp forward.
+6. Per-key write rate: back-to-back writes to one key succeed or are throttled, and never fail another way.
+7. Batch delete: one multi-key delete removes every key.
+
+The check writes under `check/<run>/` and removes what it wrote. It does not open a store or write any store or audit record. On a filesystem target, small deletion markers or empty directories can remain.
+
+Text output ends with `Passed: all 7 probes.` or the names of the probes that failed. With `--json`, the output holds the CLI version, a timestamp, the target (without credentials), the overall verdict, and each probe's details.
+
+A passing check is evidence about that provider, region, and endpoint only. See the [provider matrix](https://github.com/Rika-Labs/akter/blob/main/docs/verification/store-providers.md) for the runs on record.
+
+## Operator commands
+
+Operator commands read and change durable state through a separate credential, not an application credential.
+
+| Form                                                | Capability      | Result                                                   |
+| --------------------------------------------------- | --------------- | -------------------------------------------------------- |
+| `akter inspect actor <Type> <id>`                   | `inspect`       | An actor's durable state, lists, and pending work        |
+| `akter inspect shard <n>`                           | `inspect`       | A shard's durable head, checkpoints, and owner           |
+| `akter log tail <shard> [--from offset] [--follow]` | `log.read`      | Retained segment entries, optionally followed            |
+| `akter log export <shard> [--from offset]`          | `log.read`      | Retained entries as NDJSON                               |
+| `akter snapshot <shard>`                            | `snapshot.read` | A shard's checkpoint, manifest, and page data            |
+| `akter replay <shard> [--current]`                  | `replay`        | Replays a shard; `--current` opts into the current build |
+| `akter retention <duration>`                        | `retention.set` | Sets store-wide history retention                        |
+| `akter fork <Type> <id> ...`                        | `fork`          | Copies an actor's retained history to a new actor        |
+
+Reading stored success and failure values also needs `outcomes.read`. `export`, `delete`, and `audit.read` are separate grants as well.
+
+Except for `fork`, these commands send a `POST` to the server's `/operator` endpoint, which is separate from `/rpc`. The server turns it on when you pass `operatorAuth` to `Akter.serve`; see [Server API](./01-server-api.md#serve) and [Observability](../operations/03-observability.md).
+
+| Flag          | Default                 | Meaning                                                |
+| ------------- | ----------------------- | ------------------------------------------------------ |
+| `--url`       | `http://127.0.0.1:8080` | The server                                             |
+| `--tenant`    | `default`               | The tenant to act in                                   |
+| `--reason`    | `operator inspection`   | The reason recorded with the request                   |
+| `--token-env` | `AKTER_OPERATOR_TOKEN`  | The environment variable that holds the operator token |
+
+The URL must use HTTPS, or HTTP on `localhost`, `127.0.0.1`, or `[::1]`, and must not carry credentials or a query string. If the token variable is empty, the command stops before it sends anything. A refused or unreachable request exits with status 1. For an actor whose ID is not a string, use `inspect actor --id-json` and pass the ID as JSON.
+
+`akter retention` changes how long the whole store keeps history. Pass a duration such as `"30 days"`:
 
 ```sh
-bunx akter login
-bunx akter whoami
-bunx akter deploy --project PROJECT_ID --env production
-bunx akter logs --project PROJECT_ID --env production --follow
-bunx akter logout
+akter retention "30 days" --url https://runner.example --reason "paid plan"
 ```
 
-`login --api-url` selects the control plane, defaulting to `AKTER_API_URL` then `https://api.akter.dev`. Remote APIs require HTTPS; loopback may use HTTP. Login prints a browser device page and code, then stores the approved session securely. Subsequent commands use that saved API, not a newly changed environment URL. `AKTER_CONFIG_DIR` overrides the platform configuration directory.
+The duration must be from 1 through 365 days. The command has no `--tenant` flag; the token's grant needs `retention.set` for every tenant. Widening retention does not restore history that was already trimmed. See [History retention](../operations/retention.md).
 
-`deploy` uploads the current context, or `--context`, and follows the deployment. `--project` can come from `AKTER_PROJECT`; `--env` defaults to `production`, with `staging` and `dev` also accepted. `--timeout` bounds the CLI wait, not platform execution. Pin framework and CLI versions together. The 0.2 hosted target provisions an environment bucket; no `DATABASE_URL` is required.
-
-## `akter env`
-
-```sh
-bunx akter env list --project PROJECT_ID --env production
-bunx akter env set SERVICE_TOKEN --project PROJECT_ID --env production --file /secure/token.txt
-bunx akter env unset SERVICE_TOKEN --project PROJECT_ID --env production
-bunx akter env import /secure/cloud.env --project PROJECT_ID --env production
-```
-
-Values are file/stdin-only and cannot be read back. Changes apply on the next deployment. Platform storage credentials are reserved and never customer variables. See [environment variables](../cloud/environment-variables.md).
-
-## `akter keys`
-
-`keys` manages environment application keys and endpoint discovery. Those keys call the app, not the control plane or operator API. See [environment API keys](./09-environment-api-keys.md) for wire models, one-time secret exposure, and scope.
+`fork` does not call a server. It loads your app module, authorizes with the token in `--token-env`, and works directly on a directory (`--directory`) or a bucket (`--bucket`, `--prefix`, `--endpoint`). Choose where to fork from with `--at`, `--before`, or `--offset` together with `--index`. See [Forks](./forks.md) for every flag.
 
 ## Exit statuses
 
-| Status | Meaning                                                                                     |
-| ------ | ------------------------------------------------------------------------------------------- |
-| 0      | Success or help/version output                                                              |
-| 1      | An executed operation was refused, a deployment failed/timed out, or a storage probe failed |
-| 2      | Usage, missing credentials, module loading, or reachability prevented execution             |
-
-Cloud pricing, quotas, and 0.2 hosting rollout support remain E8 responsibilities; CLI help or published schemas do not establish them.
+| Status | Meaning                                                                                                                            |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| 0      | The command succeeded, or it printed help or the version                                                                           |
+| 1      | A server refused the request (including an expired session), a deployment failed or timed out, or a storage probe failed           |
+| 2      | Bad arguments, missing or exposed credentials, an app module that cannot load, or an unreachable control plane or storage endpoint |

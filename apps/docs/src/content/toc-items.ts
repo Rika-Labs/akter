@@ -18,6 +18,12 @@ export interface TocItem {
 }
 
 /**
+ * The text a heading or snippet shows. Headings and paragraphs are recorded as Markdown source, so
+ * inline code keeps its backticks there; the shown text drops them.
+ */
+export const plainText = (content: string): string => content.replace(/`([^`]*)`/g, "$1")
+
+/**
  * The entries of a page's table of contents, titled by the plain text of their headings so
  * nothing but strings crosses to the browser. A heading with no recorded text shows its anchor.
  */
@@ -25,7 +31,7 @@ export const tocItems = (
   entries: ReadonlyArray<PageTocEntry>,
   headings: ReadonlyArray<PageHeading>,
 ): ReadonlyArray<TocItem> => {
-  const titles = new Map(headings.map((heading) => [heading.id, heading.content]))
+  const titles = new Map(headings.map((heading) => [heading.id, plainText(heading.content)]))
 
   return entries.map((entry) => {
     const id = entry.url.replace(/^#/, "")

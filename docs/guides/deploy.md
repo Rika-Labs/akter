@@ -1,16 +1,57 @@
 ---
 title: "Deploy"
-description: "Move from local filesystem storage to one durable bucket per environment."
+description: "Move an Akter app from a local directory to a durable bucket, on your own runners or on Akter Cloud."
 ---
 
 # Deploy
 
-The app contract and handlers from the [quickstart](../quickstart.md) do not change between local development and a bucket-backed runner. Replace `Store.fileSystem("./.data")` with `Store.s3({ bucket, endpoint?, region?, prefix? })`, give the runner scoped credentials, and use a real authentication provider.
+Your actors and handlers do not change between local development and production. You change three things: the store, the authentication, and where the process runs.
 
-Run `akter storage check --bucket BUCKET --endpoint https://S3-ENDPOINT` against the intended provider. Credentials come from environment or the SDK chain, not command arguments. Check the [provider matrix](https://github.com/Rika-Labs/akter/blob/main/docs/verification/store-providers.md); a passing MinIO run does not validate another provider.
+## Use a bucket store
 
-The [self-host recipe](../operations/self-host.md) builds a Bun or Node runner on MinIO. Multiple runners require direct mTLS peer reachability and the store-scoped peering identity. Readiness, drain, matching-build recovery, and stopped-store wake-up are host responsibilities, not optional rollout details.
+Replace `Store.fileSystem` with `Store.s3`:
 
-For hosted deployment, [Akter Cloud](../cloud/get-started.md) provisions one store bucket per environment. It does not require `DATABASE_URL`. Pricing, quotas, and provider rollout claims require E8 evidence and approval.
+```ts
+import { Layer } from "effect"
+import { Store } from "@rikalabs/akter/server"
 
-Upgrading from 0.1 requires a fresh 0.2 store; subsequent 0.2 redeployments reuse that store. There is no migration or adoption tool. [Upgrade notes](../operations/alpha-upgrades.md) explain the contract and release changes.
+const store = Store.s3({
+  bucket: "my-akter-store",
+  endpoint: "https://s3.example",
+  region: "us-east-1",
+})
+```
+
+`endpoint`, `region`, `prefix`, and `credentials` are optional. Without `credentials`, the AWS SDK credential chain is used. Give each runner credentials for its own store only. Use one bucket per environment.
+
+## Check the bucket
+
+Before you serve from a bucket, run the storage check against it:
+
+```sh
+bunx akter storage check --bucket my-akter-store --endpoint https://s3.example --region us-east-1
+```
+
+The check tests the bucket behaviors the store depends on and writes only under `check/<run>/`. It exits `0` when every probe passes. Credentials come from `AKTER_STORAGE_*` or `AWS_*` variables, never from arguments. See [`akter storage check`](../api/06-cli.md#akter-storage-check).
+
+<Note>
+A passing check is evidence for that provider, region, and endpoint only. A passing MinIO or filesystem run does not validate another provider. The [provider evidence page](https://github.com/Rika-Labs/akter/blob/main/docs/verification/store-providers.md) lists the runs on record.
+</Note>
+
+## Authenticate real users
+
+The quickstart's fixed user is only for local development. In production, use `Auth.jwt` or `Auth.make` to authenticate a real credential, and serve behind TLS. See [Server API](../api/01-server-api.md#serve).
+
+## Run the server
+
+The [self-host recipe](../operations/self-host.md) builds a Bun or Node image and runs one runner against MinIO, any S3-compatible bucket, or a directory.
+
+You can run several runners against one store. They need directly reachable addresses and mutual TLS, and each store gets its own peering identity. Your platform must also keep the readiness check, the drain on shutdown, and the build needed to recover an unclean tail; see [Deployment](../operations/01-deployment.md).
+
+## Use Akter Cloud
+
+[Akter Cloud](../cloud/get-started.md) builds and runs your app and gives each environment its own store. You do not provide a bucket or a `DATABASE_URL`.
+
+## Upgrade from 0.1
+
+0.2 starts with an empty store. There is no migration or adoption tool, so redeploy to a fresh 0.2 store. Later 0.2 redeployments reuse it. See the [upgrade notes](../operations/alpha-upgrades.md).

@@ -19,7 +19,7 @@ export const viewport: Viewport = {
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
-  title: { default: `${siteName} documentation`, template: `%s | ${siteName}` },
+  title: { default: `${siteName} documentation`, template: `%s - ${siteName}` },
   description: siteDescription,
   applicationName: siteName,
   icons: { icon: "/favicon.svg" },

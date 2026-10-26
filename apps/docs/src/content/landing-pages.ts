@@ -48,12 +48,12 @@ export const welcomePage: LandingPage = {
       heading: "What you can do",
       columns: 3,
       cards: [
-        { title: "Actors", slug: "guides/concepts" },
+        { title: "Concepts", slug: "guides/concepts" },
         { title: "Actions and jobs", slug: "guides/actions-and-jobs" },
         { title: "Testing", slug: "guides/testing" },
         { title: "Deploy", slug: "guides/deploy" },
         { title: "Self-host", slug: "operations/self-host" },
-        { title: "API reference", slug: "api/01-server-api" },
+        { title: "Server API", slug: "api/01-server-api" },
       ],
     },
   ],
@@ -64,7 +64,7 @@ export const apiOverviewPage = (titles: PageTitles): LandingPage => ({
   slug: "api/overview",
   title: "API reference",
   description:
-    "The actor contract, the Effect client, the CLI and the hosted Cloud API of Akter 0.2.",
+    "Reference for the server API, the Effect client, the CLI, and the Akter Cloud HTTP API.",
   sections: navigation
     .filter((tab) => tab.product === "api-reference")
     .flatMap((tab) => tab.groups)

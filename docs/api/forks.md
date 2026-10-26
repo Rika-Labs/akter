@@ -1,6 +1,13 @@
+---
+title: "Operator forks"
+description: "Branch an actor's retained history into a new actor with a separately granted operator."
+---
+
 # Operator forks
 
-Forks are not actor members and are not exposed at `/rpc`. A trusted operator can use `Forks.fork(engine, options, sourceStore?)` from `@rikalabs/akter/server`; the source defaults to the engine's store. `Forks.run(app, sourceStore, targetStore, options)` opens a temporary local operator engine, installs the fork and drains it. Both require an authenticated `OperatorGrant` with the `fork` capability scoped to the source actor and tenant.
+A fork copies one actor's state and list roots at a past position into a new actor, so you can inspect or branch history. Forks are operator tools. They are not actor members and are not available at `/rpc`.
+
+## Fork from the command line
 
 ```sh
 akter fork Room source --at 12 --to branch --app src/app.ts --directory .akter
@@ -9,14 +16,48 @@ akter fork Room source --offset 45 --index 2 --directory .akter --to branch
 akter fork Room source --at 12 --bucket example --prefix live/ --to-prefix branch/
 ```
 
-The application module must export its `App` as default and a separate `authorizeOperator(token)` function returning an Effect with a grant. The token comes only from `AKTER_OPERATOR_TOKEN`, or the variable selected by `--token-env`; it is never printed or persisted. The authorizer must authenticate the operator independently of application clients. S3 credentials use the SDK's credential chain; endpoint URLs cannot carry credentials.
+Pass the actor type and the source id. Choose exactly one source: `--directory` or `--bucket` (with optional `--prefix` and `--endpoint`). Choose exactly one position:
 
-Ids are decoded and re-encoded with the actor's key schema. By default a literal string is tried before schema-encoded JSON. Use `--json-ids` to force JSON for both ids, including when a union admits both strings and numbers: `akter fork Numeric 17 --json-ids --at 1 --to 29 --directory .akter`. A key schema that cannot admit a derived UUID requires an explicit `--to`.
+| Flag                       | Position                                   |
+| -------------------------- | ------------------------------------------ |
+| `--at <version>`           | A durable action count for the actor       |
+| `--before <timestamp>`     | The state before an ISO timestamp          |
+| `--offset <n> --index <i>` | A segment offset and entry index; use both |
 
-An actor version counts durable actions. Internally a position is `(shard, offset, entry index)`, because a segment may contain several actions. Forking copies state and list roots, not client deduplication state, presence or pending sends. `--with-work` explicitly copies pending timers with new ids and open jobs with new ids and their completed steps. A fork of a fork starts at version zero and can itself be forked.
+Other flags: `--to` (target id), `--to-directory`, `--to-prefix`, `--app` (default `src/app.ts`), `--with-work`, `--json-ids`, and `--token-env`.
 
-The local CLI owns the target store temporarily. Stop other runners when targeting the same store, or use a fresh directory/prefix while the source remains live. A new target adopts the source shard count. The in-process operator API can fork during concurrent source writes. Only the default tenant is currently supported; other scopes are refused, not flattened into it.
+The application module must export its `App` as the default export and an `authorizeOperator(token)` function that returns an Effect with an operator grant. The token comes only from `AKTER_OPERATOR_TOKEN`, or the variable named by `--token-env`. It is never printed or saved. The authorizer must authenticate the operator independently of application clients. S3 credentials use the SDK credential chain, and endpoint URLs cannot carry credentials.
 
-An unknown delete outcome leaves GC blocked rather than risking deletion of a reachable page; an unknown publication outcome blocks it until the publication epoch expires, 60 seconds after its claim. There is no automatic unsafe-reset command. See [E6 evidence](https://github.com/Rika-Labs/akter/blob/main/docs/verification/e6-pages-history.md) for backend and performance limits.
+The fork needs a grant with the `fork` capability for the source actor and tenant.
 
-Fork admission reads effective retention (`meta/retention`, or the initial `meta/store` value) when the request begins. `Store.setRetention` or `akter retention` can change it without recreating the store. A position between the old and new windows is allowed after widening only if its reconstruction bytes remain, and refused after narrowing even before GC deletes them. Already-trimmed history stays gone. A position older than every retained checkpoint is refused with `ForkRefused("retention")`, without reading the log, when the newest position the oldest retained checkpoint covers (an action, a seed, or a fork installed into its shard) is older than the retention cutoff, so every position through it is outside retention. Otherwise the fork reads the log from its start, and a segment missing there fails with `CorruptSegment`: the store lost a segment that retention still covers. [E8e evidence](https://github.com/Rika-Labs/akter/blob/main/docs/verification/e8e-retention.md) covers these transitions.
+## From code
+
+A trusted operator can call `Forks.fork(engine, options, sourceStore?)` from `@rikalabs/akter/server`. The source store defaults to the engine's own store. `Forks.run(app, sourceStore, targetStore, options)` opens a temporary local operator engine, installs the fork, and drains it.
+
+## Ids
+
+Ids are decoded and re-encoded with the actor's key schema. By default a literal string is tried before schema-encoded JSON. Use `--json-ids` to force JSON for both ids, including when a union admits both strings and numbers:
+
+```sh
+akter fork Numeric 17 --json-ids --at 1 --to 29 --directory .akter
+```
+
+If the key schema cannot accept a derived UUID, pass an explicit `--to`.
+
+## What a fork copies
+
+An actor version counts durable actions. Internally a position is `(shard, offset, entry index)`, because one segment can hold several actions.
+
+- A fork copies state and list roots. It does not copy client deduplication state, presence, or pending sends.
+- With `--with-work`, it also copies pending timers (with new ids) and open jobs (with new ids and their completed steps).
+- A fork of a fork starts at version zero and can itself be forked.
+
+## Limits
+
+- The CLI owns the target store while it runs. Stop other runners that use the same target, or use a fresh directory or prefix while the source stays live. The in-process API can fork while the source is being written.
+- A new target takes the source's shard count.
+- Only the `default` tenant is supported. Other scopes are refused.
+- Fork admission reads the effective retention when the request starts. A position between the old and new windows is allowed after widening only if its reconstruction data remains, and refused after narrowing. Trimmed history stays gone. A position older than every retained checkpoint is refused with `ForkRefused("retention")` when it is outside retention.
+- If a delete's outcome is unknown, GC stays blocked rather than risk deleting a reachable page. If a publication's outcome is unknown, GC is blocked until the publication epoch expires, 60 seconds after its claim. There is no automatic reset command.
+
+See the [evidence](https://github.com/Rika-Labs/akter/blob/main/docs/verification/e6-pages-history.md) for backend and performance limits.

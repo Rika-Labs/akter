@@ -1,32 +1,41 @@
 ---
 title: "Runbooks"
-description: "Respond to bucket, epoch, checkpoint, job, and rollout failures without inventing authority."
+description: "Respond to storage, epoch, checkpoint, job, and rollout failures without inventing authority."
 ---
 
 # Operator runbooks
 
-## Storage unavailable or ambiguous append
+Each section names a failure, what is safe to do, and what is not. The rule behind all of them: only the store's durable log decides what happened. Never replace missing state with defaults.
 
-Stop new traffic to an unready runner and restore provider access. Do not report speculative state as committed. An unknown append is resolved by its segment identity; the next epoch recovers from the durable chain. Use the same command id when retrying an admitted call.
+## Storage is unavailable or an append is ambiguous
 
-## Lost epoch
+1. Stop new traffic to the unready runner and restore access to the bucket.
+2. Do not report speculative state as committed.
+3. Let the next epoch recover from the durable chain. An unknown append is resolved by its segment identity.
+4. Retry an admitted call with the same command id.
 
-A fenced runner must close its shard and return a retryable reason. Inspect the shard's durable head and owner through a separate grant. Do not repair by deleting advisory locks or rewriting segments; the newest create-once open is authority.
+## A runner lost its epoch
 
-## Corrupt or missing page
+A fenced runner must close its shard and return a retryable error. Inspect the shard's durable head and owner with a separate operator grant. Do not delete advisory locks or rewrite segments: the newest create-once open is the authority.
 
-Preserve the affected objects and check the hash and retained checkpoint chain. Recovery may use an older intact checkpoint only when all required following segments remain. Otherwise refuse the shard. Never replace missing state with defaults.
+## A page is corrupt or missing
 
-## Refused build or replay mismatch
+1. Preserve the affected objects.
+2. Check the page hash and the retained checkpoint chain.
+3. Recover from an older intact checkpoint only if every following segment remains. Otherwise the shard stays refused.
 
-Run the matching retained build first. Current-build replay requires explicit operator authorization and an audit; a mismatch still raises `ReplayMismatch`. Record the command id and build identities without logging payloads.
+## A build is refused or replay does not match
 
-## Drain and stopped stores
+Run the matching retained build first. Replaying with the current build needs explicit operator authorization and is audited, and a mismatch still raises `ReplayMismatch`. Record the command id and build identities without logging payloads.
 
-Keep the runtime scope alive until its bounded drain reports `DRAINED`. Preserve offsets and `nextDue`. A timed-out report is not a clean handoff. Restart a stopped store when due work must run; Cloud wake orchestration needs hosted evidence.
+## A drain times out, or a store is stopped
 
-## Failed jobs and sent actions
+Keep the runtime scope alive until the bounded drain prints `DRAINED`, and keep each shard's offset and `nextDue`. A timed-out drain is not a clean handoff. Restart a stopped store when its work is due.
 
-Inspect job attempts and the internal `onFailure` result with scoped authority. Completed steps must not be repeated to repair state. A sent action rejection is recorded at the target and counted in telemetry; it has no dead letter or reply to the sender. Reconcile ambiguous external I/O with the provider's idempotency record.
+## A job failed, or a sent action was rejected
 
-The [CLI reference](../api/06-cli.md) names implemented checks and target operator forms; the [support matrix](./support-matrix.md) bounds what these procedures have proven.
+Inspect the job's attempts and its `onFailure` result with scoped authority. Do not repeat completed steps to repair state.
+
+A sent action that the target rejects is recorded at the target and counted in telemetry. There is no dead letter and no reply to the sender. Reconcile ambiguous external I/O with the provider's idempotency record.
+
+See the [CLI reference](../api/06-cli.md) for the operator commands and the [support matrix](./support-matrix.md) for what these procedures have been tested against.

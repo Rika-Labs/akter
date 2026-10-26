@@ -1,24 +1,37 @@
 ---
 title: "Self-host deployment"
-description: "Deploy a bucket-backed Akter 0.2 app with bounded drain and mTLS routing."
+description: "What to prepare before you run Akter on your own infrastructure: the store, runners, and shutdown."
 ---
 
-# Deployment
+# Self-host deployment
 
-Use one store bucket per environment and one credential scope per store. The [Compose recipe](./self-host.md) starts one runner on MinIO. For local development use `Store.fileSystem`; memory is not a durable deployment.
+This page lists what you are responsible for when you run Akter yourself. For a working setup, start with the [Docker Compose recipe](./self-host.md), which runs one runner on MinIO.
 
-## Before starting
+## Before you start
 
-Run `akter storage check` against the actual bucket endpoint. Save its date, provider/version, target region, and probe numbers. A generic S3 API or a passing MinIO run is not production-provider validation. Give the runner only its own store's credentials and let temporary credentials refresh.
+- Use one store bucket per environment and one credential scope per store. Give a runner only its own store's credentials, and let temporary credentials refresh.
+- Run [`akter storage check`](../api/06-cli.md#akter-storage-check) against the real bucket endpoint. Save the date, provider and version, region, and probe numbers. A generic S3 API or a passing MinIO run does not validate your provider.
+- Set `StoreOptions.build` to a stable bundle digest and the framework version. The store records the shard count and retention when it is created, and a conflicting configuration is refused at startup.
+- Back up the whole store, not a selection of actor pages. See [Backup and restore](./04-backup-restore.md).
+- Use `Store.fileSystem` for local development only. `Store.memory` is not durable.
 
-Set a stable application bundle digest and framework version through `StoreOptions.build`. The descriptor fixes shard count and retention; startup refuses conflicting configuration. Back up the whole store, not a selection of actor pages.
+## Run several runners
 
-## Multiple runners
+`Akter.serve({ app, auth, runner })` takes a runner with a reachable peer address and mutual TLS peering. Runners coordinate shard ownership through the bucket. Cluster locks choose a candidate owner, and the log epoch fences writers, so a lock alone never authorizes a write.
 
-`Akter.serve({ app, auth, runner })` accepts reachable peer addresses and mTLS peering configuration. Cluster locks choose candidates; the log epoch fences writers. New releases start in standby and wait for a durable `Released` tail or owner expiry. Authorized releases share a store-scoped peering identity; it adds no authority beyond the store bucket credential.
+A new release starts in standby and waits for the old owner's durable `Released` entry or for the old owner's lock to expire. All authorized releases of a store share one peering identity. It adds no authority beyond the store's bucket credential.
 
-## Drain and readiness
+## Shutdown and readiness
 
-`/ready` is meant to report registration, assignment, peer health, store verification, and drain state. Tests cover `200 { ready: true }`, the runner's `drained` state and peering health; the other `503` reasons have no test yet. Use `RuntimeControl.waitForSignal({ deadline })` inside the live runtime scope. The runner becomes unready before flushing and releasing shards, then prints `DRAINED` with durable offsets and `nextDue`. Keep the root alive until drain completes; an abrupt scope interruption is not a clean handoff.
+`GET /ready` reports whether the runner is ready. Use `RuntimeControl.waitForSignal({ deadline })` inside the live runtime scope so SIGTERM and SIGINT start a drain. The runner becomes unready, flushes and releases its shards, and prints a `DRAINED` report with the durable offsets and `nextDue` for each shard.
 
-The host must preserve matching builds for unclean tails and restart stopped stores at their earliest due work. Local E3 measurements show roughly 15-second clean moves and 31-second crash takeover under defaults, not the five-second target. See [E3 verification](https://github.com/Rika-Labs/akter/blob/main/docs/verification/e3-cluster.md).
+Keep the process alive until the drain finishes. An abrupt interruption is not a clean handoff.
+
+## What your host must do
+
+- Keep the build that wrote an unclean tail, so a matching build can recover it.
+- Persist each `DRAINED` report and restart a stopped store when its `nextDue` passes. The engine cannot wake a stopped process.
+
+## Handoff timing
+
+With the default timings on one developer machine (local MinIO and a local directory, 12 runs), clean handoffs took 1.1 to 3.6 seconds and crash takeover took 3.6 to 5.9 seconds. Four of the 12 crash takeovers took longer than the five-second target. These are not provider measurements. See the [cluster evidence](https://github.com/Rika-Labs/akter/blob/main/docs/verification/e3-cluster.md).

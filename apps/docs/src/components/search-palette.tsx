@@ -8,6 +8,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNod
 import { searchClient } from "../content/search-index.ts"
 import { loadSearchSections, type SearchSection } from "../content/search-sections.ts"
 import { suggestedHrefs, type Sidebar } from "../content/sidebar.ts"
+import { plainText } from "../content/toc-items.ts"
 import { SearchGlyph } from "./glyphs.tsx"
 
 type Filter = "All" | "Documentation" | "API reference"
@@ -161,14 +162,14 @@ export function SearchPalette(props: {
       if (describes || (item.type === "heading" && paragraphs.has(item.url))) return []
 
       const section = sections.get(item.url)
-      const opening = item.type === "text" ? item.content : section?.text
+      const opening = item.type === "text" ? plainText(item.content) : section?.text
 
       return [
         {
           key: item.id,
           href: item.url,
           kind: "heading",
-          title: item.type === "heading" ? item.content : (section?.title ?? page.title),
+          title: item.type === "heading" ? plainText(item.content) : (section?.title ?? page.title),
           snippet: opening === undefined ? undefined : windowed(opening, terms),
           trail: section?.parent === undefined ? page.title : `${page.title} › ${section.parent}`,
           product: page.product,

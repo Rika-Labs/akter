@@ -1,12 +1,32 @@
 ---
 title: "Product fit and non-fit"
-description: "Where deterministic actors and journaled jobs help, and where another tool fits better."
+description: "Where Akter's durable actors fit, and where another tool is the better choice."
 ---
 
 # Product fit and non-fit
 
-Akter fits addressable stateful workloads with short deterministic actions, live durable reads, and external work that can be journaled as jobs: rooms, orders, agents, and devices.
+Akter fits workloads made of many independent, addressable things that keep state: rooms, orders, agents, and devices. This page helps you decide whether your workload is one of them.
 
-It is a conditional fit for high-frequency collaboration because durable latency includes the store PUT, and for hosted multi-tenancy because isolation requires hosted evidence beyond a local actor test. Page-backed unlimited data, GC, forks, and production-provider throughput depend on their milestone gates.
+## Good fit
 
-It is a poor fit for arbitrary SQL joins, cross-shard atomic transactions, durable event-feed replay, hostile-code sandboxing, or external exactly-once I/O without provider idempotency. Use a dedicated database, stream log, or workflow product when those are the primary requirement.
+- State belongs to one entity with an id, and one action changes one actor.
+- Actions are short and deterministic, and I/O can run as journaled jobs.
+- Clients need live reads of durable state.
+
+## Think twice
+
+| Case                         | Why                                                                                                       |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------- |
+| High-frequency collaboration | A reply waits for its segment to be written to the store, so every durable action includes a store write. |
+| Hosted multi-tenancy         | `Akter.serve` serves only the `default` tenant.                                                           |
+
+## Poor fit
+
+| Need                                  | Use instead                                                                            |
+| ------------------------------------- | -------------------------------------------------------------------------------------- |
+| Ad hoc queries and joins              | A relational database. `X.find` returns ids only, filtered on top-level scalar fields. |
+| Atomic transactions across actors     | A database. A send to another actor is fire-and-forget.                                |
+| Replayable event feeds                | A stream log. Events are live and not stored.                                          |
+| Exactly-once effects in other systems | Provider idempotency keys. A job step can reach its provider more than once.           |
+
+Akter's [comparison](../guides/comparison.md) covers related actor and workflow products.

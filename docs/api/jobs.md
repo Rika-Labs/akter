@@ -1,43 +1,111 @@
-# Jobs in 0.2
+---
+title: "Jobs"
+description: "Run I/O as journaled Effects: steps, retries, failure delivery, and durable sleep."
+---
 
-Jobs run I/O as Effects in the same `toLayer` as an actor's synchronous actions. Declare `Actor.job({ payload?, retry?, timeout?, concurrency?, onFailure })` and start it with `ctx.start.<name>(payload, { key? })`. `onFailure` must name an internal action accepting `Actor.JobFailure`. Defaults are one attempt and concurrency one per declaration per shard; `retry.backoff` is a duration. No cancellation, compensation or workflow-run handle is exposed.
+# Jobs
 
-The handler receives `{ self, step, emit, id, attempt }`; `attempt` starts at one. Application service requirements flow into `toLayer`, while the engine supplies the client and workflow services. Jobs cannot require an escaping `Scope`; use `Effect.scoped` to close a resource scope inside the job.
+A job runs I/O as an Effect, in the same `toLayer` as the actor's synchronous actions. Declare it with `Actor.job` and start it from an action with `ctx.start.<name>(payload, { key? })`.
+
+## Declare a job
+
+`Actor.job({ payload?, retry?, timeout?, concurrency?, onFailure })`
+
+| Option        | Default                       | Meaning                                          |
+| ------------- | ----------------------------- | ------------------------------------------------ |
+| `payload`     | none                          | Schema of the job's input                        |
+| `retry`       | `{ attempts: 1, backoff: 0 }` | Total attempts and the wait between them         |
+| `timeout`     | none                          | Longest an attempt may run                       |
+| `concurrency` | `1`                           | How many runs of this job may be active at once  |
+| `onFailure`   | required                      | An internal action that takes `Actor.JobFailure` |
+
+No cancellation, compensation, or workflow-run handle is exposed.
+
+## Write the handler
 
 ```ts
-import { Effect, Stream } from "effect"
+import { Context, Effect, Schema, Stream } from "effect"
+import { Actor } from "@rikalabs/akter"
 import { DurableClock } from "@rikalabs/akter/server"
 
-const generate = (payload, { self, step, emit, id }) =>
-  Effect.gen(function* () {
-    const model = yield* Model
-    const text = yield* step(
-      "generate",
-      model.stream(payload.prompt).pipe(
-        Stream.tap((token) => emit.token(token)),
-        Stream.runFold(
-          () => "",
-          (all, token) => all + token,
+class Model extends Context.Service<Model, { stream(prompt: string): Stream.Stream<string> }>()(
+  "Model",
+) {}
+
+const Chat = Actor.make("Chat", {
+  state: Schema.Struct({
+    answer: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  }),
+  actions: {
+    ask: Actor.action(Schema.String),
+    save: Actor.action(Schema.String, { internal: true }),
+    failed: Actor.action(Actor.JobFailure, { internal: true }),
+  },
+  events: { token: Actor.event(Schema.String) },
+  jobs: {
+    generate: Actor.job({
+      payload: Schema.String,
+      retry: { attempts: 3, backoff: "2 seconds" },
+      onFailure: "failed",
+    }),
+  },
+})
+
+const ChatLive = Chat.toLayer({
+  ask: (_chat, prompt, ctx) => {
+    ctx.start.generate(prompt)
+  },
+  save: (chat, text) => {
+    chat.answer = text
+  },
+  failed: (chat) => {
+    chat.answer = "Something went wrong."
+  },
+  generate: (prompt, { self, step, emit }) =>
+    Effect.gen(function* () {
+      const model = yield* Model
+      const text = yield* step(
+        "generate",
+        model.stream(prompt).pipe(
+          Stream.tap((token) => emit.token(token)),
+          Stream.runFold(
+            () => "",
+            (all, token) => all + token,
+          ),
         ),
-      ),
-    )
-    yield* step("save", self.answer(text))
-    yield* DurableClock.sleep({ name: "cooldown", duration: "10 seconds" })
-    yield* step(
-      "notify",
-      Effect.suspend(() => Mailer.send({ text, key: id() })),
-    )
-  })
+      )
+      yield* step("save", self.save(text))
+      yield* DurableClock.sleep({ name: "cooldown", duration: "10 seconds" })
+    }),
+})
 ```
 
-`step(name, effect)` records JSON-encodable or void success values. Use `step(name, schema, effect)` for a non-JSON value such as a bigint or a class. Schemas must require no services for encoding or decoding. Names must be static, unique, nonempty, not `body`, and contain no NUL. Once its success is durable, a step never runs again, even when a later step causes a new attempt. A failed or interrupted step can repeat external I/O, so pass a provider idempotency key; `id()` inside a step is stable for that job, step and ordinal across retries.
+The handler receives the payload and `{ self, step, emit, id, attempt }`. `attempt` starts at 1. Services the handler needs flow into the type of `toLayer`.
 
-Actor-call ids are UUIDv8 values derived from `<jobId>/<step-or-body>/<attempt>/<ordinal>`. Crash replay keeps the attempt and returns the receiver's stored outcome. A deliberate retry gets fresh actor-call ids. Put calls that must not repeat across retries inside a step, or make the receiving action idempotent. Calls within one scope are sequential; parallel calls need distinct steps. Completed calls are journaled independently of their enclosing step, so replay need not resend them.
+## Steps
 
-When retries are spent, `onFailure` receives `{ job, declaration, key?, payload, attempts, cause, ambiguous }` once. `payload` is encoded; `cause` is `Failed`, `Defect` or `Timeout`. A typed step failure clears that step's ambiguity; an interrupted, defective or timed-out running step may already have reached its provider. A crash during failure delivery retries the same derived action id and preserves the recorded cause.
+`step(name, effect)` records a JSON-encodable or void result. Use `step(name, schema, effect)` for a value JSON cannot hold, such as a bigint or a class instance. The schema must not require services.
 
-`DurableClock.sleep({ name, duration })` journals the deadline for short and long waits, preserves it across restart/owner movement and contributes to drain-time `nextDue`. `Effect.sleep` is a local wait and restarts with the body. Progress events publish immediately and can repeat on a mid-stream retry; they are not durable facts or subscriber history. Save final text through an actor call as shown above.
+- Step names must be unique within the job, nonempty, not `body`, and free of NUL.
+- Once a step's success is durable, it never runs again, even when a later step causes a new attempt.
+- A failed or interrupted step may repeat external I/O, so pass an idempotency key. `id()` inside a step is stable for that job, step, and call position across retries.
 
-With `Akter.serve({ runner })`, job actor calls use the receiver's shard owner over mTLS, preserving their derived command ids and original caller attribution. Job completion remains pending until every receiver's per-job call stream is durably retired; owner movement resumes that cleanup rather than rerunning completed steps.
+Calls from a job to an actor get ids derived from the job, the step (or `body`), the attempt, and the call's position. A crash replay keeps the attempt and returns the receiver's stored outcome. A deliberate retry gets fresh ids, so put calls that must not repeat inside a step, or make the receiving action idempotent. Calls in one scope run in sequence. Parallel calls need separate steps.
 
-The [background-work contract](https://github.com/Rika-Labs/akter/blob/main/docs/contracts/08-background-work.md) owns the guarantees; [E5 verification](https://github.com/Rika-Labs/akter/blob/main/docs/verification/e5-jobs.md) names the failure scenarios and provider limits. Cluster delivery and the operator inspection surface are separate milestones.
+## When retries run out
+
+`onFailure` receives `{ job, declaration, key?, payload, attempts, cause, ambiguous }` once. `payload` is in its encoded form. `cause` is `Failed`, `Defect`, or `Timeout`. `ambiguous` is true when a step was running and may already have reached its provider. A typed step failure clears the ambiguity. A crash during failure delivery retries with the same derived action id and keeps the recorded cause.
+
+## Durable sleep
+
+`DurableClock.sleep({ name, duration })` journals the deadline, so it survives a restart or an owner change and counts toward the `nextDue` in the drain report. `Effect.sleep` is a local wait that restarts with the handler.
+
+## Events from jobs
+
+An event emitted from a job is published immediately and can repeat after a retry. It is not stored. Save final results through an actor call, as the example does with `save`.
+
+## With several runners
+
+With `Akter.serve({ runner })`, job calls go to the receiver's shard owner over mutual TLS and keep their derived command ids and the original caller. A job finishes only after every receiver's call stream for it is durably retired. If an owner moves, the cleanup resumes without rerunning completed steps.
+
+See the [background-work contract](https://github.com/Rika-Labs/akter/blob/main/docs/contracts/08-background-work.md) for the guarantees and the [job evidence](https://github.com/Rika-Labs/akter/blob/main/docs/verification/e5-jobs.md) for the failure scenarios and provider limits.

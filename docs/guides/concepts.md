@@ -1,30 +1,48 @@
 ---
 title: "Concepts"
-description: "Actors, deterministic actions, durable segments, jobs, and live Effect clients."
+description: "How actors, deterministic actions, durable segments, jobs, and live clients fit together."
 ---
 
 # Concepts
 
+## Overview
+
+This page explains the ideas behind Akter. Read it once, then use the [Quickstart](../quickstart.md) and the [API reference](../api/01-server-api.md) for details.
+
 ## Actors and state
 
-An actor owns schema state and pending work at a typed address. `Actor.make` requires `state` and `actions`. State decodes from `{}` with field defaults or optional fields. `Actor.list` stores unbounded items separately in content-addressed pages, outside the 256 KiB non-list state limit.
+An actor owns schema-defined state and pending work at an address: its type and an id. `Actor.make` requires `state` and `actions`; views, events, jobs, lists, and presence are optional.
 
-## Actions and durability
+State decodes from `{}`, so fields need defaults or must be optional. Non-list state is limited to 256 KiB. For data that grows without bound, use `Actor.list`, which stores items in separate pages. See [Lists and find](../api/lists-and-find.md).
 
-A synchronous action changes a copy-on-write draft. It can stage sends, timers, jobs, and events, but performs no I/O. Declared failure, defect, or lost append discards the entire draft and every staged consequence. A page miss reruns the action once the page loads; that the stopped run leaves nothing behind is the [actions contract](https://github.com/Rika-Labs/akter/blob/main/docs/contracts/02-actions.md)'s target, not yet tested. One shard owner groups entries into create-once segments. Replies and published consequences wait for a durable segment.
+## Actions
 
-## Command ids and epochs
+An action is a synchronous function that edits a copy of the state. It can stage sends, timers, job starts, and events, but it cannot do I/O. If it returns its declared failure, throws, or loses its write, the whole draft and everything it staged are discarded. See [Actions and jobs](./actions-and-jobs.md), or the [actions contract](../contracts/02-actions.md) for the exact rules.
 
-The client generates a command id and keeps it across transport retries for ten minutes. A repeated request returns the stored outcome; changed input under an id is refused. Derived work has its own stream identity. A new open segment creates the shard epoch and fences stale writers. Lease objects and process memory are never write authority.
+## Durability
+
+Each shard has one owner. The owner groups actions into create-once segments in the store. A reply, event, send, or job start is published only after its segment is durable.
+
+A new segment chain starts a new epoch for the shard, and a writer from an older epoch is rejected. Lease objects and process memory are never write authority.
+
+## Command ids
+
+The client generates a command id for each call and keeps it across retries for ten minutes. A repeated request returns the stored outcome. Reusing an id with different input is refused.
 
 ## Jobs and timers
 
-Jobs run Effects after durable start. Completed `step` results never repeat; interrupted I/O can still need a provider idempotency key. `schedule` targets the actor itself and `send` targets another actor, both fire-and-forget. Cron is an action option and arms per-instance timers.
+A job is an Effect that runs after its start is durable. It is the only place for I/O. Each `step` result is journaled, so a completed step never runs again. An interrupted external call may still have reached its provider, so use provider idempotency keys.
+
+An action can `schedule` a call to its own actor or `send` one to another actor. Both are fire-and-forget. An action declared with `cron` runs on a schedule.
 
 ## Reads and realtime
 
-`X.client(id)` exposes typed action Effects and live state, list, view, and event Streams. Presence is a scoped `join`. Events are not retained. `X.find` returns ids only from top-level scalar state and is not a cross-shard snapshot.
+`X.client(id)` gives a typed handle: actions are Effects, and `state`, views, list watches, and events are Streams. Presence uses a scoped `join`. Events are not stored, so a client that was not subscribed does not receive them later.
 
-## Store and hosting
+`X.find` returns actor ids filtered by top-level scalar state fields. It is not a cross-shard snapshot.
 
-One environment has one bucket store containing log, checkpoints, pages, indexes, leases, and audits. Development uses a filesystem directory; memory is test-only. A provider is supported only with its own passing protocol evidence. The [contracts](https://github.com/Rika-Labs/akter/blob/main/docs/contracts/README.md) state guarantees and the [support matrix](../operations/support-matrix.md) bounds support.
+## Stores
+
+One environment has one store, which is one bucket holding the log, checkpoints, pages, indexes, leases, and audits. Use a directory for local development. `Store.memory` is for tests only. A bucket provider is supported only after `akter storage check` passes against it; see the [support matrix](../operations/support-matrix.md).
+
+The [runtime contracts](https://github.com/Rika-Labs/akter/blob/main/docs/contracts/README.md) state the exact guarantees.
