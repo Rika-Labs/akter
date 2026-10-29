@@ -33,7 +33,7 @@ bun run check
 
 Name branches `type/slug`, where `type` is one of `feat`, `fix`, `chore`, `docs`, `refactor`, `test` or `ci`, for example `fix/login`. An issue number is optional: `fix/42-login` is also valid. CI enforces this in [`.github/src/policy.ts`](.github/src/policy.ts).
 
-Pull requests target `main`.
+Maintainers push small commits straight to `main` ([AGENTS.md](AGENTS.md#shipping)). Contributors without push access open a pull request from a fork that targets `main`.
 
 ## Engineering rules
 

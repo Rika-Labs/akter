@@ -52,9 +52,9 @@ This is a Bun/Turbo monorepo based on `rika-labs/monorepo-project-template`.
 - No inline `//` or `/* */` comments in code. A reason the code cannot show goes in the JSDoc of the enclosing declaration; only functional directives (lint, TypeScript, coverage, bundler) and license headers are exempt. `akter/no-inline-comments` enforces this.
 - JSDoc states the reason in place and never cites an ADR, decision, research pick, or ledger entry; decision records link to code, not the reverse. `akter/no-decision-references` enforces this.
 
-## Pull requests
+## Shipping
 
-Keep the description short, about 15 lines: what changed, why, the risk, and how it was verified. The template in `.github/pull_request_template.md` has these four headings. Link evidence instead of pasting it, and put long reasoning in the code, a contract or a decision record.
+Ship trunk-based, the way Amp does: commit small changes and push them straight to `main`; there are no pull requests or branch reviews. Before pushing, rebase onto `origin/main` and run the checks the change touches. After pushing, watch `Verify` on the pushed commit and fix or revert a red `main` at once. A green `Verify` on `main` publishes a `next` canary to npm. Never force-push or delete `main`. Commit messages say what changed and why; the `Amp-Thread-ID` trailer links each commit to the thread that produced it. Outside contributors without push access still open pull requests from forks, as [CONTRIBUTING.md](CONTRIBUTING.md) describes.
 
 ## Releases
 
