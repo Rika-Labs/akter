@@ -13,7 +13,7 @@ An actor is addressed by `(tenant, type, id)` inside one store. The store is imp
 
 An actor's shard is `hash(tenant, type, id) mod shards`, where `shards` is fixed in the store's `meta/store` at creation. A shard holds actors of many tenants and types; membership in a shard MUST NOT be treated as a tenant boundary.
 
-An actor exists once it has a durable action. An action on an id with no history runs against the decode of `{}` under the state schema. Reading the state, lists or views of an actor with no history MUST return that default state and MUST NOT write anything. There is no creation proof, `createdBy` gate or `NotCreated` failure.
+An actor exists once it has a durable command. A command on an id with no history runs against the decode of `{}` under the state schema. Reading the state, lists or views of an actor with no history MUST return that default state and MUST NOT write anything. There is no creation proof, `createdBy` gate or `NotCreated` failure.
 
 ## One writer per shard
 
@@ -26,11 +26,11 @@ An actor exists once it has a durable action. An action on an id with no history
 
 ## What may change an actor
 
-- Actor state and lists MUST change only through a durable action entry in the actor's shard log: an `Action`, a fired timer or cron tick, a received send, a job's call, or an operator `Forked` entry.
-- An action MUST NOT perform request/reply with another actor; it stages sends, timers, job starts and events ([actions](02-actions.md)). `X.client` MUST NOT be available inside an action, by type and at runtime.
+- Actor state and lists MUST change only through a durable command entry in the actor's shard log: an `Action`, a fired timer or cron tick, a received send, a job's call, or an operator `Forked` entry.
+- A command MUST NOT perform request/reply with another actor; it stages sends, timers, job starts and broadcasts ([commands](02-actions.md)). `X.client` MUST NOT be available inside a command, by type and at runtime.
 - Views, state reads and list reads MUST NOT change state or stage effects.
-- Jobs MUST change actor state only by calling actions ([background work](08-background-work.md)).
+- Jobs MUST change actor state only by calling commands ([background work](08-background-work.md)).
 
 ## Verification
 
-I1 (one epoch appends), I2 (only the durable prefix is visible) and I8b (no action, read, send, `find` or fork crosses tenants); failures F7 (stale append after a move) and F8 (two runners believe they own a shard). [E3 cluster evidence](../verification/e3-cluster.md) complements E2b's fenced-shard scenarios with real ownership routing and readiness. This does not promote multi-tenant addressing beyond the currently served `default` tenant.
+I1 (one epoch appends), I2 (only the durable prefix is visible) and I8b (no command, read, send, `find` or fork crosses tenants); failures F7 (stale append after a move) and F8 (two runners believe they own a shard). [E3 cluster evidence](../verification/e3-cluster.md) complements E2b's fenced-shard scenarios with real ownership routing and readiness. This does not promote multi-tenant addressing beyond the currently served `default` tenant.

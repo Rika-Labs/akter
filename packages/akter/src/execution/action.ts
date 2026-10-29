@@ -1,10 +1,10 @@
 import { Duration, Effect, Predicate, Schema } from "effect"
 import type { Caller } from "../contract/caller.ts"
 import type { When } from "../contract/context.ts"
-import { ActionDefect } from "../contract/errors.ts"
+import { CommandDefect } from "../contract/errors.ts"
 import type { DefectKind } from "../contract/errors.ts"
 import type { AnyActor } from "../contract/make.ts"
-import type { Action, Event, Job } from "../contract/members.ts"
+import type { Broadcast, Command, Job } from "../contract/members.ts"
 import { Draft } from "../handlers/draft.ts"
 import { Lists } from "../handlers/lists.ts"
 import type { Items } from "../handlers/lists.ts"
@@ -25,7 +25,7 @@ export const maxStateBytes = 256 * 1024
 export interface Invocation {
   readonly actor: AnyActor
   readonly handler: AnyHandler
-  readonly declaration: Action | undefined
+  readonly declaration: Command | undefined
   readonly image: Image
   readonly commandId: string
   readonly member: string
@@ -97,8 +97,8 @@ const run = (invocation: Invocation): Ran => {
   const timers: Array<Timer> = []
   const starts: Array<Start> = []
   const events: Array<Emit> = []
-  const defect = (kind: DefectKind, detail: string): ActionDefect =>
-    ActionDefect.make({ kind, actor: actor.name, member: invocation.member, detail })
+  const defect = (kind: DefectKind, detail: string): CommandDefect =>
+    CommandDefect.make({ kind, actor: actor.name, member: invocation.member, detail })
   const guard = (): void => {
     if (!open)
       throw defect(
@@ -108,8 +108,8 @@ const run = (invocation: Invocation): Ran => {
   }
   const sender = (target: AnyActor, stage: (member: string, payload: Schema.Json) => void) => {
     const methods: Record<string, (payload?: Decoded) => void> = {}
-    const actions: Record<string, Action> = target.actions
-    for (const [member, declaration] of Object.entries(actions))
+    const commands: Record<string, Command> = target.commands
+    for (const [member, declaration] of Object.entries(commands))
       methods[member] = (payload?: Decoded) => {
         guard()
         stage(member, Layouts.codec(declaration.payload).encode(payload))
@@ -184,8 +184,8 @@ const run = (invocation: Invocation): Ran => {
         },
       ]),
     ),
-    emit: Object.fromEntries(
-      Object.entries<Event>(actor.events).map(([event, declaration]) => [
+    broadcast: Object.fromEntries(
+      Object.entries<Broadcast>(actor.broadcasts).map(([event, declaration]) => [
         event,
         (value: Decoded) => {
           guard()
@@ -215,7 +215,7 @@ const run = (invocation: Invocation): Ran => {
   } catch (thrown) {
     open = false
     if (thrown instanceof PageMiss || Schema.is(PageCorrupt)(thrown)) throw thrown
-    if (Schema.is(ActionDefect)(thrown))
+    if (Schema.is(CommandDefect)(thrown))
       return discarded(Outcome.cases.Defect.make({ kind: thrown.kind, detail: thrown.detail }))
     return discarded(Outcome.cases.Defect.make({ kind: "Thrown", detail: describe(thrown) }))
   }
@@ -306,7 +306,7 @@ const run = (invocation: Invocation): Ran => {
     }
   } catch (thrown) {
     if (thrown instanceof PageMiss || Schema.is(PageCorrupt)(thrown)) throw thrown
-    if (Schema.is(ActionDefect)(thrown))
+    if (Schema.is(CommandDefect)(thrown))
       return discarded(Outcome.cases.Defect.make({ kind: thrown.kind, detail: thrown.detail }))
     return discarded(Outcome.cases.Defect.make({ kind: "DecodeFailure", detail: describe(thrown) }))
   }

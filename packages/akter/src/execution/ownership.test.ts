@@ -20,28 +20,28 @@ const Account = Actor.make("Account", {
     credits: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
     ticks: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
-  actions: {
-    deposit: Actor.action(Schema.Finite, { success: Schema.Finite }),
-    transfer: Actor.action(Schema.Struct({ to: Schema.String, amount: Schema.Finite }), {
+  commands: {
+    deposit: Actor.command(Schema.Finite, { success: Schema.Finite }),
+    transfer: Actor.command(Schema.Struct({ to: Schema.String, amount: Schema.Finite }), {
       success: Schema.Finite,
     }),
-    remind: Actor.action(Schema.Finite),
-    credit: Actor.action(Schema.Finite, { internal: true }),
-    tick: Actor.action({ cron: "0 0 * * *" }),
+    remind: Actor.command(Schema.Finite),
+    credit: Actor.command(Schema.Finite, { internal: true }),
+    tick: Actor.command({ cron: "0 0 * * *" }),
   },
-  events: { changed: Actor.event(Schema.Finite) },
+  broadcasts: { changed: Actor.broadcast(Schema.Finite) },
 })
 
 const AccountLive = Account.toLayer({
-  deposit: (account, amount, { emit }) => {
+  deposit: (account, amount, { broadcast }) => {
     account.balance += amount
-    emit.changed(account.balance)
+    broadcast.changed(account.balance)
     return account.balance
   },
-  transfer: (account, { to, amount }, { send, emit }) => {
+  transfer: (account, { to, amount }, { send, broadcast }) => {
     account.balance -= amount
     send(Account, to).credit(amount)
-    emit.changed(account.balance)
+    broadcast.changed(account.balance)
     return account.balance
   },
   remind: (_, amount, { schedule }) => {

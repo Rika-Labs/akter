@@ -4,6 +4,6 @@ The Effect client reads state, lists, and optional derived views as Streams over
 
 Presence uses `presence: Schema` in the contract, synchronous `connect` and `disconnect` handlers in `toLayer`, and scoped `client.join(value)`. Session authentication and actor access are rechecked; transport ownership does not grant new authority.
 
-Events are live and non-persisted. They have no historical cursor, durable feed, or replay promise. Store facts in state or lists when reconnection must recover them. Action events wait for durability; job progress events publish immediately and can repeat on retry.
+Broadcasts are live and non-persisted. They have no historical cursor, durable feed, or replay promise. Store facts in state or lists when reconnection must recover them. Command broadcasts wait for durability; job progress broadcasts publish immediately and can repeat on retry.
 
 Owner movement ends continuity and a client resubscribes to a fresh full frame. Slow-consumer cleanup, general tenant addresses, and hosted edge continuity require explicit failure evidence before stronger promises.

@@ -1,10 +1,10 @@
 # The product model
 
-An actor is a typed address, schema state, actions, and optional lists, views, events, jobs, and presence. `Actor.make` declares it once for the server and Effect client. `X.toLayer` binds its synchronous actions and Effect jobs.
+An actor is a typed address, schema state, commands, and optional lists, views, broadcasts, jobs, and presence. `Actor.make` declares it once for the server and Effect client. `X.toLayer` binds its synchronous commands and Effect jobs.
 
-## The action model
+## The command model
 
-Actions run one at a time per actor against copy-on-write drafts. They may stage sends, timers, job starts, and events; all are discarded on declared failure, defect, page miss, or lost segment. A reply and every published consequence wait until the shard's segment is durable.
+Commands run one at a time per actor against copy-on-write drafts. They may stage sends, timers, job starts, and broadcasts; all are discarded on declared failure, defect, page miss, or lost segment. A reply and every published consequence wait until the shard's segment is durable.
 
 State decodes from `{}` using field defaults. `Actor.list` moves unbounded item data into pages. Views derive shapes from durable state; `X.find` discovers actor ids from top-level scalar fields, not arbitrary SQL.
 

@@ -34,13 +34,13 @@ export const InvalidCommandId = Schema.TaggedStruct("InvalidCommandId", {
   now: Schema.optionalKey(Schema.Finite),
 })
 
-/** The owner could not run the action now; retry with the same command id. */
+/** The owner could not run the command now; retry with the same command id. */
 export const ActorUnavailable = Schema.TaggedStruct("ActorUnavailable", {})
 
 /** The shard is draining or was lost by its owner; retry with the same command id. */
 export const ShardMoved = Schema.TaggedStruct("ShardMoved", {})
 
-/** The caller stopped waiting; the action may still become durable. */
+/** The caller stopped waiting; the command may still become durable. */
 export const Timeout = Schema.TaggedStruct("Timeout", {
   commandId: Schema.optionalKey(Schema.String),
 })
@@ -136,7 +136,7 @@ export class ActorError extends Schema.TaggedError<ActorError>()("ActorError", {
   }
 }
 
-/** Which defect ended an action: its staged work is discarded and the defect is its outcome. */
+/** Which defect ended a command: its staged work is discarded and the defect is its outcome. */
 export const DefectKind = Schema.Literals([
   "SynchronousActionViolation",
   "StateTooLarge",
@@ -145,14 +145,14 @@ export const DefectKind = Schema.Literals([
   "Thrown",
 ])
 
-/** Which defect ended an action. */
+/** Which defect ended a command. */
 export type DefectKind = typeof DefectKind.Type
 
 /**
- * A defect a caller observes as the outcome of its action. It is never an `ActorError` reason:
+ * A defect a caller observes as the outcome of its command. It is never an `ActorError` reason:
  * nothing it staged survived, and retrying the same command id returns the same defect.
  */
-export class ActionDefect extends Schema.TaggedError<ActionDefect>()("ActionDefect", {
+export class CommandDefect extends Schema.TaggedError<CommandDefect>()("CommandDefect", {
   kind: DefectKind,
   actor: Schema.String,
   member: Schema.String,

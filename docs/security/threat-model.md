@@ -8,7 +8,7 @@ Assume hostile clients, untrusted input, network loss, runner crashes, and opera
 | Cross-store access                  | One store credential scope; isolated preview/production buckets and identities; provider-specific denial evidence |
 | Stale writer                        | Create-once open epoch and segment chain, never a membership lease alone                                          |
 | Replay or changed input under an id | Stable command identity, durable outcome, input conflict rejection and ten-minute client expiry                   |
-| Speculative publication             | All replies and action consequences wait for segment durability; discard dependents on failure                    |
+| Speculative publication             | All replies and command consequences wait for segment durability; discard dependents on failure                   |
 | Missing/corrupt state               | Hash-checked pages and intact checkpoint/tail recovery; refuse instead of defaults                                |
 | Duplicate external I/O              | Journaled completed steps plus provider idempotency and reconciliation of ambiguous attempts                      |
 | Unauthorized inspection or mutation | Separate scoped operator grants, audit-before-answer, audit-with-mutation                                         |

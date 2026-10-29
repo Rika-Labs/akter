@@ -16,9 +16,9 @@ export {
 } from "./contract/caller.ts"
 
 export {
-  ActionDefect,
   ActorError,
   ActorUnavailable,
+  CommandDefect,
   CommandExpired,
   DefectKind,
   InputIssue,
@@ -37,9 +37,9 @@ export {
 
 export { JobFailure } from "./contract/members.ts"
 export type {
-  Action,
+  Broadcast,
+  Command,
   DeclaredError,
-  Event,
   Job,
   KeyField,
   List,
@@ -52,9 +52,9 @@ export type {
 } from "./contract/members.ts"
 
 export type {
-  ActionContext,
-  ActionHandler,
   ClientState,
+  CommandContext,
+  CommandHandler,
   Draft,
   FindQuery,
   FullState,

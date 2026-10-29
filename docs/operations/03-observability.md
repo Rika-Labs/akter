@@ -51,12 +51,12 @@ OTLP exports traces to `/v1/traces` and metrics to `/v1/metrics` under `baseUrl`
 
 `Akter.serve({ prometheus: true, ... })` serves `/metrics`, and `Telemetry.prometheus()` returns the same text. Prometheus replaces dots in names with underscores.
 
-**Spans:** `akter.admission`, `akter.<Actor>/<action>`, `akter.commit`, `akter.job/<Actor>/<job>`, `akter.delivery`.
+**Spans:** `akter.admission`, `akter.<Actor>/<command>`, `akter.commit`, `akter.job/<Actor>/<job>`, `akter.delivery`.
 
-**Metrics:** `akter.actions`, `akter.action.duration_ms`, `akter.batch.entries`, `akter.append.duration_ms`, `akter.append.ambiguous`, `akter.shard.opens`, `akter.replay.entries`, `akter.page.misses`, `akter.activations`, `akter.jobs`, `akter.job.seconds`, `akter.admission.refused`, and `akter.gc.deleted`.
+**Metrics:** `akter.actions`, `akter.action.duration_ms`, `akter.batch.entries`, `akter.append.duration_ms`, `akter.append.ambiguous`, `akter.shard.opens`, `akter.replay.entries`, `akter.page.misses`, `akter.activations`, `akter.jobs`, `akter.job.seconds`, `akter.admission.refused`, and `akter.gc.deleted`. `akter.actions` and `akter.action.duration_ms` count commands; they keep their 0.2 names so dashboards and alerts keep working.
 
 Metric labels are designed to exclude the tenant, actor id, and command id. Tests check the stable names and labels but not that exclusion.
 
 ## Usage counters
 
-`Telemetry.usage` reads cumulative per-runner action and job-second counts from the live runtime. Its action count excludes declared failures and defects, which `akter.actions` still records as diagnostic series. Persist deltas by runner incarnation and reconcile gaps. These counters are attribution, not billing authority. See [Runner usage](../api/01-server-api.md#runner-usage).
+`Telemetry.usage` reads cumulative per-runner command and job-second counts from the live runtime. Its command count excludes declared failures and defects, which `akter.actions` still records as diagnostic series. Persist deltas by runner incarnation and reconcile gaps. These counters are attribution, not billing authority. See [Runner usage](../api/01-server-api.md#runner-usage).

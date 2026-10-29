@@ -5,19 +5,19 @@ description: "Run I/O as journaled Effects: steps, retries, failure delivery, an
 
 # Jobs
 
-A job runs I/O as an Effect, in the same `toLayer` as the actor's synchronous actions. Declare it with `Actor.job` and start it from an action with `ctx.start.<name>(payload, { key? })`.
+A job runs I/O as an Effect, in the same `toLayer` as the actor's synchronous commands. Declare it with `Actor.job` and start it from a command with `ctx.start.<name>(payload, { key? })`.
 
 ## Declare a job
 
 `Actor.job({ payload?, retry?, timeout?, concurrency?, onFailure })`
 
-| Option        | Default                       | Meaning                                          |
-| ------------- | ----------------------------- | ------------------------------------------------ |
-| `payload`     | none                          | Schema of the job's input                        |
-| `retry`       | `{ attempts: 1, backoff: 0 }` | Total attempts and the wait between them         |
-| `timeout`     | none                          | Longest an attempt may run                       |
-| `concurrency` | `1`                           | How many runs of this job may be active at once  |
-| `onFailure`   | required                      | An internal action that takes `Actor.JobFailure` |
+| Option        | Default                       | Meaning                                           |
+| ------------- | ----------------------------- | ------------------------------------------------- |
+| `payload`     | none                          | Schema of the job's input                         |
+| `retry`       | `{ attempts: 1, backoff: 0 }` | Total attempts and the wait between them          |
+| `timeout`     | none                          | Longest an attempt may run                        |
+| `concurrency` | `1`                           | How many runs of this job may be active at once   |
+| `onFailure`   | required                      | An internal command that takes `Actor.JobFailure` |
 
 No cancellation, compensation, or workflow-run handle is exposed.
 
@@ -36,12 +36,12 @@ const Chat = Actor.make("Chat", {
   state: Schema.Struct({
     answer: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   }),
-  actions: {
-    ask: Actor.action(Schema.String),
-    save: Actor.action(Schema.String, { internal: true }),
-    failed: Actor.action(Actor.JobFailure, { internal: true }),
+  commands: {
+    ask: Actor.command(Schema.String),
+    save: Actor.command(Schema.String, { internal: true }),
+    failed: Actor.command(Actor.JobFailure, { internal: true }),
   },
-  events: { token: Actor.event(Schema.String) },
+  broadcasts: { token: Actor.broadcast(Schema.String) },
   jobs: {
     generate: Actor.job({
       payload: Schema.String,
@@ -61,13 +61,13 @@ const ChatLive = Chat.toLayer({
   failed: (chat) => {
     chat.answer = "Something went wrong."
   },
-  generate: (prompt, { self, step, emit }) =>
+  generate: (prompt, { self, step, broadcast }) =>
     Effect.gen(function* () {
       const model = yield* Model
       const text = yield* step(
         "generate",
         model.stream(prompt).pipe(
-          Stream.tap((token) => emit.token(token)),
+          Stream.tap((token) => broadcast.token(token)),
           Stream.runFold(
             () => "",
             (all, token) => all + token,
@@ -80,7 +80,7 @@ const ChatLive = Chat.toLayer({
 })
 ```
 
-The handler receives the payload and `{ self, step, emit, id, attempt }`. `attempt` starts at 1. Services the handler needs flow into the type of `toLayer`.
+The handler receives the payload and `{ self, step, broadcast, id, attempt }`. `attempt` starts at 1. Services the handler needs flow into the type of `toLayer`.
 
 ## Steps
 
@@ -90,19 +90,19 @@ The handler receives the payload and `{ self, step, emit, id, attempt }`. `attem
 - Once a step's success is durable, it never runs again, even when a later step causes a new attempt.
 - A failed or interrupted step may repeat external I/O, so pass an idempotency key. `id()` inside a step is stable for that job, step, and call position across retries.
 
-Calls from a job to an actor get ids derived from the job, the step (or `body`), the attempt, and the call's position. A crash replay keeps the attempt and returns the receiver's stored outcome. A deliberate retry gets fresh ids, so put calls that must not repeat inside a step, or make the receiving action idempotent. Calls in one scope run in sequence. Parallel calls need separate steps.
+Calls from a job to an actor get ids derived from the job, the step (or `body`), the attempt, and the call's position. A crash replay keeps the attempt and returns the receiver's stored outcome. A deliberate retry gets fresh ids, so put calls that must not repeat inside a step, or make the receiving command idempotent. Calls in one scope run in sequence. Parallel calls need separate steps.
 
 ## When retries run out
 
-`onFailure` receives `{ job, declaration, key?, payload, attempts, cause, ambiguous }` once. `payload` is in its encoded form. `cause` is `Failed`, `Defect`, or `Timeout`. `ambiguous` is true when a step was running and may already have reached its provider. A typed step failure clears the ambiguity. A crash during failure delivery retries with the same derived action id and keeps the recorded cause.
+`onFailure` receives `{ job, declaration, key?, payload, attempts, cause, ambiguous }` once. `payload` is in its encoded form. `cause` is `Failed`, `Defect`, or `Timeout`. `ambiguous` is true when a step was running and may already have reached its provider. A typed step failure clears the ambiguity. A crash during failure delivery retries with the same derived command id and keeps the recorded cause.
 
 ## Durable sleep
 
 `DurableClock.sleep({ name, duration })` journals the deadline, so it survives a restart or an owner change and counts toward the `nextDue` in the drain report. `Effect.sleep` is a local wait that restarts with the handler.
 
-## Events from jobs
+## Broadcasts from jobs
 
-An event emitted from a job is published immediately and can repeat after a retry. It is not stored. Save final results through an actor call, as the example does with `save`.
+A broadcast sent from a job is published immediately and can repeat after a retry. It is not stored. Save final results through an actor call, as the example does with `save`.
 
 ## With several runners
 

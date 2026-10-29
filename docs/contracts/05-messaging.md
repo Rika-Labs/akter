@@ -7,16 +7,16 @@ Status: partially normative (0.2), owned by ADR 0126. [E3 cluster evidence](../v
 **Owner role:** runtime.  
 **Change policy:** wire changes require protocol versioning and replay tests.
 
-## Calls from outside an action
+## Calls from outside a command
 
-- A call through `X.client(id)` from a client, a job or other server code MUST be a request/reply: the action runs on the owner and the reply is its recorded outcome after durability ([durability](03-durability.md)).
-- The client MUST retry retryable failures with the same command id. There is no fire-and-forget call from outside an action.
+- A call through `X.client(id)` from a client, a job or other server code MUST be a request/reply: the command runs on the owner and the reply is its recorded outcome after durability ([durability](03-durability.md)).
+- The client MUST retry retryable failures with the same command id. There is no fire-and-forget call from outside a command.
 - A job's calls MUST carry ids derived from the job id, the enclosing step name or `body`, the attempt and the ordinal within that scope ([background work](08-background-work.md)).
 
-## Sends from an action
+## Sends from a command
 
-- `ctx.send(Target, id).<action>(payload)` stages a one-way action. It MUST become durable with the sending action and MUST be discarded with it ([actions](02-actions.md)).
-- The delivered action MUST run as `System({ source: "send", ref: <sender address>, onBehalfOf })`, where `onBehalfOf` is the sending action's principal, and MUST carry a command id derived from the sending action's id and the send's ordinal.
+- `ctx.send(Target, id).<command>(payload)` stages a one-way command. It MUST become durable with the sending command and MUST be discarded with it ([commands](02-actions.md)).
+- The delivered command MUST run as `System({ source: "send", ref: <sender address>, onBehalfOf })`, where `onBehalfOf` is the sending command's principal, and MUST carry a command id derived from the sending command's id and the send's ordinal.
 - A send MUST stay in the sender's tenant: `Target` and `id` name an actor in the same tenant; no send API accepts a tenant.
 - **Same shard.** A send to an actor on the sender's shard MAY execute immediately after the sender, speculatively; its entry MUST follow the sender's in the same shard log.
 - **Another shard.** A send to another shard MUST NOT be delivered before the sender's segment is durable. It then waits in the sender shard's pending sends (part of every checkpoint) and is delivered to the receiver's owner.
@@ -26,11 +26,11 @@ Status: partially normative (0.2), owned by ADR 0126. [E3 cluster evidence](../v
 
 ## No distributed transaction
 
-Messaging MUST NOT be presented as a synchronous remote call from an action. A send's effect on the receiver is a separate action, durable on the receiver's shard, never atomic with the sender's.
+Messaging MUST NOT be presented as a synchronous remote call from a command. A send's effect on the receiver is a separate command, durable on the receiver's shard, never atomic with the sender's.
 
 ## Timers
 
-`ctx.schedule(durationOrDate).<action>(payload)` stages a timer on the acting actor; its firing is specified in [background work](08-background-work.md).
+`ctx.schedule(durationOrDate).<command>(payload)` stages a timer on the acting actor; its firing is specified in [background work](08-background-work.md).
 
 ## Verification
 

@@ -9,7 +9,7 @@ const Counter = Actor.make("CronCounter", {
   state: Schema.Struct({
     ticks: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
-  actions: { tick: Actor.action({ cron: "@every 15 seconds" }) },
+  commands: { tick: Actor.command({ cron: "@every 15 seconds" }) },
 })
 
 const CounterLive = Counter.toLayer({

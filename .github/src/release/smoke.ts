@@ -101,7 +101,7 @@ assert.equal(typeof Store.memory, "function")
 
 const Counter = Actor.make("Counter", {
   state: Schema.Struct({ n: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
-  actions: { bump: Actor.action({ success: Schema.Finite }) },
+  commands: { bump: Actor.command({ success: Schema.Finite }) },
 })
 const CounterLive = Counter.toLayer({
   bump: (counter) => {

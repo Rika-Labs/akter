@@ -30,21 +30,21 @@ These are the 0.2 terms. They describe the contract target; a term is not eviden
 ## Application surface
 
 - **State:** a schema struct decoded from `{}` with defaults, optional fields, or list fields; non-list bytes are capped at 256 KiB.
-- **Action:** synchronous deterministic draft mutation with a recorded outcome.
+- **Command:** synchronous deterministic draft mutation with a recorded outcome.
 - **Draft:** copy-on-write state and staged consequences discarded as one unit on failure.
 - **List:** `Actor.list(Item, { key?, by })`, with items in ordered pages.
 - **View:** optional synchronous derived read of durable state.
-- **Event:** a live, non-persisted value; action publication waits for durability.
+- **Broadcast:** a live, non-persisted value; command publication waits for durability.
 - **Presence:** contract schema plus `connect`/`disconnect` and scoped client `join`.
 - **Session:** authenticated transport lifetime at `/rpc`.
-- **Job:** Effect I/O started durably by an action and journaled on the shard.
+- **Job:** Effect I/O started durably by a command and journaled on the shard.
 - **Step:** named journaled success that never runs again once durable.
-- **Send:** staged fire-and-forget action call to another actor.
-- **Timer:** staged action call to the same actor at a recorded due time.
-- **Cron:** an action option arming each instance's recurring timer.
+- **Send:** staged fire-and-forget command call to another actor.
+- **Timer:** staged command call to the same actor at a recorded due time.
+- **Cron:** a command option arming each instance's recurring timer.
 - **Index:** owner-held durable scalar-state query structures, persisted at checkpoints.
 - **Find:** static `X.find` returning ids only, merged across shards without a global snapshot.
-- **Client:** scoped `X.client(id)` with Effect actions and Stream reads; one flat handle.
+- **Client:** scoped `X.client(id)` with Effect commands and Stream reads; one flat handle.
 - **Operator:** separate scoped grant holder, never an application `Caller`.
 - **Audit:** metadata recorded before operator read answers or atomically with mutations.
 
@@ -55,6 +55,6 @@ These are the 0.2 terms. They describe the contract target; a term is not eviden
 - **Build-matched replay:** recovering a tail using the build that wrote it.
 - **Released:** final durable handoff record after bounded drain.
 - **`nextDue`:** earliest pending due time reported for host wake scheduling.
-- **Page miss:** internal pause/load/rerun with identical recorded action inputs.
+- **Page miss:** internal pause/load/rerun with identical recorded command inputs.
 
 The [contracts](contracts/README.md) define the exact obligations and their promotion status.

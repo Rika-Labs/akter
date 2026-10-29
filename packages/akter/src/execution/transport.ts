@@ -1,9 +1,9 @@
 import { Clock, Duration, Effect, JsonPatch, PubSub, Result, Schema, Stream } from "effect"
 import type { Caller } from "../contract/caller.ts"
-import { ActionDefect, ActorError, InvalidInput, Unauthorized } from "../contract/errors.ts"
+import { ActorError, CommandDefect, InvalidInput, Unauthorized } from "../contract/errors.ts"
 import type { Reply, StateFrame, Target, Transport } from "../contract/handle.ts"
 import type { AccessRequest, AnyActor } from "../contract/make.ts"
-import type { Action, View } from "../contract/members.ts"
+import type { Command, View } from "../contract/members.ts"
 import { Lists } from "../handlers/lists.ts"
 import { PageMiss } from "../handlers/page-tree.ts"
 import { CommandIds } from "./command-ids.ts"
@@ -47,22 +47,22 @@ const allowed = (
     }
   })
 
-/** Turns a recorded outcome into the reply a caller receives; a defect reaches it as `ActionDefect`. */
+/** Turns a recorded outcome into the reply a caller receives; a defect reaches it as `CommandDefect`. */
 const reply = (actor: AnyActor, member: string, outcome: Outcome): Effect.Effect<Reply> =>
   Outcome.match(outcome, {
     Success: ({ value }) => Effect.succeed<Reply>({ kind: "Success", value }),
     Failure: ({ error }) => Effect.succeed<Reply>({ kind: "Failure", error }),
     Defect: ({ kind, detail }) =>
-      Effect.die(ActionDefect.make({ kind, actor: actor.name, member, detail })),
+      Effect.die(CommandDefect.make({ kind, actor: actor.name, member, detail })),
   })
 
-const decodes = (schema: Action["payload"], value: Schema.Json): string | undefined => {
+const decodes = (schema: Command["payload"], value: Schema.Json): string | undefined => {
   if (schema === undefined) return undefined
   const result = Schema.decodeResult(MemberJson(schema))(value)
   return Result.isFailure(result) ? result.failure.message : undefined
 }
 
-const MemberJson = (schema: NonNullable<Action["payload"]>) => Schema.toCodecJson(schema)
+const MemberJson = (schema: NonNullable<Command["payload"]>) => Schema.toCodecJson(schema)
 
 /**
  * Admits a client's call under its client id, in the contract's order: `access`, the member, the
@@ -82,8 +82,8 @@ const admitted = (
 ) =>
   Effect.gen(function* () {
     const { actor, member } = request
-    yield* allowed(actor, caller, { kind: "action", member })
-    const declaration: Action | undefined = actor.actions[member]
+    yield* allowed(actor, caller, { kind: "command", member })
+    const declaration: Command | undefined = actor.commands[member]
     if (declaration === undefined || declaration.internal || !engine.catalog.actors.has(actor.name))
       return yield* unknownMember(member)
     const problem = decodes(declaration.payload, request.payload)
@@ -195,7 +195,7 @@ const reads = (
                 )
               } catch (thrown) {
                 if (thrown instanceof PageMiss) throw thrown
-                throw ActionDefect.make({
+                throw CommandDefect.make({
                   kind: "Thrown",
                   actor: actor.name,
                   member,
@@ -208,10 +208,10 @@ const reads = (
         )
       }),
     ),
-  event: (request) =>
+  broadcast: (request) =>
     Stream.unwrap(
       Effect.gen(function* () {
-        yield* allowed(request.actor, caller, { kind: "event", member: request.member })
+        yield* allowed(request.actor, caller, { kind: "broadcast", member: request.member })
         const channel = yield* engine.channel(Durable.addressOf(request.actor.name, request.id))
         const subscription = yield* PubSub.subscribe(channel.events)
         return Stream.fromSubscription(subscription).pipe(

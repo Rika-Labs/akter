@@ -12,7 +12,7 @@ import { Store, storeOf } from "../../../../../packages/akter/src/store/service.
 const Numeric = Actor.make("Numeric", {
   key: Schema.Union([Schema.String, Schema.Int]),
   state: Schema.Struct({ total: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
-  actions: { add: Actor.action(Schema.Int) },
+  commands: { add: Actor.command(Schema.Int) },
 })
 const NumericLive = Numeric.toLayer({
   add: (state, value) => {
@@ -42,7 +42,7 @@ describe("akter fork", () => {
         )
         yield* fs.writeFileString(
           app,
-          `import { Effect, Schema } from ${effect}; import { Actor } from ${root}; import { App } from ${server}; const Numeric = Actor.make("Numeric", {key:Schema.Union([Schema.String,Schema.Int]),state:Schema.Struct({total:Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0)))}),actions:{add:Actor.action(Schema.Int)}}); const live = Numeric.toLayer({add:(state,value)=>{state.total+=value}}); export default App.make({actors:[Numeric],layer:live}); export const authorizeOperator = () => Effect.succeed({operator:"operator:keys",capabilities:[{action:"fork",tenant:"default",actorId:17}]});`,
+          `import { Effect, Schema } from ${effect}; import { Actor } from ${root}; import { App } from ${server}; const Numeric = Actor.make("Numeric", {key:Schema.Union([Schema.String,Schema.Int]),state:Schema.Struct({total:Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0)))}),commands:{add:Actor.command(Schema.Int)}}); const live = Numeric.toLayer({add:(state,value)=>{state.total+=value}}); export default App.make({actors:[Numeric],layer:live}); export const authorizeOperator = () => Effect.succeed({operator:"operator:keys",capabilities:[{action:"fork",tenant:"default",actorId:17}]});`,
         )
         const context = yield* Layer.build(NumericLive)
         const catalog = {

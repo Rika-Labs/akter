@@ -17,10 +17,10 @@ export const Tally = Actor.make("Tally", {
   state: Schema.Struct({
     total: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
-  actions: {
-    add: Actor.action(Schema.Finite, { success: Schema.Finite }),
-    remind: Actor.action(Schema.Finite),
-    note: Actor.action(Schema.Finite, { internal: true }),
+  commands: {
+    add: Actor.command(Schema.Finite, { success: Schema.Finite }),
+    remind: Actor.command(Schema.Finite),
+    note: Actor.command(Schema.Finite, { internal: true }),
   },
 })
 

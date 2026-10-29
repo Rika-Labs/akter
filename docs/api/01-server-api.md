@@ -20,20 +20,20 @@ export const Room = Actor.make("Room", {
     title: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
     messages: Actor.list(Message, { key: "id", by: "at" }),
   }),
-  actions: {
-    rename: Actor.action(Schema.String),
-    post: Actor.action(Schema.String),
-    count: Actor.action({ success: Schema.Number }),
+  commands: {
+    rename: Actor.command(Schema.String),
+    post: Actor.command(Schema.String),
+    count: Actor.command({ success: Schema.Number }),
   },
   views: { title: Actor.view(Schema.String) },
 })
 ```
 
-`Actor.make` requires `state` and `actions`. `views`, `events`, `jobs`, `presence`, and `access` are optional.
+`Actor.make` requires `state` and `commands`. `views`, `broadcasts`, `jobs`, `presence`, and `access` are optional.
 
 - Every state field that is not a list needs `Schema.withDecodingDefault(...)` or `Schema.optional(...)`. The initial state is the decoded value of `{}`. There is no `initial` or `migrate` member.
 - State without lists is limited to 256 KiB. Lists are stored in pages and are not limited this way.
-- An action with no payload takes an options object, as in `Actor.action({ success: Schema.Number })`.
+- A command with no payload takes an options object, as in `Actor.command({ success: Schema.Number })`.
 
 ## Bind handlers
 
@@ -50,7 +50,7 @@ export const RoomLive = Room.toLayer({
 })
 ```
 
-An action handler receives `(draft, payload, ctx)` and is synchronous. Returning a declared failure discards the draft and everything staged. The context `ctx` provides `caller`, `self`, `id()`, `now()`, `random()`, `send`, `schedule`, `start`, and `emit`. See [Context capabilities](./02-context.md).
+A command handler receives `(draft, payload, ctx)` and is synchronous. Returning a declared failure discards the draft and everything staged. The context `ctx` provides `caller`, `self`, `id()`, `now()`, `random()`, `send`, `schedule`, `start`, and `broadcast`. See [Context capabilities](./02-context.md).
 
 A view handler reads durable state and returns a value synchronously. A job handler returns an Effect and is the only place for I/O. See [Jobs](./jobs.md). If you declare `presence`, you must implement both `connect` and `disconnect`.
 
@@ -162,9 +162,9 @@ const actions = Effect.gen(function* () {
 })
 ```
 
-A `UsageSnapshot` is `{ actions, jobSeconds, actors: [{ actorType, actions, jobSeconds }] }`. Every declared actor type appears, even with zero totals. Counts only go up, start when that runner opens, survive shard recovery and release, and never include another runner's work.
+A `UsageSnapshot` is `{ actions, jobSeconds, actors: [{ actorType, actions, jobSeconds }] }`. `actions` counts commands; the field keeps its 0.2 name so stored reports still decode. Every declared actor type appears, even with zero totals. Counts only go up, start when that runner opens, survive shard recovery and release, and never include another runner's work.
 
-- Only successful, durable actions count. Replays, duplicate answers, page-miss reruns, failures, and defects do not.
+- Only successful, durable commands count. Replays, duplicate answers, page-miss reruns, failures, and defects do not.
 - Job seconds round each durably admitted attempt up independently, including failures, timeouts, and interruptions. Active attempts count when they settle. Retry backoff and queue time do not count.
 
 The `DrainReport` carries the same totals as optional `actions` and `jobSeconds`. Older reports without them decode, and missing counters mean unknown, not zero. Hosts compute deltas by their own runner-incarnation identity. These are attribution counters to reconcile with your own observations, not billing authority. A hard process death can leave an interval unreported.
@@ -191,4 +191,4 @@ const operatorAuth = OperatorAuth.tokens([
 
 ## Client and queries
 
-`X.client(id)` is scoped and returns a handle. Actions are Effects, `state` and views are Streams, lists expose `range` and `watch`, events are Streams, and presence exposes `join`. `X.find({ where, orderBy, limit })` is static and returns actor ids only, from top-level scalar state fields. See [TypeScript SDK](./03-typescript-sdk.md) and [Lists and find](./lists-and-find.md).
+`X.client(id)` is scoped and returns a handle. Commands are Effects, `state` and views are Streams, lists expose `range` and `watch`, broadcasts are Streams, and presence exposes `join`. `X.find({ where, orderBy, limit })` is static and returns actor ids only, from top-level scalar state fields. See [TypeScript SDK](./03-typescript-sdk.md) and [Lists and find](./lists-and-find.md).

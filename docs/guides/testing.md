@@ -32,7 +32,7 @@ test("a declared failure leaves the state unchanged", async () => {
 })
 ```
 
-This test uses the `add` action from [Actions and jobs](./actions-and-jobs.md), with `TooLarge` exported. It calls the actor through the public client, waits for pending work with `Simulation.settle`, and reads the full durable state, including lists, with `Simulation.state`.
+This test uses the `add` command from [Commands and jobs](./actions-and-jobs.md), with `TooLarge` exported. It calls the actor through the public client, waits for pending work with `Simulation.settle`, and reads the full durable state, including lists, with `Simulation.state`.
 
 The `seed` makes the run repeatable. When a run breaks an invariant, the error names its seed, so keep it when you reduce the failure.
 

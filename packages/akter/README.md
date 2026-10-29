@@ -24,7 +24,7 @@ export const Counter = Actor.make("Counter", {
       by: "id",
     }),
   }),
-  actions: { add: Actor.action(Schema.Finite, { success: Schema.Finite }) },
+  commands: { add: Actor.command(Schema.Finite, { success: Schema.Finite }) },
 })
 
 export const CounterLive = Counter.toLayer({
@@ -35,7 +35,7 @@ export const CounterLive = Counter.toLayer({
 })
 ```
 
-Actions are synchronous and deterministic. They publish no reply, event, send, timer or job until their bucket-log segment is durable. Jobs are the only place for I/O.
+Commands are synchronous and deterministic. They publish no reply, broadcast, send, timer or job until their bucket-log segment is durable. Jobs are the only place for I/O.
 
 ## Client and server
 
@@ -46,7 +46,7 @@ const app = App.make({ actors: [Counter], layer: CounterLive })
 const server = Akter.serve({ app, auth: Auth.none })
 ```
 
-Provide `Store.fileSystem(".akter/store")` for local development or `Store.s3({ bucket, credentials })` for an S3-compatible store. The single Effect client is `Counter.client(id)`. Its actions are Effects, state and views are Streams, lists expose `range` and watch, and static `Counter.find({ where, orderBy, limit })` returns ids only.
+Provide `Store.fileSystem(".akter/store")` for local development or `Store.s3({ bucket, credentials })` for an S3-compatible store. The single Effect client is `Counter.client(id)`. Its commands are Effects, state and views are Streams, lists expose `range` and watch, and static `Counter.find({ where, orderBy, limit })` returns ids only.
 
 The one RPC group is `/rpc`: WebSocket JSON and HTTP NDJSON. The server can opt into `/metrics` with `prometheus: true`; `Telemetry.layer` composes OTLP traces/metrics and Effect DevTools without an OTLP logs exporter.
 

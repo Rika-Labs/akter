@@ -25,7 +25,7 @@ import {
   Unauthorized,
 } from "../contract/errors.ts"
 import type { AnyActor } from "../contract/make.ts"
-import type { Action } from "../contract/members.ts"
+import type { Command as CommandDeclaration } from "../contract/members.ts"
 import { Recovery, effectsText } from "../snapshots/recovery.ts"
 import { CorruptLog } from "../snapshots/recovery.ts"
 import type { RecoveryError, ReplayPolicy } from "../snapshots/recovery.ts"
@@ -697,7 +697,7 @@ const make = (catalog: Catalog, options: EngineOptions) =>
 
     const runAction = (command: Command, record: ActorRecord, image: Image, at: number): Ran => {
       const { actor, registered } = Durable.bound(catalog, command.actor.name)
-      const declaration: Action | undefined = actor.actions[command.member]
+      const declaration: CommandDeclaration | undefined = actor.commands[command.member]
       const presence = command.member === "connect" || command.member === "disconnect"
       const handler = registered.handlers.get(command.member)
       if (handler === undefined || (declaration === undefined && !presence))

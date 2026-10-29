@@ -17,7 +17,7 @@ const Message = Schema.Struct({ id: Schema.String, at: Schema.Number, body: Sche
 
 const Room = Actor.make("Room", {
   state: Schema.Struct({ messages: Actor.list(Message, { key: "id", by: "at" }) }),
-  actions: { post: Actor.action(Schema.String) },
+  commands: { post: Actor.command(Schema.String) },
 })
 
 const RoomLive = Room.toLayer({
@@ -29,11 +29,11 @@ const RoomLive = Room.toLayer({
 
 - `key` and `by` name item fields that are strings or numbers. If you omit `key`, it defaults to `by`.
 - Items are ordered by `by`. Items with equal `by` values are ordered by key.
-- In an action: `put` inserts or replaces by key, `get` reads one item, `delete` removes one, and `deleteBefore(by)` removes items before an order value. `range({ from, to, limit, reverse })` includes `from` and excludes `to`.
-- List writes belong to the action's draft and disappear if the action is discarded.
+- In a command: `put` inserts or replaces by key, `get` reads one item, `delete` removes one, and `deleteBefore(by)` removes items before an order value. `range({ from, to, limit, reverse })` includes `from` and excludes `to`.
+- List writes belong to the command's draft and disappear if the command is discarded.
 - Lists are stored in content-addressed pages outside the 256 KiB state limit.
 
-If an action reads a page that is not cached, the engine loads it and runs the action again with the same recorded inputs.
+If a command reads a page that is not cached, the engine loads it and runs the command again with the same recorded inputs.
 
 Clients read a list with `handle.messages.range(...)` and watch a live window with `handle.messages.watch(...)`. Lists are not part of `handle.state`.
 
@@ -50,7 +50,7 @@ const Ticket = Actor.make("Ticket", {
     queue: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
     replies: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
-  actions: { reply: Actor.action() },
+  commands: { reply: Actor.command() },
 })
 
 const busiest = Ticket.find({
@@ -68,6 +68,6 @@ const busiest = Ticket.find({
 - **Order.** Equal values are ordered by actor id.
 - **Strings.** An index keeps the first 64 UTF-8 bytes of a string, so strings that share a 64-byte prefix cannot be told apart.
 
-Each shard answers from its own durable state, and the gateway merges the answers. There is no cross-shard snapshot and no `after` token. A completed action is visible to a later query, but an action running at the same time may appear in one shard's answer and not another's.
+Each shard answers from its own durable state, and the gateway merges the answers. There is no cross-shard snapshot and no `after` token. A completed command is visible to a later query, but a command running at the same time may appear in one shard's answer and not another's.
 
 `find` checks access with request kind `find`. It does not authorize reading the returned ids. The server serves only the `default` tenant.

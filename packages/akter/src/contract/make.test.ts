@@ -22,16 +22,16 @@ const Doc = Actor.make("Doc", {
     bio: Schema.optional(Schema.String),
     notes: Actor.list(Note, { key: "id", by: "at" }),
   }),
-  actions: {
-    rename: Actor.action(Schema.String, { fails: Forbidden }),
-    size: Actor.action({ success: Schema.Finite }),
-    indexFailed: Actor.action(JobFailure, { internal: true }),
+  commands: {
+    rename: Actor.command(Schema.String, { fails: Forbidden }),
+    size: Actor.command({ success: Schema.Finite }),
+    indexFailed: Actor.command(JobFailure, { internal: true }),
   },
   views: {
     plain: Actor.view(Schema.Finite),
     page: Actor.view(Schema.Array(Schema.Finite), { params: Schema.Finite }),
   },
-  events: { saved: Actor.event(Schema.String) },
+  broadcasts: { saved: Actor.broadcast(Schema.String) },
   jobs: { index: Actor.job({ payload: Schema.String, onFailure: "indexFailed" }) },
 })
 
@@ -52,17 +52,17 @@ describe("Actor.make", () => {
       Actor.make("Counter", {
         // @ts-expect-error `label` needs a decoding default
         state: Schema.Struct({ count: unit, label: Schema.String }),
-        actions: { increment: Actor.action() },
+        commands: { increment: Actor.command() },
       }),
     ).toThrow(/needs a decoding default/)
   })
 
   it("refuses a member name used twice or reserved", () => {
     expect(() =>
-      // @ts-expect-error `total` is both an action and a view
+      // @ts-expect-error `total` is both a command and a view
       Actor.make("Clash", {
         state: Schema.Struct({ n: unit }),
-        actions: { total: Actor.action({ success: Schema.Finite }) },
+        commands: { total: Actor.command({ success: Schema.Finite }) },
         views: { total: Actor.view(Schema.Finite) },
       }),
     ).toThrow(/used twice or reserved/)
@@ -70,49 +70,49 @@ describe("Actor.make", () => {
       // @ts-expect-error `state` is reserved for the client's state stream
       Actor.make("Reserved", {
         state: Schema.Struct({ n: unit }),
-        actions: {},
-        events: { state: Actor.event(Schema.String) },
+        commands: {},
+        broadcasts: { state: Actor.broadcast(Schema.String) },
       }),
     ).toThrow(/used twice or reserved/)
   })
 
-  it("refuses an onFailure that is missing, public or not an action of the actor", () => {
+  it("refuses an onFailure that is missing, public or not a command of the actor", () => {
     const state = Schema.Struct({ sent: unit })
     expect(() =>
       Actor.make("Mailer", {
         state,
-        actions: { sendFailed: Actor.action(JobFailure) },
+        commands: { sendFailed: Actor.command(JobFailure) },
         // @ts-expect-error the onFailure target must be internal
         jobs: { send: Actor.job({ payload: Schema.String, onFailure: "sendFailed" }) },
       }),
-    ).toThrow(/needs onFailure naming an internal action/)
+    ).toThrow(/needs onFailure naming an internal command/)
     expect(() =>
       Actor.make("Resender", {
         state,
-        actions: {},
-        // @ts-expect-error `resendFailed` is not an action
+        commands: {},
+        // @ts-expect-error `resendFailed` is not a command
         jobs: { resend: Actor.job({ payload: Schema.String, onFailure: "resendFailed" }) },
       }),
-    ).toThrow(/needs onFailure naming an internal action/)
+    ).toThrow(/needs onFailure naming an internal command/)
     // @ts-expect-error every job declares onFailure
     expect(() => Actor.job({ payload: Schema.String })).toBeDefined()
   })
 
-  it("refuses a cron action with a payload, and a schedule in a fixed offset or an unknown zone", () => {
-    // @ts-expect-error a cron action takes no payload
-    expect(() => Actor.action(Schema.String, { cron: "0 3 * * *" })).toThrow(/takes no payload/)
-    expect(Actor.action({ cron: "0 3 * * *" }).internal).toBe(true)
-    expect(Actor.action({ cron: "CRON_TZ=Europe/Paris 0 3 * * *" }).cron).toBe(
+  it("refuses a cron command with a payload, and a schedule in a fixed offset or an unknown zone", () => {
+    // @ts-expect-error a cron command takes no payload
+    expect(() => Actor.command(Schema.String, { cron: "0 3 * * *" })).toThrow(/takes no payload/)
+    expect(Actor.command({ cron: "0 3 * * *" }).internal).toBe(true)
+    expect(Actor.command({ cron: "CRON_TZ=Europe/Paris 0 3 * * *" }).cron).toBe(
       "CRON_TZ=Europe/Paris 0 3 * * *",
     )
-    expect(Actor.action({ cron: "@every 90 seconds" }).internal).toBe(true)
-    expect(() => Actor.action({ cron: "CRON_TZ=+02:00 0 3 * * *" })).toThrow(
+    expect(Actor.command({ cron: "@every 90 seconds" }).internal).toBe(true)
+    expect(() => Actor.command({ cron: "CRON_TZ=+02:00 0 3 * * *" })).toThrow(
       /not a named IANA time zone/,
     )
-    expect(() => Actor.action({ cron: "CRON_TZ=Mars/Olympus 0 3 * * *" })).toThrow(
+    expect(() => Actor.command({ cron: "CRON_TZ=Mars/Olympus 0 3 * * *" })).toThrow(
       /not a named IANA time zone/,
     )
-    expect(() => Actor.action({ cron: "@every 500 millis" })).toThrow(/at least one second/)
+    expect(() => Actor.command({ cron: "@every 500 millis" })).toThrow(/at least one second/)
   })
 
   it("orders lists by a declared scalar field and keys them by one", () => {
@@ -136,7 +136,7 @@ describe("X.toLayer", () => {
     )
     const Lobby = Actor.make("Lobby", {
       state: Schema.Struct({ online: unit }),
-      actions: { ping: Actor.action() },
+      commands: { ping: Actor.command() },
       presence: Schema.Struct({ name: Schema.String }),
     })
     // @ts-expect-error presence needs both connect and disconnect
@@ -145,11 +145,11 @@ describe("X.toLayer", () => {
     )
   })
 
-  it("types action handlers as synchronous functions of the draft, payload and context", () => {
+  it("types command handlers as synchronous functions of the draft, payload and context", () => {
     expect(
       Doc.toLayer({
         ...handlers,
-        // @ts-expect-error an action cannot return an Effect
+        // @ts-expect-error a command cannot return an Effect
         rename: () => Effect.succeed(1),
         // @ts-expect-error `size` returns a number
         size: (doc) => doc.title,
@@ -158,10 +158,10 @@ describe("X.toLayer", () => {
     expect(
       Doc.toLayer({
         ...handlers,
-        rename: (doc, title, { send, schedule, start, emit }) => {
+        rename: (doc, title, { send, schedule, start, broadcast }) => {
           // @ts-expect-error `rename` takes a string
           send(Doc, "other").rename(42)
-          // @ts-expect-error `publish` is not an action of Doc
+          // @ts-expect-error `publish` is not a command of Doc
           send(Doc, "other").publish("x")
           // @ts-expect-error `size` takes no payload
           schedule("1 minute").size("unexpected")
@@ -170,7 +170,7 @@ describe("X.toLayer", () => {
           // @ts-expect-error `reindex` is not a job of Doc
           start.reindex(title)
           // @ts-expect-error `saved` carries a string
-          emit.saved(1)
+          broadcast.saved(1)
           // @ts-expect-error `missing` is not a state field
           doc.missing = 1
           // @ts-expect-error a list item needs every field
@@ -189,12 +189,12 @@ describe("X.toLayer", () => {
     })
     const Guarded = Actor.make("Guarded", {
       state,
-      actions: { claim: Actor.action() },
+      commands: { claim: Actor.command() },
       access: isUser,
     })
     const Open = Actor.make("Open", {
       state,
-      actions: { claim: Actor.action() },
+      commands: { claim: Actor.command() },
       access: () => true,
     })
     expect(

@@ -10,11 +10,11 @@ name there:
   the project's Vitest suites.
 - `src/structure.ts` registers the repository's own rules: file and folder
   naming, the runtime import boundary, `no-inline-comments`,
-  `no-decision-references`, and `synchronous-actions`.
+  `no-decision-references`, and `synchronous-commands`.
 
-## `akter/synchronous-actions`
+## `akter/synchronous-commands`
 
-Action, view, `connect` and `disconnect` handlers must be plain synchronous
+Command, view, `connect` and `disconnect` handlers must be plain synchronous
 functions that reach the world only through `ctx`, so a turn replays
 identically from the log. The rule reports `Date`, `Math.random`, every
 `Math` function except `floor`, `ceil`, `round`, `trunc`, `abs`, `min`, `max`,

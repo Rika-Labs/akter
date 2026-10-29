@@ -26,12 +26,12 @@ export const Counter = Actor.make("Counter", {
     ),
     entries: Actor.list(Entry, { key: "id", by: "at" }),
   }),
-  actions: {
-    add: Actor.action(Schema.Finite, { success: Schema.Finite, fails: Over }),
-    whoami: Actor.action({ success: Schema.String }),
+  commands: {
+    add: Actor.command(Schema.Finite, { success: Schema.Finite, fails: Over }),
+    whoami: Actor.command({ success: Schema.String }),
   },
   views: { doubled: Actor.view(Schema.Finite) },
-  events: { added: Actor.event(Schema.Finite) },
+  broadcasts: { added: Actor.broadcast(Schema.Finite) },
   presence: Schema.Struct({ name: Schema.String }),
   access: isUser,
 })
@@ -40,11 +40,11 @@ export const Counter = Actor.make("Counter", {
 export const LIMIT = 1_000
 
 const CounterLive = Counter.toLayer({
-  add: (counter, amount, { id, now, emit }) => {
+  add: (counter, amount, { id, now, broadcast }) => {
     if (counter.count + amount > LIMIT) return Over.make({ limit: LIMIT })
     counter.count += amount
     counter.entries.put({ id: id(), at: now(), amount })
-    emit.added(amount)
+    broadcast.added(amount)
     return counter.count
   },
   whoami: (_, __, { caller }) => caller.subject,

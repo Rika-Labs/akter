@@ -98,7 +98,7 @@ function isReference(node: ESTree.Node, parent: ESTree.Node): boolean {
 }
 
 /**
- * Keeps action, view, `connect` and `disconnect` handlers deterministic so a
+ * Keeps command, view, `connect` and `disconnect` handlers deterministic so a
  * turn can be replayed from the log: they run as plain synchronous functions
  * and reach the world only through `ctx`. Job handlers, the ones the
  * contract lists under `jobs:`, are exempt because jobs are where I/O lives.
@@ -115,18 +115,18 @@ function isReference(node: ESTree.Node, parent: ESTree.Node): boolean {
  * caught error's `.message` or `.stack` only when read from the `catch`
  * binding itself.
  */
-export const synchronousActionsRule = defineRule({
+export const synchronousCommandsRule = defineRule({
   meta: {
     type: "problem",
     docs: {
       description:
-        "Require action, view, connect and disconnect handlers passed to Actor.toLayer to be synchronous, deterministic plain functions.",
+        "Require command, view, connect and disconnect handlers passed to Actor.toLayer to be synchronous, deterministic plain functions.",
     },
     messages: {
       date: "`Date` reads the host clock. Use `ctx.now()` for the current time.",
       random: "`Math.random` is not replayable. Use `ctx.random()`.",
       mathInexact:
-        "`Math.{{name}}` is not bit-exact across engines. Use only floor, ceil, round, trunc, abs, min, max, sign, sqrt, fround, clz32 or imul, or compute the value in a job and pass it in through an action.",
+        "`Math.{{name}}` is not bit-exact across engines. Use only floor, ceil, round, trunc, abs, min, max, sign, sqrt, fround, clz32 or imul, or compute the value in a job and pass it in through a command.",
       mathDynamic:
         "`Math` used without a direct member cannot be checked. Call floor, ceil, round, trunc, abs, min, max, sign, sqrt, fround, clz32 or imul directly.",
       exponent:
@@ -135,14 +135,14 @@ export const synchronousActionsRule = defineRule({
         "`crypto` is not replayable. Use `ctx.id()` for identifiers and `ctx.random()` for random numbers.",
       performance: "`performance` reads a host clock. Use `ctx.now()`.",
       process:
-        "`process` reads the host. Move the work to a job, or pass the value in through the action payload.",
+        "`process` reads the host. Move the work to a job, or pass the value in through the command payload.",
       globalThis:
         "`globalThis` reaches host globals. Move the work to a job, or use `ctx.now()`, `ctx.random()` and `ctx.id()`.",
-      promise: "Actions are synchronous. Move asynchronous work to a job.",
-      await: "Actions are synchronous. Move `await` and the I/O it waits on to a job.",
-      asyncFunction: "Actions are synchronous. Remove `async` and move the I/O to a job.",
+      promise: "Commands are synchronous. Move asynchronous work to a job.",
+      await: "Commands are synchronous. Move `await` and the I/O it waits on to a job.",
+      asyncFunction: "Commands are synchronous. Remove `async` and move the I/O to a job.",
       timer:
-        "Timers and task queues do not exist in actions. Use `ctx.schedule(delay).<action>(payload)`.",
+        "Timers and task queues do not exist in commands. Use `ctx.schedule(delay).<command>(payload)`.",
       intl: "`Intl` depends on host locale and ICU data. Format on the client or in a job.",
       locale:
         "`{{name}}` depends on the host locale. Compare with `<` and `>` and format on the client.",
@@ -152,8 +152,8 @@ export const synchronousActionsRule = defineRule({
         "`.{{name}}` of a caught error differs across engines. Return the declared `fails` error and branch on its type.",
       structuredClone:
         "`structuredClone` is host-specific. Copy with spread; the draft is already copy-on-write.",
-      effect: "Actions are plain functions, not Effects. Move effectful work to a job.",
-      yield: "Actions are plain functions, not generators. Move effectful work to a job.",
+      effect: "Commands are plain functions, not Effects. Move effectful work to a job.",
+      yield: "Commands are plain functions, not generators. Move effectful work to a job.",
     },
   },
   create(context) {

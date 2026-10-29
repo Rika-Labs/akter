@@ -56,7 +56,7 @@ export const effectsText = (effects: Effects): string =>
  */
 const rerun = (catalog: Catalog, record: ActorRecord, entry: ActionEntry): Ran => {
   const { actor, registered } = Durable.bound(catalog, entry.actor)
-  const declaration = actor.actions[entry.member]
+  const declaration = actor.commands[entry.member]
   const presence = entry.member === "connect" || entry.member === "disconnect"
   const handler = registered.handlers.get(entry.member)
   if (handler === undefined)

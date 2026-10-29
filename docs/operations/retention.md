@@ -9,7 +9,7 @@ Akter keeps history as retained segments and checkpoints. This page explains how
 
 ## What is retained
 
-A new store keeps history for seven days. The default comes from `StoreOptions.retention`, and the store records it. 0.2 history is not an event feed or a set of receipt rows. A live event is not stored and cannot be resumed from a cursor.
+A new store keeps history for seven days. The default comes from `StoreOptions.retention`, and the store records it. 0.2 history is not an event feed or a set of receipt rows. A live broadcast is not stored and cannot be resumed from a cursor.
 
 ## Change retention
 

@@ -1,6 +1,6 @@
 ---
 title: "Comparison"
-description: "How Akter's durable action model differs from Durable Objects, Rivet, Restate, and Temporal."
+description: "How Akter's durable command model differs from Durable Objects, Rivet, Restate, and Temporal."
 ---
 
 # Comparison
@@ -12,7 +12,7 @@ Choose a tool by the authority and recovery boundary your application needs, not
 | Choice              | In Akter                                                                                        |
 | ------------------- | ----------------------------------------------------------------------------------------------- |
 | Where state lives   | One bucket per environment. The create-once segment in that bucket is the publication boundary. |
-| What an action is   | A short, synchronous, deterministic function. Failure discards everything it staged.            |
+| What a command is   | A short, synchronous, deterministic function. Failure discards everything it staged.            |
 | Where I/O runs      | In jobs with journaled steps.                                                                   |
 | How clients connect | One Effect client over a single `/rpc` endpoint.                                                |
 | Where it runs       | A Bun or Node process with an S3-compatible bucket, or Akter Cloud.                             |
@@ -27,10 +27,10 @@ Both expose addressable stateful instances. In Akter, a reply waits for the dura
 
 ## Restate and Temporal
 
-These are durable execution systems, a good fit when a long-running workflow is the main abstraction. Akter keeps actions short and moves I/O into jobs with journaled steps. It is not a workflow product: it has no compensation and no workflow-run handle.
+These are durable execution systems, a good fit when a long-running workflow is the main abstraction. Akter keeps commands short and moves I/O into jobs with journaled steps. It is not a workflow product: it has no compensation and no workflow-run handle.
 
 ## Use another tool when
 
 - You need joins or global transactions: use a relational database.
-- You need retained subscriber history: use a stream log. Akter events are live only.
+- You need retained subscriber history: use a stream log. Akter broadcasts are live only.
 - You need exactly-once effects in another system: use that system's idempotency keys.

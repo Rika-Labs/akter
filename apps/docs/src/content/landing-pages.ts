@@ -49,7 +49,7 @@ export const welcomePage: LandingPage = {
       columns: 3,
       cards: [
         { title: "Concepts", slug: "guides/concepts" },
-        { title: "Actions and jobs", slug: "guides/actions-and-jobs" },
+        { title: "Commands and jobs", slug: "guides/actions-and-jobs" },
         { title: "Testing", slug: "guides/testing" },
         { title: "Deploy", slug: "guides/deploy" },
         { title: "Self-host", slug: "operations/self-host" },

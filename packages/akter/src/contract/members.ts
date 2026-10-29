@@ -17,17 +17,17 @@ export type DeclaredError = MemberSchema & {
 export type OptionalSchema = MemberSchema | undefined
 
 /**
- * A declared action. `internal` actions are not on the client handle or `/rpc`; the engine's own
+ * A declared command. `internal` commands are not on the client handle or `/rpc`; the engine's own
  * calls reach them (`schedule`, `cron`, a job's `self`, `onFailure`, another actor's `send`). A
- * `cron` action is internal and takes no payload.
+ * `cron` command is internal and takes no payload.
  */
-export interface Action<
+export interface Command<
   P extends OptionalSchema = OptionalSchema,
   S extends OptionalSchema = OptionalSchema,
   E extends DeclaredError | undefined = DeclaredError | undefined,
   I extends boolean = boolean,
 > {
-  readonly kind: "Action"
+  readonly kind: "Command"
   readonly payload: P
   readonly success: S
   readonly fails: E
@@ -35,15 +35,15 @@ export interface Action<
   readonly cron: string | undefined
 }
 
-/** Options of an action with a payload. */
-export interface PayloadActionOptions {
+/** Options of a command with a payload. */
+export interface PayloadCommandOptions {
   readonly success?: MemberSchema
   readonly fails?: DeclaredError
   readonly internal?: boolean
 }
 
-/** Options of an action without a payload; only these may name a `cron` schedule. */
-export interface ActionOptions extends PayloadActionOptions {
+/** Options of a command without a payload; only these may name a `cron` schedule. */
+export interface CommandOptions extends PayloadCommandOptions {
   readonly cron?: string
 }
 
@@ -55,22 +55,22 @@ type InternalOf<O> = O extends { readonly cron: string }
     ? true
     : false
 
-function action(): Action<undefined, undefined, undefined, false>
-function action<P extends MemberSchema, const O extends PayloadActionOptions = {}>(
+function command(): Command<undefined, undefined, undefined, false>
+function command<P extends MemberSchema, const O extends PayloadCommandOptions = {}>(
   payload: P,
   options?: O,
-): Action<P, SuccessOf<O>, FailsOf<O>, InternalOf<O>>
-function action<const O extends ActionOptions>(
+): Command<P, SuccessOf<O>, FailsOf<O>, InternalOf<O>>
+function command<const O extends CommandOptions>(
   options: O,
-): Action<undefined, SuccessOf<O>, FailsOf<O>, InternalOf<O>>
-function action(first?: MemberSchema | ActionOptions, second?: PayloadActionOptions): Action {
+): Command<undefined, SuccessOf<O>, FailsOf<O>, InternalOf<O>>
+function command(first?: MemberSchema | CommandOptions, second?: PayloadCommandOptions): Command {
   const payload = Schema.isSchema(first) ? first : undefined
-  const options: ActionOptions = (Schema.isSchema(first) ? second : first) ?? {}
+  const options: CommandOptions = (Schema.isSchema(first) ? second : first) ?? {}
   if (options.cron !== undefined && payload !== undefined)
-    throw new Error("A cron action takes no payload: the engine calls it with nothing")
+    throw new Error("A cron command takes no payload: the engine calls it with nothing")
   if (options.cron !== undefined) Crons.parse(options.cron)
   return {
-    kind: "Action",
+    kind: "Command",
     payload,
     success: options.success,
     fails: options.fails,
@@ -94,13 +94,16 @@ const view = <A extends MemberSchema, P extends MemberSchema | undefined = undef
   options?: { readonly params?: P },
 ): View<A, NoInfer<P>> => ({ kind: "View", success, params: options?.params as P })
 
-/** A declared event: published after durability, never stored. */
-export interface Event<A extends MemberSchema = MemberSchema> {
-  readonly kind: "Event"
+/** A declared broadcast: published after durability, never stored. */
+export interface Broadcast<A extends MemberSchema = MemberSchema> {
+  readonly kind: "Broadcast"
   readonly schema: A
 }
 
-const event = <A extends MemberSchema>(schema: A): Event<A> => ({ kind: "Event", schema })
+const broadcast = <A extends MemberSchema>(schema: A): Broadcast<A> => ({
+  kind: "Broadcast",
+  schema,
+})
 
 /** How a job retries a failed attempt. */
 export interface Retry {
@@ -197,7 +200,7 @@ export interface ListReader<Item, Key, By> {
   range(options?: RangeOptions<By>): ReadonlyArray<Item>
 }
 
-/** A list as an action handler sees it: writes are staged and discarded with the draft. */
+/** A list as a command handler sees it: writes are staged and discarded with the draft. */
 export interface ListDraft<Item, Key, By> extends ListReader<Item, Key, By> {
   put(item: Item): void
   delete(key: Key): boolean
@@ -205,7 +208,7 @@ export interface ListDraft<Item, Key, By> extends ListReader<Item, Key, By> {
 }
 
 /**
- * What a job's `onFailure` action receives once every attempt is spent. `cause` names how the last
+ * What a job's `onFailure` command receives once every attempt is spent. `cause` names how the last
  * attempt ended; `ambiguous` is true when a step was running and may have reached its provider;
  * `payload` is the job's payload in its encoded form; `key` is the start's key when it had one.
  */
@@ -220,4 +223,4 @@ export class JobFailure extends Schema.Class<JobFailure>("Akter/JobFailure")({
 }) {}
 
 /** The member constructors: schema first, options second. */
-export const Members = { action, view, event, job, list }
+export const Members = { command, view, broadcast, job, list }

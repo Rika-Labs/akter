@@ -12,11 +12,11 @@ const Mail = Actor.make("Mail", {
     total: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
     received: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
-  actions: {
-    send: Actor.action(Schema.Struct({ to: Schema.String, amount: Schema.Int })),
-    receive: Actor.action(Schema.Int, { internal: true }),
-    remind: Actor.action(Schema.Int),
-    later: Actor.action(Schema.Int),
+  commands: {
+    send: Actor.command(Schema.Struct({ to: Schema.String, amount: Schema.Int })),
+    receive: Actor.command(Schema.Int, { internal: true }),
+    remind: Actor.command(Schema.Int),
+    later: Actor.command(Schema.Int),
   },
 })
 

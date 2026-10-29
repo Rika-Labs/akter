@@ -491,7 +491,7 @@ const clustered = (engine: Engine, options: RunnerOptions) =>
             ).pipe(Stream.interruptWhen(engine.ownerClosed(shard))),
           Event: ({ payload, headers }) =>
             Stream.unwrap(
-              guard(Effect.map(read(headers), (reads) => reads.event(member(payload)))),
+              guard(Effect.map(read(headers), (reads) => reads.broadcast(member(payload)))),
             ).pipe(Stream.interruptWhen(engine.ownerClosed(shard))),
           Range: ({ payload, headers }) =>
             guard(Effect.flatMap(read(headers), (reads) => reads.range(range(payload)))),
@@ -603,7 +603,7 @@ const clustered = (engine: Engine, options: RunnerOptions) =>
             header(caller),
           ),
         ),
-      event: (request) =>
+      broadcast: (request) =>
         streamRefail(
           clientFor(request.actor, request.id).Event(
             {

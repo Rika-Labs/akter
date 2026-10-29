@@ -17,7 +17,7 @@ export type Anonymous = typeof Anonymous.Type
  * `cron`, `job`, `operator`, `process`), `subject` names the origin (`actor:<Type>/<id>`,
  * `job:<jobId>`, `cron:<Type>`, `operator:<id>`) so that `caller.subject` types for every caller
  * an actor admits once `access` excludes `Anonymous`, `ref` is the originating actor's address and
- * `onBehalfOf` the principal of the action that caused the call.
+ * `onBehalfOf` the principal of the command that caused the call.
  */
 export const System = Schema.TaggedStruct("System", {
   source: Schema.Literals(["send", "timer", "cron", "job", "operator", "process"]),

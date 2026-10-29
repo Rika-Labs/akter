@@ -1,12 +1,12 @@
 import { Context, Effect, JsonPatch, Result, Schema, Stream } from "effect"
 import type { Scope } from "effect"
-import { ActionDefect, ActorError, InvalidInput } from "./errors.ts"
+import { ActorError, CommandDefect, InvalidInput } from "./errors.ts"
 import type { Args, ClientState, FindQuery, Fields, ListKeys, ListTypes } from "./context.ts"
 import type { AnyActor, Def } from "./make.ts"
 import { isList } from "./members.ts"
 import type {
-  Action,
-  Event,
+  Broadcast,
+  Command,
   List,
   MemberSchema,
   OptionalSchema,
@@ -30,13 +30,13 @@ export interface Target {
   readonly id: Schema.Json
 }
 
-/** A call to one action. */
+/** A call to one command. */
 export interface CallRequest extends Target {
   readonly member: string
   readonly payload: Schema.Json
 }
 
-/** A read of one member (a view, an event or a list). */
+/** A read of one member (a view, a broadcast or a list). */
 export interface MemberRequest extends Target {
   readonly member: string
   readonly params: Schema.Json
@@ -67,13 +67,13 @@ export interface FindRequest {
 
 /**
  * What a handle is derived from, in encoded values. The engine implements it in process; the
- * `/rpc` client implements it over the wire. A defect reaches the caller as an `ActionDefect`.
+ * `/rpc` client implements it over the wire. A defect reaches the caller as a `CommandDefect`.
  */
 export interface Transport {
   call(request: CallRequest): Effect.Effect<Reply, ActorError>
   state(request: Target): Stream.Stream<StateFrame, ActorError>
   view(request: MemberRequest): Stream.Stream<Schema.Json, ActorError>
-  event(request: MemberRequest): Stream.Stream<Schema.Json, ActorError>
+  broadcast(request: MemberRequest): Stream.Stream<Schema.Json, ActorError>
   range(request: RangeRequest): Effect.Effect<ReadonlyArray<Schema.Json>, ActorError>
   watch(request: RangeRequest): Stream.Stream<ReadonlyArray<Schema.Json>, ActorError>
   join(request: JoinRequest): Effect.Effect<void, ActorError, Scope.Scope>
@@ -85,17 +85,19 @@ export class Client extends Context.Service<Client, Transport>()(
   "@rikalabs/akter/contract/handle/Client",
 ) {}
 
-type SuccessType<A extends Action> = A["success"] extends MemberSchema ? A["success"]["Type"] : void
-type FailsType<A extends Action> = A["fails"] extends MemberSchema ? A["fails"]["Type"] : never
+type SuccessType<A extends Command> = A["success"] extends MemberSchema
+  ? A["success"]["Type"]
+  : void
+type FailsType<A extends Command> = A["fails"] extends MemberSchema ? A["fails"]["Type"] : never
 
-type PublicActions<D extends Def> = {
-  [A in keyof D["actions"]]: D["actions"][A]["internal"] extends true ? never : A
-}[keyof D["actions"]]
+type PublicCommands<D extends Def> = {
+  [A in keyof D["commands"]]: D["commands"][A]["internal"] extends true ? never : A
+}[keyof D["commands"]]
 
-type ActionMethods<D extends Def, Keys extends keyof D["actions"]> = {
+type CommandMethods<D extends Def, Keys extends keyof D["commands"]> = {
   readonly [A in Keys]: (
-    ...args: Args<D["actions"][A]["payload"]>
-  ) => Effect.Effect<SuccessType<D["actions"][A]>, FailsType<D["actions"][A]> | ActorError>
+    ...args: Args<D["commands"][A]["payload"]>
+  ) => Effect.Effect<SuccessType<D["commands"][A]>, FailsType<D["commands"][A]> | ActorError>
 }
 
 /** A list on a client handle: a one-shot window and a watched one. */
@@ -116,19 +118,25 @@ type Reads<D extends Def> = {
     ...args: Args<D["views"][V]["params"]>
   ) => Stream.Stream<D["views"][V]["success"]["Type"], ActorError>
 } & {
-  readonly [E in keyof D["events"]]: Stream.Stream<D["events"][E]["schema"]["Type"], ActorError>
+  readonly [E in keyof D["broadcasts"]]: Stream.Stream<
+    D["broadcasts"][E]["schema"]["Type"],
+    ActorError
+  >
 } & {
   readonly state: Stream.Stream<ClientState<D["state"]["fields"]>, ActorError>
 } & (D["presence"] extends MemberSchema
     ? { join(presence: D["presence"]["Type"]): Effect.Effect<void, ActorError, Scope.Scope> }
     : {})
 
-/** The client handle of one actor instance: public actions, lists, views, events, state, `join`. */
-export type Handle<Name extends string, D extends Def> = ActionMethods<D, PublicActions<D>> &
+/** The client handle of one actor instance: public commands, lists, views, broadcasts, state, `join`. */
+export type Handle<Name extends string, D extends Def> = CommandMethods<D, PublicCommands<D>> &
   Reads<D> & { readonly "~name"?: Name }
 
-/** A job's `self`: the handle with internal actions included. */
-export type SelfHandle<Name extends string, D extends Def> = ActionMethods<D, keyof D["actions"]> &
+/** A job's `self`: the handle with internal commands included. */
+export type SelfHandle<Name extends string, D extends Def> = CommandMethods<
+  D,
+  keyof D["commands"]
+> &
   Reads<D> & { readonly "~name"?: Name }
 
 /** The JSON codec of any member schema. */
@@ -182,7 +190,7 @@ export const MemberCodec = {
         onSuccess: Effect.succeed,
         onFailure: (error) =>
           Effect.die(
-            ActionDefect.make({ kind: "DecodeFailure", actor, member, detail: error.message }),
+            CommandDefect.make({ kind: "DecodeFailure", actor, member, detail: error.message }),
           ),
       })
   },
@@ -204,18 +212,18 @@ export const clientStateSchema = (actor: AnyActor): MemberSchema => {
   return schema
 }
 
-/** Derives one handle; `self` includes internal actions. A new owner's full state frame resets its version clock before schema-equivalent values are suppressed. */
+/** Derives one handle; `self` includes internal commands. A new owner's full state frame resets its version clock before schema-equivalent values are suppressed. */
 const derive = <H>(target: Target & { readonly self: boolean }, transport: Transport): H => {
   const { actor, id } = target
   const handle = new Map<
     string,
     Function | Stream.Stream<MemberSchema["Type"], ActorError> | object
   >()
-  const actions: Record<string, Action> = actor.actions
+  const commands: Record<string, Command> = actor.commands
   const fields: Fields = actor.state.fields
   const views: Record<string, View> = actor.views
-  const events: Record<string, Event> = actor.events
-  for (const [member, declaration] of Object.entries(actions)) {
+  const broadcasts: Record<string, Broadcast> = actor.broadcasts
+  for (const [member, declaration] of Object.entries(commands)) {
     if (declaration.internal && !target.self) continue
     const encode = MemberCodec.encode(declaration.payload)
     const decodeSuccess = MemberCodec.decode(declaration.success, actor.name, member)
@@ -263,11 +271,11 @@ const derive = <H>(target: Target & { readonly self: boolean }, transport: Trans
       ),
     )
   }
-  for (const [member, declaration] of Object.entries(events)) {
+  for (const [member, declaration] of Object.entries(broadcasts)) {
     const decode = MemberCodec.decode(declaration.schema, actor.name, member)
     handle.set(
       member,
-      transport.event({ actor, id, member, params: null }).pipe(Stream.mapEffect(decode)),
+      transport.broadcast({ actor, id, member, params: null }).pipe(Stream.mapEffect(decode)),
     )
   }
   const decodeState = MemberCodec.decode(clientStateSchema(actor), actor.name, "state")

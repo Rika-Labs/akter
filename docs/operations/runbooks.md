@@ -32,10 +32,10 @@ Run the matching retained build first. Replaying with the current build needs ex
 
 Keep the runtime scope alive until the bounded drain prints `DRAINED`, and keep each shard's offset and `nextDue`. A timed-out drain is not a clean handoff. Restart a stopped store when its work is due.
 
-## A job failed, or a sent action was rejected
+## A job failed, or a sent command was rejected
 
 Inspect the job's attempts and its `onFailure` result with scoped authority. Do not repeat completed steps to repair state.
 
-A sent action that the target rejects is recorded at the target and counted in telemetry. There is no dead letter and no reply to the sender. Reconcile ambiguous external I/O with the provider's idempotency record.
+A sent command that the target rejects is recorded at the target and counted in telemetry. There is no dead letter and no reply to the sender. Reconcile ambiguous external I/O with the provider's idempotency record.
 
 See the [CLI reference](../api/06-cli.md) for the operator commands and the [support matrix](./support-matrix.md) for what these procedures have been tested against.

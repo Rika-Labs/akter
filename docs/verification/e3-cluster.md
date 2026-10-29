@@ -9,7 +9,7 @@
 
 `runtime/sharding.ts` adapts public Effect Cluster APIs to the engine. Bucket-backed `RunnerStorage.makeEncoded` observes heartbeat ETags; Cluster computes assignments with `HashRing`. Only a new acquisition invokes `engine.assign`, while lost locks unassign the shard. Orderly release checkpoints and appends `Released` before advisory release. The create-once log chain remains the only write authority.
 
-Peer shard entities carry actions and reads over the kept TLS 1.3 transport with the authenticated caller in an envelope header. Client command ids and send stream sequences remain unchanged by retries. A peer effect request has a ten-second default bound; an owner move ends a live read so the client reconnects from a fresh full frame. Engine publication still follows the durable prefix.
+Peer shard entities carry commands and reads over the kept TLS 1.3 transport with the authenticated caller in an envelope header. Client command ids and send stream sequences remain unchanged by retries. A peer effect request has a ten-second default bound; an owner move ends a live read so the client reconnects from a fresh full frame. Engine publication still follows the durable prefix.
 
 The seeded simulator uses one root fiber per run, the seeded scheduler and TestClock over a fault-injected bucket. It now supports independent shard assignments and routes sends to each shard's current owner. It models assignment explicitly; it is **not** real socket/Cluster membership evidence. Real mTLS tests and several MinIO runner processes establish those boundaries separately. No R2 or Tigris result is inferred from MinIO.
 
@@ -30,14 +30,14 @@ Promotion of the release-to-store peering boundary still requires the captain's 
 
 `runtime/cluster-process.test.ts` runs independent Bun or Node processes with real bucket operations and the real mTLS transport. Its seven scenarios cover the following failure boundaries and the T6 measurement:
 
-- F13 kills the sender after a durable send during a receiver partition, reopens on another runner and restarts the receiver; exactly one receiver action and one delivery acknowledgement remain.
+- F13 kills the sender after a durable send during a receiver partition, reopens on another runner and restarts the receiver; exactly one receiver command and one delivery acknowledgement remain.
 - F14/F27 kills a timer owner, preserves the original due instant and fires each timer once after takeover. It then stops every process with another pending timer, retains its `nextDue` in the drain report and fires once when a later process reopens the store.
 - F15 restarts owners over New York's spring gap and autumn fold. Only wall instants are injected; the bucket, transport and processes remain real. The spring tick fires at the first instant after the gap and the autumn tick only at its first occurrence.
 - F16 drops a durable reply and partitions a peer. Same-id retry receives the original outcome from its owner, while the partition returns a bounded retryable failure.
 - F24 stops the old release before drain, verifies the new release is still standby, then uses SIGTERM. Readiness falls before checkpointing, the host emits its drain report, and new-build ownership follows durable `Released` entries.
 - F17′/F27 jobs kills the job owner after a remote actor effect but before reply journaling. Replay preserves the outcome, a durable workflow deadline survives another drain and a no-runner interval, and completion retires both call streams. A second job runs across two live peers and cannot retire locally only. The split-owner simulator separately moves both job and receiver shards and checks exactly two actor calls, one completion and two receiver retirements.
 
-The T6 scenario writes 10,000 actions, measures clean handoff and crash takeover with `short: false` (the actual runner defaults), and measures replay of the checkpoint tail. The following historical run used the old defaults; neither move met five seconds, while tail replay met one second. These numbers are a baseline, not evidence for the current three-second expiration and 250-millisecond refresh.
+The T6 scenario writes 10,000 commands, measures clean handoff and crash takeover with `short: false` (the actual runner defaults), and measures replay of the checkpoint tail. The following historical run used the old defaults; neither move met five seconds, while tail replay met one second. These numbers are a baseline, not evidence for the current three-second expiration and 250-millisecond refresh.
 
 Receiver retirement first crosses the engine's recovered-image and lease-validity read barrier. It never treats an unopened shard as a receiver stream. The first full MinIO run exposed an extra retirement on an unopened empty shard; the engine barrier fixes that cause without weakening the exact retirement assertions.
 

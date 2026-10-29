@@ -1,15 +1,15 @@
 ---
-title: "Actions and jobs"
-description: "Keep actions synchronous and deterministic, and put I/O in journaled jobs."
+title: "Commands and jobs"
+description: "Keep commands synchronous and deterministic, and put I/O in journaled jobs."
 ---
 
-# Actions and jobs
+# Commands and jobs
 
-An action changes a copy of an actor's state and stages what should happen next. A job is an Effect that performs I/O after its start is durable. Use actions for decisions and jobs for anything that talks to the outside world.
+A command changes a copy of an actor's state and stages what should happen next. A job is an Effect that performs I/O after its start is durable. Use commands for decisions and jobs for anything that talks to the outside world.
 
-## A failed action changes nothing
+## A failed command changes nothing
 
-An action can declare a failure. Returning that failure discards the draft and everything the action staged.
+A command can declare a failure. Returning that failure discards the draft and everything the command staged.
 
 ```ts
 import { Effect, Schema } from "effect"
@@ -21,8 +21,8 @@ const Counter = Actor.make("Counter", {
   state: Schema.Struct({
     count: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
-  actions: {
-    add: Actor.action(Schema.Number, { success: Schema.Number, fails: TooLarge }),
+  commands: {
+    add: Actor.command(Schema.Number, { success: Schema.Number, fails: TooLarge }),
   },
 })
 
@@ -35,13 +35,13 @@ const CounterLive = Counter.toLayer({
 })
 ```
 
-When `add` returns `TooLarge`, `count` keeps its old value, and any sends, timers, job starts, and events staged by that call are dropped. The same happens when an action throws, exceeds the state size limit, or loses its write. The recorded outcome is the only trace of a failed action.
+When `add` returns `TooLarge`, `count` keeps its old value, and any sends, timers, job starts, and broadcasts staged by that call are dropped. The same happens when a command throws, exceeds the state size limit, or loses its write. The recorded outcome is the only trace of a failed command.
 
-An action that returns a Promise or an Effect is a defect, not a success.
+A command that returns a Promise or an Effect is a defect, not a success.
 
 ## Deterministic inputs
 
-Actions are replayed during recovery, so they must not read the outside world. Take these from the action context instead:
+Commands are replayed during recovery, so they must not read the outside world. Take these from the command context instead:
 
 | Need             | Use            |
 | ---------------- | -------------- |
@@ -53,7 +53,7 @@ The log records these values for replay. Views follow the same rule: they read d
 
 ## Run I/O in a job
 
-Declare a job with `Actor.job`, start it from an action, and implement it in the same `toLayer`. This example confirms an order by email:
+Declare a job with `Actor.job`, start it from a command, and implement it in the same `toLayer`. This example confirms an order by email:
 
 ```ts
 import { Context, Effect, Schema } from "effect"
@@ -68,10 +68,10 @@ const Order = Actor.make("Order", {
   state: Schema.Struct({
     status: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed("new"))),
   }),
-  actions: {
-    place: Actor.action(Schema.String),
-    confirmed: Actor.action({ internal: true }),
-    failed: Actor.action(Actor.JobFailure, { internal: true }),
+  commands: {
+    place: Actor.command(Schema.String),
+    confirmed: Actor.command({ internal: true }),
+    failed: Actor.command(Actor.JobFailure, { internal: true }),
   },
   jobs: {
     confirm: Actor.job({
@@ -106,17 +106,17 @@ const OrderLive = Order.toLayer({
 })
 ```
 
-- `ctx.start.confirm(email)` stages the job. It starts only after the action's segment is durable.
+- `ctx.start.confirm(email)` stages the job. It starts only after the command's segment is durable.
 - `step(name, effect)` journals the result. A completed step never runs again, even if a later step causes a retry.
-- `onFailure` names an internal action that takes `Actor.JobFailure`. It runs once when retries are spent.
-- Internal actions are not on the client handle or `/rpc`; only the engine reaches them.
+- `onFailure` names an internal command that takes `Actor.JobFailure`. It runs once when retries are spent.
+- Internal commands are not on the client handle or `/rpc`; only the engine reaches them.
 
 <Warning>
-A failed or interrupted step may already have reached its provider. Pass an idempotency key, such as `id()` inside the step, and put job-to-actor calls that must not repeat inside a step or make the receiving action idempotent.
+A failed or interrupted step may already have reached its provider. Pass an idempotency key, such as `id()` inside the step, and put job-to-actor calls that must not repeat inside a step or make the receiving command idempotent.
 </Warning>
 
-## Job events
+## Job broadcasts
 
-Events emitted by an action are published after the action is durable. Events emitted by a job are published immediately and can repeat after a retry. Neither is retained, so save final results through an action.
+Broadcasts sent by a command are published after the command is durable. Broadcasts sent by a job are published immediately and can repeat after a retry. Neither is retained, so save final results through a command.
 
 See [Jobs](../api/jobs.md) for retries, durable sleep, and failure delivery, and the [background-work contract](https://github.com/Rika-Labs/akter/blob/main/docs/contracts/08-background-work.md) for the guarantees.

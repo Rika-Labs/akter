@@ -10,7 +10,7 @@ import { Store, storeOf } from "../store/service.ts"
 
 const Counter = Actor.make("Counter", {
   state: Schema.Struct({ count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
-  actions: { add: Actor.action(Schema.Int, { success: Schema.Int }) },
+  commands: { add: Actor.command(Schema.Int, { success: Schema.Int }) },
 })
 
 const CounterLive = Counter.toLayer({

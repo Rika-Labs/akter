@@ -10,7 +10,7 @@ const Counter = Actor.make("Counter", {
   state: Schema.Struct({
     count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
-  actions: { add: Actor.action(Schema.Finite, { success: Schema.Finite }) },
+  commands: { add: Actor.command(Schema.Finite, { success: Schema.Finite }) },
   views: { count: Actor.view(Schema.Finite) },
   access: isUser,
 })

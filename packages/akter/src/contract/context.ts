@@ -3,8 +3,8 @@ import type { Caller, System } from "./caller.ts"
 import type { SelfHandle } from "./handle.ts"
 import type { Actor, AnyActor, Def, DefOf } from "./make.ts"
 import type {
-  Action,
-  Event,
+  Broadcast,
+  Command,
   Job,
   List,
   ListDraft,
@@ -57,7 +57,7 @@ type ReadField<S> = S extends List
     : never
 
 /**
- * The state an action handler changes: deep-mutable fields, each list as its draft API.
+ * The state a command handler changes: deep-mutable fields, each list as its draft API.
  * `Schema.optional` fields are optional keys, so `delete draft.field` compiles for them only.
  */
 export type Draft<F extends Fields> = {
@@ -79,10 +79,10 @@ export type FullState<F extends Fields> = ClientState<F> & {
   readonly [K in ListKeys<F>]: F[K] extends List ? ReadonlyArray<ItemOf<F[K]>> : never
 }
 
-/** The staged-call surface of `send` and `schedule`: one method per target action, fire-and-forget. */
+/** The staged-call surface of `send` and `schedule`: one method per target command, fire-and-forget. */
 export type Sender<X> = {
-  readonly [A in keyof DefOf<X>["actions"]]: (
-    ...args: Args<DefOf<X>["actions"][A]["payload"]>
+  readonly [A in keyof DefOf<X>["commands"]]: (
+    ...args: Args<DefOf<X>["commands"][A]["payload"]>
   ) => void
 }
 
@@ -93,21 +93,21 @@ export type Starters<J extends Record<string, Job>> = {
   ) => void
 }
 
-/** `ctx.emit` in actions: stages an event for publication after durability. */
-export type Emitters<E extends Record<string, Event>> = {
+/** `ctx.broadcast` in commands: stages a broadcast for publication after durability. */
+export type Broadcasters<E extends Record<string, Broadcast>> = {
   readonly [K in keyof E]: (value: E[K]["schema"]["Type"]) => void
 }
 
-/** `emit` in jobs: publishes at once. */
-export type JobEmitters<E extends Record<string, Event>> = {
+/** `broadcast` in jobs: publishes at once. */
+export type JobBroadcasters<E extends Record<string, Broadcast>> = {
   readonly [K in keyof E]: (value: E[K]["schema"]["Type"]) => Effect.Effect<void>
 }
 
-/** When a scheduled action runs: after a delay, or at an epoch-millisecond instant. */
+/** When a scheduled command runs: after a delay, or at an epoch-millisecond instant. */
 export type When = Duration.Input | { readonly at: number }
 
-/** The capabilities of an action handler; nothing else is reachable from an action. */
-export interface ActionContext<Name extends string, D extends Def, C extends Caller> {
+/** The capabilities of a command handler; nothing else is reachable from a command. */
+export interface CommandContext<Name extends string, D extends Def, C extends Caller> {
   readonly caller: C
   readonly self: D["key"]["Type"]
   readonly id: () => string
@@ -116,11 +116,11 @@ export interface ActionContext<Name extends string, D extends Def, C extends Cal
   readonly send: <X extends AnyActor>(target: X, id: DefOf<X>["key"]["Type"]) => Sender<X>
   readonly schedule: (when: When) => Sender<Actor<Name, D>>
   readonly start: Starters<D["jobs"]>
-  readonly emit: Emitters<D["events"]>
+  readonly broadcast: Broadcasters<D["broadcasts"]>
 }
 
-/** The context of `connect` and `disconnect`: an action context with the connection id. */
-export interface PresenceContext<Name extends string, D extends Def> extends ActionContext<
+/** The context of `connect` and `disconnect`: a command context with the connection id. */
+export interface PresenceContext<Name extends string, D extends Def> extends CommandContext<
   Name,
   D,
   D["caller"] | System
@@ -155,28 +155,28 @@ export interface JobContext<Name extends string, D extends Def> {
   readonly self: SelfHandle<Name, D>
   readonly id: () => string
   readonly attempt: number
-  readonly emit: JobEmitters<D["events"]>
+  readonly broadcast: JobBroadcasters<D["broadcasts"]>
   readonly step: Step
 }
 
-type SuccessType<A extends Action> = A["success"] extends Schema.Top
+type SuccessType<A extends Command> = A["success"] extends Schema.Top
   ? A["success"]["Type"]
   : undefined
-type FailsType<A extends Action> = A["fails"] extends Schema.Top ? A["fails"]["Type"] : never
+type FailsType<A extends Command> = A["fails"] extends Schema.Top ? A["fails"]["Type"] : never
 
-/** The caller an action handler sees: internal actions are reached by the engine only. */
-export type CallerFor<D extends Def, A extends Action> = A["internal"] extends true
+/** The caller a command handler sees: internal commands are reached by the engine only. */
+export type CallerFor<D extends Def, A extends Command> = A["internal"] extends true
   ? System
   : D["caller"] | System
 
 /**
- * An action handler: synchronous, over a copy-on-write draft. Returning the declared failure
+ * A command handler: synchronous, over a copy-on-write draft. Returning the declared failure
  * discards the draft and every staged effect; returning a value is the reply.
  */
-export type ActionHandler<Name extends string, D extends Def, A extends Action> = (
+export type CommandHandler<Name extends string, D extends Def, A extends Command> = (
   draft: Draft<D["state"]["fields"]>,
   payload: PayloadOf<A["payload"]>,
-  ctx: ActionContext<Name, D, CallerFor<D, A>>,
+  ctx: CommandContext<Name, D, CallerFor<D, A>>,
 ) => SuccessType<A> | FailsType<A>
 
 /** A view handler: a pure, synchronous function of durable state and its parameters. */
@@ -192,16 +192,16 @@ export type JobHandler<Name extends string, D extends Def, J extends Job> = (
   ctx: JobContext<Name, D>,
 ) => Effect.Effect<unknown, unknown, any>
 
-/** `connect` or `disconnect`: an action over the draft receiving the presence value. */
+/** `connect` or `disconnect`: a command over the draft receiving the presence value. */
 export type PresenceHandler<Name extends string, D extends Def> = (
   draft: Draft<D["state"]["fields"]>,
   presence: PayloadOf<D["presence"]>,
   ctx: PresenceContext<Name, D>,
 ) => undefined
 
-/** Every handler `X.toLayer` takes: actions, views, jobs and, with presence, `connect`/`disconnect`. */
+/** Every handler `X.toLayer` takes: commands, views, jobs and, with presence, `connect`/`disconnect`. */
 export type Handlers<Name extends string, D extends Def> = {
-  readonly [A in keyof D["actions"]]: ActionHandler<Name, D, D["actions"][A]>
+  readonly [A in keyof D["commands"]]: CommandHandler<Name, D, D["commands"][A]>
 } & { readonly [V in keyof D["views"]]: ViewHandler<D, D["views"][V]> } & {
   readonly [J in keyof D["jobs"]]: JobHandler<Name, D, D["jobs"][J]>
 } & (D["presence"] extends Schema.Top

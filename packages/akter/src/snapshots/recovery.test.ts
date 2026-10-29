@@ -16,12 +16,12 @@ const Tally = Actor.make("Tally", {
     total: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
     notes: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   }),
-  actions: {
-    add: Actor.action(Schema.Finite, { success: Schema.Finite }),
-    remind: Actor.action(Schema.String),
-    note: Actor.action(Schema.String, { internal: true }),
-    forward: Actor.action(Schema.Struct({ to: Schema.String, amount: Schema.Finite })),
-    tick: Actor.action({ cron: "0 0 * * *" }),
+  commands: {
+    add: Actor.command(Schema.Finite, { success: Schema.Finite }),
+    remind: Actor.command(Schema.String),
+    note: Actor.command(Schema.String, { internal: true }),
+    forward: Actor.command(Schema.Struct({ to: Schema.String, amount: Schema.Finite })),
+    tick: Actor.command({ cron: "0 0 * * *" }),
   },
 })
 

@@ -10,13 +10,13 @@ export const Ledger = Actor.make("ProcessLedger", {
     total: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
     deliveries: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
-  actions: {
-    add: Actor.action(Schema.Finite, { success: Schema.Finite }),
-    send: Actor.action(Schema.Struct({ to: Schema.String, amount: Schema.Finite })),
-    receive: Actor.action(Schema.Finite, { internal: true }),
-    remind: Actor.action(Schema.Struct({ at: Schema.Finite, amount: Schema.Finite })),
-    submit: Actor.action(Work),
-    rejected: Actor.action(JobFailure, { internal: true }),
+  commands: {
+    add: Actor.command(Schema.Finite, { success: Schema.Finite }),
+    send: Actor.command(Schema.Struct({ to: Schema.String, amount: Schema.Finite })),
+    receive: Actor.command(Schema.Finite, { internal: true }),
+    remind: Actor.command(Schema.Struct({ at: Schema.Finite, amount: Schema.Finite })),
+    submit: Actor.command(Work),
+    rejected: Actor.command(JobFailure, { internal: true }),
   },
   jobs: { work: Actor.job({ payload: Work, onFailure: "rejected" }) },
 })
@@ -52,17 +52,17 @@ export const LedgerLive = Ledger.toLayer({
 /** Each transition has an independently named actor and one persisted pending cron tick. */
 export const Spring = Actor.make("ProcessSpring", {
   state: Schema.Struct({ ticks: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
-  actions: {
-    touch: Actor.action(),
-    tick: Actor.action({ cron: "CRON_TZ=America/New_York 30 2 * * *" }),
+  commands: {
+    touch: Actor.command(),
+    tick: Actor.command({ cron: "CRON_TZ=America/New_York 30 2 * * *" }),
   },
 })
 
 export const Autumn = Actor.make("ProcessAutumn", {
   state: Schema.Struct({ ticks: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
-  actions: {
-    touch: Actor.action(),
-    tick: Actor.action({ cron: "CRON_TZ=America/New_York 30 1 * * *" }),
+  commands: {
+    touch: Actor.command(),
+    tick: Actor.command({ cron: "CRON_TZ=America/New_York 30 1 * * *" }),
   },
 })
 

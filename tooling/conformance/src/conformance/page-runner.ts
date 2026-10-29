@@ -13,15 +13,15 @@ export const Library = Actor.make("Library", {
     text: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
     items: Actor.list(Item, { key: "id", by: "at" }),
   }),
-  actions: {
-    fill: Actor.action(Schema.Int),
-    change: Actor.action(Schema.Int, { success: Schema.Int }),
-    grow: Actor.action(Schema.Int),
-    remember: Actor.action(Schema.Int),
-    note: Actor.action(Schema.Int, { internal: true }),
-    failed: Actor.action({ internal: true }),
+  commands: {
+    fill: Actor.command(Schema.Int),
+    change: Actor.command(Schema.Int, { success: Schema.Int }),
+    grow: Actor.command(Schema.Int),
+    remember: Actor.command(Schema.Int),
+    note: Actor.command(Schema.Int, { internal: true }),
+    failed: Actor.command({ internal: true }),
   },
-  events: { changed: Actor.event(Schema.Int) },
+  broadcasts: { changed: Actor.broadcast(Schema.Int) },
 })
 
 export const LibraryLive = Library.toLayer({
@@ -30,20 +30,20 @@ export const LibraryLive = Library.toLayer({
       state.items.put({ id, at: count - id, text: `${id}:` + "x".repeat(1100) })
     state.count = count
   },
-  change: (state, id, { id: fresh, random, emit }) => {
+  change: (state, id, { id: fresh, random, broadcast }) => {
     fresh()
     random()
     state.count += 1
-    emit.changed(state.count)
+    broadcast.changed(state.count)
     const old = state.items.get(id)
     if (old !== undefined) state.items.put({ ...old, at: -7, text: "changed" })
     return state.count
   },
-  grow: (state, size, { schedule, emit }) => {
+  grow: (state, size, { schedule, broadcast }) => {
     state.count += 17
     state.text = "g".repeat(size)
     schedule("1 day").note(19)
-    emit.changed(99)
+    broadcast.changed(99)
   },
   remember: (_, amount, { schedule }) => {
     schedule("1 day").note(amount)

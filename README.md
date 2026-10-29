@@ -1,10 +1,10 @@
 # Akter
 
-Akter is a typed framework for durable actors, deterministic actions, journaled Effect jobs, and realtime state. Version 0.2 runs the framework on one S3-compatible store per environment; local development uses a filesystem store.
+Akter is a typed framework for durable actors, deterministic commands, journaled Effect jobs, and realtime state. Version 0.2 runs the framework on one S3-compatible store per environment; local development uses a filesystem store.
 
 ## The model
 
-An actor owns schema state and optional page-backed lists. Its actions are synchronous copy-on-write functions. A declared failure, defect, or lost segment discards the draft and every staged consequence. An action that touches a list page not in memory is rerun after the page loads; discarding everything the stopped run staged is the contract's target and is not yet covered by a test. The runner publishes a reply, send, timer, job start, or event only after the shard's create-once segment is durable.
+An actor owns schema state and optional page-backed lists. Its commands are synchronous copy-on-write functions. A declared failure, defect, or lost segment discards the draft and every staged consequence. A command that touches a list page not in memory is rerun after the page loads; discarding everything the stopped run staged is the contract's target and is not yet covered by a test. The runner publishes a reply, send, timer, job start, or broadcast only after the shard's create-once segment is durable.
 
 External I/O belongs in jobs. Named `step` results never rerun after they are durable; ambiguous provider effects still require provider idempotency keys.
 
@@ -16,8 +16,8 @@ export const Counter = Actor.make("Counter", {
   state: Schema.Struct({
     count: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
-  actions: {
-    add: Actor.action(Schema.Number, { success: Schema.Number }),
+  commands: {
+    add: Actor.command(Schema.Number, { success: Schema.Number }),
   },
 })
 
@@ -53,7 +53,7 @@ bunx akter deploy --project PROJECT_ID --env production
 
 ## What this repository contains
 
-- Contracts and implementation for actor state, lists, synchronous actions, jobs, timers, views, events, presence, and the Effect client; [milestone evidence](docs/operations/support-matrix.md) bounds which guarantees have landed.
+- Contracts and implementation for actor state, lists, synchronous commands, jobs, timers, views, broadcasts, presence, and the Effect client; [milestone evidence](docs/operations/support-matrix.md) bounds which guarantees have landed.
 - Store protocol adapters for S3-compatible buckets, local filesystem development, and non-durable memory tests.
 - Seeded `Simulation`, local MinIO integration evidence, and CLI `storage check`; local evidence does not certify R2, Tigris, AWS S3, or another provider.
 - Cloud client commands and the public cloud API contract; hosted edge, control plane, billing, and rollout orchestration live in a private repository.
@@ -62,7 +62,7 @@ bunx akter deploy --project PROJECT_ID --env production
 
 - [Quickstart](docs/quickstart.md)
 - [Concepts](docs/guides/concepts.md)
-- [Actions and jobs](docs/guides/actions-and-jobs.md)
+- [Commands and jobs](docs/guides/actions-and-jobs.md)
 - [API reference](docs/api/README.md)
 - [Architecture](docs/architecture/README.md)
 - [Operations](docs/operations/README.md)

@@ -33,22 +33,22 @@ const Account = Actor.make("Account", {
     settled: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
     refunded: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
-  actions: {
-    deposit: Actor.action(Schema.Finite),
-    freeze: Actor.action(),
-    transfer: Actor.action(Schema.Struct({ to: Schema.String, amount: Schema.Finite }), {
+  commands: {
+    deposit: Actor.command(Schema.Finite),
+    freeze: Actor.command(),
+    transfer: Actor.command(Schema.Struct({ to: Schema.String, amount: Schema.Finite }), {
       success: Schema.String,
       fails: InsufficientFunds,
     }),
-    credit: Actor.action(
+    credit: Actor.command(
       Schema.Struct({ transferId: Schema.String, from: Schema.String, amount: Schema.Finite }),
       {
         fails: Frozen,
         internal: true,
       },
     ),
-    settle: Actor.action(Schema.String, { internal: true }),
-    expire: Actor.action(Schema.String, { internal: true }),
+    settle: Actor.command(Schema.String, { internal: true }),
+    expire: Actor.command(Schema.String, { internal: true }),
   },
 })
 
@@ -101,12 +101,12 @@ const Outbox = Actor.make("Outbox", {
     dead: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
     pending: Actor.list(Envelope, { key: "id", by: "at" }),
   }),
-  actions: {
-    enqueue: Actor.action(Schema.Struct({ to: Schema.String, body: Schema.String }), {
+  commands: {
+    enqueue: Actor.command(Schema.Struct({ to: Schema.String, body: Schema.String }), {
       success: Schema.String,
     }),
-    delivered: Actor.action(Schema.String, { internal: true }),
-    deadLetter: Actor.action(JobFailure, { internal: true }),
+    delivered: Actor.command(Schema.String, { internal: true }),
+    deadLetter: Actor.command(JobFailure, { internal: true }),
   },
   jobs: {
     deliver: Actor.job({
@@ -211,14 +211,14 @@ const Agent = Actor.make("Agent", {
     turns: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
     transcript: Actor.list(Turn, { key: "id", by: "at" }),
   }),
-  actions: {
-    ask: Actor.action(Schema.String, { fails: Busy, success: Schema.String }),
-    answer: Actor.action(Schema.Struct({ askId: Schema.String, text: Schema.String }), {
+  commands: {
+    ask: Actor.command(Schema.String, { fails: Busy, success: Schema.String }),
+    answer: Actor.command(Schema.Struct({ askId: Schema.String, text: Schema.String }), {
       internal: true,
     }),
-    failed: Actor.action(JobFailure, { internal: true }),
+    failed: Actor.command(JobFailure, { internal: true }),
   },
-  events: { token: Actor.event(Schema.String) },
+  broadcasts: { token: Actor.broadcast(Schema.String) },
   jobs: {
     generate: Actor.job({
       payload: Schema.Struct({ askId: Schema.String, prompt: Schema.String }),
@@ -258,13 +258,13 @@ const AgentLive = Agent.toLayer({
   failed: (agent) => {
     agent.status = "failed"
   },
-  generate: ({ askId, prompt }, { self, step, emit }) =>
+  generate: ({ askId, prompt }, { self, step, broadcast }) =>
     Effect.gen(function* () {
       const model = yield* Model
       const text = yield* step(
         "complete",
         model.stream(prompt).pipe(
-          Stream.tap((token) => emit.token(token)),
+          Stream.tap((token) => broadcast.token(token)),
           Stream.runFold(
             () => "",
             (text, token) => text + token,
@@ -328,18 +328,18 @@ const Room = Actor.make("Room", {
     topic: Schema.optional(Schema.String),
     messages: Actor.list(Message, { key: "id", by: "at" }),
   }),
-  actions: {
-    claim: Actor.action(),
-    post: Actor.action(Schema.String),
-    rename: Actor.action(Schema.String, { fails: Forbidden }),
-    setTopic: Actor.action(Schema.optional(Schema.String)),
-    count: Actor.action({ success: Schema.Finite }),
-    startTyping: Actor.action(),
-    prune: Actor.action({ cron: "0 3 * * *" }),
-    notifyFailed: Actor.action(JobFailure, { internal: true }),
+  commands: {
+    claim: Actor.command(),
+    post: Actor.command(Schema.String),
+    rename: Actor.command(Schema.String, { fails: Forbidden }),
+    setTopic: Actor.command(Schema.optional(Schema.String)),
+    count: Actor.command({ success: Schema.Finite }),
+    startTyping: Actor.command(),
+    prune: Actor.command({ cron: "0 3 * * *" }),
+    notifyFailed: Actor.command(JobFailure, { internal: true }),
   },
   views: { summary: Actor.view(Summary) },
-  events: { typing: Actor.event(Schema.String) },
+  broadcasts: { typing: Actor.broadcast(Schema.String) },
   jobs: {
     notify: Actor.job({
       payload: Email,
@@ -382,8 +382,8 @@ const RoomLive = Room.toLayer({
     else room.topic = topic
   },
   count: (room) => Object.keys(room.online).length,
-  startTyping: (_, __, { caller, emit }) => {
-    emit.typing(caller.subject)
+  startTyping: (_, __, { caller, broadcast }) => {
+    broadcast.typing(caller.subject)
   },
   prune: (room, _, { now }) => {
     room.messages.deleteBefore(now() - 30 * 86_400_000)
@@ -604,7 +604,7 @@ describe("Simulation examples", () => {
 
 const Counter = Actor.make("Counter", {
   state: Schema.Struct({ n: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
-  actions: { bump: Actor.action() },
+  commands: { bump: Actor.command() },
 })
 
 const bumpOnce = (seed: number, handlers: Parameters<typeof Counter.toLayer>[0]) =>
@@ -669,12 +669,12 @@ const Ledger = Actor.make("Ledger", {
     received: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
     audits: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
-  actions: {
-    transfer: Actor.action(Schema.Struct({ to: Schema.String, amount: Schema.Finite }), {
+  commands: {
+    transfer: Actor.command(Schema.Struct({ to: Schema.String, amount: Schema.Finite }), {
       fails: InsufficientFunds,
     }),
-    credit: Actor.action(Schema.Finite, { internal: true }),
-    audit: Actor.action({ internal: true }),
+    credit: Actor.command(Schema.Finite, { internal: true }),
+    audit: Actor.command({ internal: true }),
   },
 })
 

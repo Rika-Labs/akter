@@ -14,11 +14,11 @@ const Probe = Actor.make("Probe", {
     n: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
     text: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   }),
-  actions: {
-    touch: Actor.action(Schema.Finite, { fails: Refused, success: Schema.String }),
-    sink: Actor.action(Schema.Finite, { internal: true }),
+  commands: {
+    touch: Actor.command(Schema.Finite, { fails: Refused, success: Schema.String }),
+    sink: Actor.command(Schema.Finite, { internal: true }),
   },
-  events: { touched: Actor.event(Schema.Finite) },
+  broadcasts: { touched: Actor.broadcast(Schema.Finite) },
 })
 
 const initial = Layouts.of(Probe).initial
@@ -30,7 +30,7 @@ const run = (
   Actions.run({
     actor: Probe,
     handler,
-    declaration: Probe.actions.touch,
+    declaration: Probe.commands.touch,
     image: initial,
     commandId,
     member: "touch",
@@ -45,7 +45,7 @@ const run = (
 interface ProbeContext {
   readonly send: (target: typeof Probe, id: string) => { readonly sink: (payload: number) => void }
   readonly schedule: (when: string) => { readonly sink: (payload: number) => void }
-  readonly emit: { readonly touched: (value: number) => void }
+  readonly broadcast: { readonly touched: (value: number) => void }
   readonly id: () => string
   readonly now: () => number
   readonly random: () => number
@@ -63,7 +63,7 @@ const busyThen =
     state.n += amount
     ctx.send(Probe, "other").sink(amount)
     ctx.schedule("1 minute").sink(amount)
-    ctx.emit.touched(amount)
+    ctx.broadcast.touched(amount)
     return end()
   }
 

@@ -1,6 +1,6 @@
 ---
 title: "Concepts"
-description: "How actors, deterministic actions, durable segments, jobs, and live clients fit together."
+description: "How actors, deterministic commands, durable segments, jobs, and live clients fit together."
 ---
 
 # Concepts
@@ -11,17 +11,17 @@ This page explains the ideas behind Akter. Read it once, then use the [Quickstar
 
 ## Actors and state
 
-An actor owns schema-defined state and pending work at an address: its type and an id. `Actor.make` requires `state` and `actions`; views, events, jobs, lists, and presence are optional.
+An actor owns schema-defined state and pending work at an address: its type and an id. `Actor.make` requires `state` and `commands`; views, broadcasts, jobs, lists, and presence are optional.
 
 State decodes from `{}`, so fields need defaults or must be optional. Non-list state is limited to 256 KiB. For data that grows without bound, use `Actor.list`, which stores items in separate pages. See [Lists and find](../api/lists-and-find.md).
 
-## Actions
+## Commands
 
-An action is a synchronous function that edits a copy of the state. It can stage sends, timers, job starts, and events, but it cannot do I/O. If it returns its declared failure, throws, or loses its write, the whole draft and everything it staged are discarded. See [Actions and jobs](./actions-and-jobs.md), or the [actions contract](../contracts/02-actions.md) for the exact rules.
+A command is a synchronous function that edits a copy of the state. It can stage sends, timers, job starts, and broadcasts, but it cannot do I/O. If it returns its declared failure, throws, or loses its write, the whole draft and everything it staged are discarded. See [Commands and jobs](./actions-and-jobs.md), or the [commands contract](../contracts/02-actions.md) for the exact rules.
 
 ## Durability
 
-Each shard has one owner. The owner groups actions into create-once segments in the store. A reply, event, send, or job start is published only after its segment is durable.
+Each shard has one owner. The owner groups commands into create-once segments in the store. A reply, broadcast, send, or job start is published only after its segment is durable.
 
 A new segment chain starts a new epoch for the shard, and a writer from an older epoch is rejected. Lease objects and process memory are never write authority.
 
@@ -33,11 +33,11 @@ The client generates a command id for each call and keeps it across retries for 
 
 A job is an Effect that runs after its start is durable. It is the only place for I/O. Each `step` result is journaled, so a completed step never runs again. An interrupted external call may still have reached its provider, so use provider idempotency keys.
 
-An action can `schedule` a call to its own actor or `send` one to another actor. Both are fire-and-forget. An action declared with `cron` runs on a schedule.
+A command can `schedule` a call to its own actor or `send` one to another actor. Both are fire-and-forget. A command declared with `cron` runs on a schedule.
 
 ## Reads and realtime
 
-`X.client(id)` gives a typed handle: actions are Effects, and `state`, views, list watches, and events are Streams. Presence uses a scoped `join`. Events are not stored, so a client that was not subscribed does not receive them later.
+`X.client(id)` gives a typed handle: commands are Effects, and `state`, views, list watches, and broadcasts are Streams. Presence uses a scoped `join`. Broadcasts are not stored, so a client that was not subscribed does not receive them later.
 
 `X.find` returns actor ids filtered by top-level scalar state fields. It is not a cross-shard snapshot.
 

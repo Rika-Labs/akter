@@ -32,8 +32,8 @@ export const Counter = Actor.make("Counter", {
   state: Schema.Struct({
     count: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
-  actions: {
-    add: Actor.action(Schema.Number, { success: Schema.Number }),
+  commands: {
+    add: Actor.command(Schema.Number, { success: Schema.Number }),
   },
 })
 
@@ -45,7 +45,7 @@ export const CounterLive = Counter.toLayer({
 })
 ```
 
-A new actor starts from the decoded value of `{}`, so every field that is not a list needs a decoding default or `Schema.optional`. An action is a plain synchronous function: it edits a draft of the state and returns the reply. It does not return an Effect or perform I/O.
+A new actor starts from the decoded value of `{}`, so every field that is not a list needs a decoding default or `Schema.optional`. A command is a plain synchronous function: it edits a draft of the state and returns the reply. It does not return an Effect or perform I/O.
 
 ## Serve it
 
@@ -126,7 +126,7 @@ await Effect.runPromise(program)
 
 With the server running, `bun run src/call.ts` prints `2` and then `5`.
 
-`Counter.client("main")` returns a scoped handle for the actor with id `main`. Its actions are Effects. The client keeps the same command id for a call across retries, so if a reply is lost, the retry returns the stored result instead of adding twice. Use a `ws://` or `wss://` URL to open a WebSocket session instead of HTTP requests.
+`Counter.client("main")` returns a scoped handle for the actor with id `main`. Its commands are Effects. The client keeps the same command id for a call across retries, so if a reply is lost, the retry returns the stored result instead of adding twice. Use a `ws://` or `wss://` URL to open a WebSocket session instead of HTTP requests.
 
 ## Test it
 
@@ -157,6 +157,6 @@ Run it with `bun test` or `node --test src/counter.test.ts`. `Simulation` runs t
 
 ## Next steps
 
-- Learn how actions and jobs divide work in [Actions and jobs](guides/actions-and-jobs.md).
+- Learn how commands and jobs divide work in [Commands and jobs](guides/actions-and-jobs.md).
 - Store unbounded data with [lists](api/lists-and-find.md).
 - Move to a real bucket with [Deploy](guides/deploy.md), or run on [Akter Cloud](cloud/get-started.md).

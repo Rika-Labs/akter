@@ -5,7 +5,7 @@ import { ActorError, InvalidInput, Reason } from "../contract/errors.ts"
 import { ByValue, MemberCodec } from "../contract/handle.ts"
 import type { AnyActor } from "../contract/make.ts"
 import { isList } from "../contract/members.ts"
-import type { Action, MemberSchema } from "../contract/members.ts"
+import type { Command, MemberSchema } from "../contract/members.ts"
 import { Finds } from "../contract/find.ts"
 
 /**
@@ -42,18 +42,18 @@ export const ErrorEnvelope = Schema.TaggedStruct("ActorError", {
   ),
 )
 
-/** An action call: the actor id, the client-minted command id and the encoded payload. */
+/** A command call: the actor id, the client-minted command id and the encoded payload. */
 export const ActionPayload = Schema.Struct({
   id: Schema.Json,
   commandId: Schema.String,
   payload: Schema.Json,
 })
 
-/** An action's success: the encoded reply and whether admission returned a stored outcome. */
+/** A command's success: the encoded reply and whether admission returned a stored outcome. */
 export const ActionSuccess = Schema.Struct({ value: Schema.Json, replayed: Schema.Boolean })
 
 /**
- * An action's declared failure, in the declared error's own encoding, with the same `replayed`
+ * A command's declared failure, in the declared error's own encoding, with the same `replayed`
  * flag a success carries.
  */
 export const ActionFailed = Schema.TaggedStruct("ActionFailed", {
@@ -61,7 +61,7 @@ export const ActionFailed = Schema.TaggedStruct("ActionFailed", {
   replayed: Schema.Boolean,
 })
 
-/** What an action call can fail with on the wire. */
+/** What a command call can fail with on the wire. */
 export const ActionError = Schema.Union([ErrorEnvelope, ActionFailed])
 
 /** A read of one actor instance. */
@@ -144,9 +144,10 @@ export const Joined = Schema.Literal("joined")
 export const ReauthenticatePayload = Schema.Struct({ authorization: Schema.String })
 
 /**
- * The tag of each call. An action is `<Actor>/<action>`; every other call puts a `$` before its
+ * The tag of each call. A command is `<Actor>/<command>`; every other call puts a `$` before its
  * kind, which application members never start with, so a proxy classifies a call by its tag
- * alone. Action spans are then named `akter.<Actor>/<action>`.
+ * alone. Command spans are then named `akter.<Actor>/<command>`. The keys `action` and `event` and the
+ * `$event:` prefix keep the 0.2 spellings, so tags on the wire are unchanged.
  */
 export const Tags = {
   action: (actor: string, member: string) => `${actor}/${member}`,
@@ -161,20 +162,20 @@ export const Tags = {
 }
 
 /**
- * What a call does, from its tag alone: `action` writes, `presence` writes `connect` and
+ * What a call does, from its tag alone: `command` writes, `presence` writes `connect` and
  * `disconnect`, `read` only reads durable state, and `session` renews the socket's credential.
  */
-export type CallClass = "action" | "presence" | "read" | "session"
+export type CallClass = "command" | "presence" | "read" | "session"
 
 /** Classifies a call by its tag, as an edge does before forwarding it. */
 export const classify = (tag: string): CallClass => {
   if (tag === Tags.reauthenticate) return "session"
   const member = tag.slice(tag.lastIndexOf("/") + 1)
-  if (!member.startsWith("$")) return "action"
+  if (!member.startsWith("$")) return "command"
   return member === "$join" ? "presence" : "read"
 }
 
-/** Spans are named for the call with this prefix: `akter.<Actor>/<action>`. */
+/** Spans are named for the call with this prefix: `akter.<Actor>/<command>`. */
 export const SPAN_PREFIX = "akter"
 
 const checkName = (kind: string, name: string): void => {
@@ -223,7 +224,7 @@ export type GroupRpc =
   | ReturnType<typeof joinRpc>
   | typeof reauthenticateRpc
 
-/** Every call one actor serves: public actions, state, lists, views, events, `join` and `find`. */
+/** Every call one actor serves: public commands, state, lists, views, broadcasts, `join` and `find`. */
 const rpcsOf = (actor: AnyActor): Array<GroupRpc> => {
   checkName("Actor", actor.name)
   const name = actor.name
@@ -231,10 +232,10 @@ const rpcsOf = (actor: AnyActor): Array<GroupRpc> => {
     frameRpc(Tags.state(name), TargetPayload),
     itemsRpc(Tags.find(name), FindPayload),
   ]
-  const actions: Record<string, Action> = actor.actions
-  for (const [member, action] of Object.entries(actions)) {
-    if (action.internal) continue
-    checkName("Action", member)
+  const commands: Record<string, Command> = actor.commands
+  for (const [member, command] of Object.entries(commands)) {
+    if (command.internal) continue
+    checkName("Command", member)
     rpcs.push(actionRpc(Tags.action(name, member)))
   }
   const fields: Fields = actor.state.fields
@@ -250,8 +251,8 @@ const rpcsOf = (actor: AnyActor): Array<GroupRpc> => {
     checkName("View", member)
     rpcs.push(frameRpc(Tags.view(name, member), ViewPayload))
   }
-  for (const member of Object.keys(actor.events)) {
-    checkName("Event", member)
+  for (const member of Object.keys(actor.broadcasts)) {
+    checkName("Broadcast", member)
     rpcs.push(eventRpc(Tags.event(name, member)))
   }
   if (actor.presence !== undefined) rpcs.push(joinRpc(Tags.join(name)))

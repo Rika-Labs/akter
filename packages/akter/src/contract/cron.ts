@@ -87,5 +87,5 @@ const nextInZone = (zone: DateTime.TimeZone.Named, cron: Cron.Cron) => (after: n
   }
 }
 
-/** Cron schedules of `cron` actions. */
+/** Cron schedules of `cron` commands. */
 export const Crons = { parse }

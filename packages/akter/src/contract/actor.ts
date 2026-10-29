@@ -3,14 +3,14 @@ import type { Actor as ActorContract, Def } from "./make.ts"
 import { JobFailure, Members } from "./members.ts"
 
 /**
- * Declares actors: `Actor.make(name, { state, actions, ... })` for the contract and the member
+ * Declares actors: `Actor.make(name, { state, commands, ... })` for the contract and the member
  * constructors, schema first and options second.
  */
 export const Actor = {
   make: Contract.make,
-  action: Members.action,
+  command: Members.command,
   view: Members.view,
-  event: Members.event,
+  broadcast: Members.broadcast,
   job: Members.job,
   list: Members.list,
   JobFailure,

@@ -19,18 +19,18 @@ Framework conformance and the bucket-protocol suites are repository-only tools i
 
 Key words MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119. Invariant ids (I1–I9) and failure ids (F1–F27) name rows of the 0.2 verification matrix, written in E1.
 
-| Contract                                                              | Owner    | Promoted at |
-| --------------------------------------------------------------------- | -------- | ----------- |
-| [Actor identity and authority](01-actor-authority.md)                 | ADR 0126 | E2          |
-| [Actions](02-actions.md)                                              | ADR 0125 | E1          |
-| [Durability, identity and outcomes](03-durability.md)                 | ADR 0124 | E2          |
-| [Messaging](05-messaging.md)                                          | ADR 0126 | E3          |
-| [Storage](06-storage.md)                                              | ADR 0127 | E2 and E6   |
-| [Realtime: state, views, presence, events and `find`](07-realtime.md) | ADR 0130 | E4 and E7   |
-| [Jobs, timers and cron](08-background-work.md)                        | ADR 0129 | E3 and E5   |
-| [Failure and recovery](09-recovery.md)                                | ADR 0126 | E2          |
-| [Security and tenancy](10-security.md)                                | ADR 0130 | E2 and E4   |
-| [Error model](error-model.md)                                         | ADR 0128 | E1 and E4   |
-| [Wire protocol](protocol.md)                                          | ADR 0130 | E4          |
+| Contract                                                                  | Owner    | Promoted at |
+| ------------------------------------------------------------------------- | -------- | ----------- |
+| [Actor identity and authority](01-actor-authority.md)                     | ADR 0126 | E2          |
+| [Commands](02-actions.md)                                                 | ADR 0125 | E1          |
+| [Durability, identity and outcomes](03-durability.md)                     | ADR 0124 | E2          |
+| [Messaging](05-messaging.md)                                              | ADR 0126 | E3          |
+| [Storage](06-storage.md)                                                  | ADR 0127 | E2 and E6   |
+| [Realtime: state, views, presence, broadcasts and `find`](07-realtime.md) | ADR 0130 | E4 and E7   |
+| [Jobs, timers and cron](08-background-work.md)                            | ADR 0129 | E3 and E5   |
+| [Failure and recovery](09-recovery.md)                                    | ADR 0126 | E2          |
+| [Security and tenancy](10-security.md)                                    | ADR 0130 | E2 and E4   |
+| [Error model](error-model.md)                                             | ADR 0128 | E1 and E4   |
+| [Wire protocol](protocol.md)                                              | ADR 0130 | E4          |
 
 The number 04 is intentionally unused: the 0.1 receipt contract merged into [durability](03-durability.md).

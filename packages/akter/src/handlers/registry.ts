@@ -12,7 +12,7 @@ export type AnyHandler = (...args: Array<any>) => any
 
 /**
  * One actor's bound handlers and the services its layer was built with, which jobs run under.
- * Action and view handlers need nothing from it.
+ * Command and view handlers need nothing from it.
  */
 export interface Registered {
   readonly handlers: ReadonlyMap<string, AnyHandler>
@@ -31,7 +31,7 @@ export type ImplementationOf<X> = X extends { readonly name: infer Name extends 
 const layer = (actor: AnyActor, handlers: Handlers<string, Def>) => {
   const bound = new Map<string, AnyHandler>(Object.entries(handlers))
   const expected = [
-    ...Object.keys(actor.actions),
+    ...Object.keys(actor.commands),
     ...Object.keys(actor.views),
     ...Object.keys(actor.jobs),
     ...(actor.presence === undefined ? [] : ["connect", "disconnect"]),

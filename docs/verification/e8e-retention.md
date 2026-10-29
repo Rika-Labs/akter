@@ -21,7 +21,7 @@ The object key is `meta/retention`, JSON `{ retentionMillis, revision, audit }`.
 | Same file: paused two-shard GC with a concurrent narrowing                                | A single collection pass mixing old/new values across shards; failing to apply the new value on the next pass                                                 |
 | `apps/cli/src/commands/operator.test.ts`, real HTTP                                       | A help/parser-only CLI implementation; application/missing/tenant-only authority; missing success/denial audit                                                |
 
-The seeded scenario creates independent 90-item state and edits asymmetric items at days 10 and 18, then widens at day 20. After narrowing, the surviving day-10 anchor reconstructs the day-18 version with both edits and count 92. The larger window retains the old checkpoint/page/segment; the smaller one removes the older checkpoint and trims only through the day-10 anchor. Public log reads exclude the expired `fill` action. Recovery reads remain separate so anchor bytes are not lost to authorization filtering.
+The seeded scenario creates independent 90-item state and edits asymmetric items at days 10 and 18, then widens at day 20. After narrowing, the surviving day-10 anchor reconstructs the day-18 version with both edits and count 92. The larger window retains the old checkpoint/page/segment; the smaller one removes the older checkpoint and trims only through the day-10 anchor. Public log reads exclude the expired `fill` command. Recovery reads remain separate so anchor bytes are not lost to authorization filtering.
 
 ## Semantics and limits
 

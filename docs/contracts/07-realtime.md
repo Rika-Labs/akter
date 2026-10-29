@@ -1,8 +1,8 @@
-# Realtime: state, views, presence, events and `find`
+# Realtime: state, views, presence, broadcasts and `find`
 
-Status: partially normative (0.2), owned by ADR 0130. [E7](../verification/e7-find-operators.md) promotes ids-only `find`, owner index durability/recovery, one access check and scatter-gather for the supported `default` tenant. General tenant addressing remains proposal. E4 evidence for streams, presence and events is in [E4 RPC and serving](../verification/e4-rpc-serve.md); its stated limits remain.
+Status: partially normative (0.2), owned by ADR 0130. [E7](../verification/e7-find-operators.md) promotes ids-only `find`, owner index durability/recovery, one access check and scatter-gather for the supported `default` tenant. General tenant addressing remains proposal. E4 evidence for streams, presence and broadcasts is in [E4 RPC and serving](../verification/e4-rpc-serve.md); its stated limits remain.
 
-**Responsibility:** define what clients read and watch, when they see changes, how presence and events behave, and what `find` promises.  
+**Responsibility:** define what clients read and watch, when they see changes, how presence and broadcasts behave, and what `find` promises.  
 **Authority:** normative 0.2 target on `main`.  
 **Owner role:** realtime and runtime.  
 **Change policy:** every change must be tested for the snapshot/live race, loss, owner move and revocation.
@@ -13,27 +13,27 @@ Status: partially normative (0.2), owned by ADR 0130. [E7](../verification/e7-fi
 - `handle.state`, a list's watched `range`, and every view MUST be streams whose first element is the full current value and whose later elements are JSON patches between consecutive values. A one-shot read is the first element.
 - Every streamed value MUST derive from the shard's durable prefix (I2). Speculative state MUST NOT be streamed.
 - A stream MUST NOT send a value equal (by the schema's equivalence) to the previous one.
-- A client whose action completed MUST observe that action's effect on every later read or new stream of that actor (read-your-writes), and values of one stream MUST be monotonic in the actor's log order.
+- A client whose command completed MUST observe that command's effect on every later read or new stream of that actor (read-your-writes), and values of one stream MUST be monotonic in the actor's log order.
 - A view MUST be a pure, synchronous function of durable state and its parameters.
 - Reads MUST be served by the shard owner after its validity check ([actor authority](01-actor-authority.md)); a read MUST NOT activate an actor for write.
 
 ## Lag, loss and owner moves
 
-- A stream whose consumer falls behind its bounded buffer MUST either replace the queued patches with one new full value or end with `SessionEnded { cause: "SlowConsumer", resync: true }`. It MUST NOT skip a patch silently. Served state, list and view streams keep the newest of 64 values and send one patch from the last value sent; event streams end with `SlowConsumer` when 64 events wait.
+- A stream whose consumer falls behind its bounded buffer MUST either replace the queued patches with one new full value or end with `SessionEnded { cause: "SlowConsumer", resync: true }`. It MUST NOT skip a patch silently. Served state, list and view streams keep the newest of 64 values and send one patch from the last value sent; broadcast streams end with `SlowConsumer` when 64 broadcasts wait.
 - A client that resubscribes after a lost connection receives a full value first and MUST NOT deliver it again when it equals the value it already delivered.
 - When the actor's shard moves, its streams MUST end with `SessionEnded { cause: "OwnerMoved", resync: true }`; a client that resubscribes MUST receive a full value first.
 - A full frame starts a fresh stream baseline even when its owner-local version is lower than the previous owner's. Version checks apply to patches within that baseline, not across owners. Equal decoded values are suppressed using the actor schema's equivalence.
 
 ## Presence
 
-- An actor whose contract declares `presence` MUST enable `handle.join(params)`, `connect` and `disconnect`. Acquiring `join` MUST run `connect` as a durable action with a fresh connection id in `ctx.connection`; releasing it MUST run `disconnect`. Both run as the session's caller.
+- An actor whose contract declares `presence` MUST enable `handle.join(params)`, `connect` and `disconnect`. Acquiring `join` MUST run `connect` as a durable command with a fresh connection id in `ctx.connection`; releasing it MUST run `disconnect`. Both run as the session's caller.
 - The shard MUST record open connections in its state. Every durable `connect` MUST be followed by exactly one durable `disconnect` for the same connection: on release, when the owner detects the session's loss, or when the next owner opens the shard and runs `disconnect` for every connection the previous owner recorded.
 
-## Events
+## Broadcasts
 
-- An event emitted by an action MUST be published only after the action's segment is durable, to sessions subscribed at that moment. Events MUST NOT be stored or replayed; a session MUST NOT receive an event emitted before it subscribed.
-- An event emitted by a job MUST be published when emitted. Such an event is not in the log, MAY be delivered again if the job body replays, and has no ordering relative to action events.
-- There are no event cursors, durable feeds or retention gaps.
+- A broadcast sent by a command MUST be published only after the command's segment is durable, to sessions subscribed at that moment. Broadcasts MUST NOT be stored or replayed; a session MUST NOT receive a broadcast sent before it subscribed.
+- A broadcast sent by a job MUST be published when sent. Such a broadcast is not in the log, MAY be delivered again if the job body replays, and has no ordering relative to command broadcasts.
+- There are no broadcast cursors, durable feeds or retention gaps.
 
 ## Sessions and revocation
 
@@ -45,9 +45,9 @@ Session binding, reauthorization every `reauthorizeEvery` and revocation are def
 - String comparisons MUST use the first 64 bytes (UTF-8) of the value; values sharing that prefix compare equal and are ordered by actor id.
 - The public result MUST contain actor ids only. Index ordering values MAY travel on trusted owner peering for the merge, never as public result fields.
 - `find` MUST return only actors of the caller's tenant (I8b) and MUST run `access` with kind `find` once.
-- `find` MUST NOT be callable from an action.
-- **Freshness.** Each shard's part of a result MUST reflect every action durable on that shard when its owner answered and nothing that was not durable. A caller whose action completed before it called `find` MUST see that action's effect. A result is not a snapshot across shards: different shards answer at different moments. Shards without an owner MUST be opened to answer.
+- `find` MUST NOT be callable from a command.
+- **Freshness.** Each shard's part of a result MUST reflect every command durable on that shard when its owner answered and nothing that was not durable. A caller whose command completed before it called `find` MUST see that command's effect. A result is not a snapshot across shards: different shards answer at different moments. Shards without an owner MUST be opened to answer.
 
 ## Verification
 
-I2 for every streamed value and index entry; I8b for `find`; E4 client conformance (full value then patches, slow consumer, owner move, reauthorization, revocation) on Node and Bun; exactly one `disconnect` per durable `connect` after gateway and owner crashes; E7 index consistency after random actions, crashes and moves.
+I2 for every streamed value and index entry; I8b for `find`; E4 client conformance (full value then patches, slow consumer, owner move, reauthorization, revocation) on Node and Bun; exactly one `disconnect` per durable `connect` after gateway and owner crashes; E7 index consistency after random commands, crashes and moves.

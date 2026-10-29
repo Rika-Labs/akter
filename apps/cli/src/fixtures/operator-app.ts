@@ -7,7 +7,7 @@ export const Meter = Actor.make("CliMeter", {
   state: Schema.Struct({
     value: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
-  actions: { add: Actor.action(Schema.Finite) },
+  commands: { add: Actor.command(Schema.Finite) },
   access: () => true,
 })
 export const MeterLive = Meter.toLayer({

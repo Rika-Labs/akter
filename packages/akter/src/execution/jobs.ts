@@ -20,7 +20,12 @@ import { ActorError, InvalidInput } from "../contract/errors.ts"
 import { Client, Handles } from "../contract/handle.ts"
 import type { Reply, Transport } from "../contract/handle.ts"
 import { JobFailure } from "../contract/members.ts"
-import type { Action, Event, Job, MemberSchema } from "../contract/members.ts"
+import type {
+  Broadcast,
+  Command as CommandDeclaration,
+  Job,
+  MemberSchema,
+} from "../contract/members.ts"
 import { CommandIds } from "./command-ids.ts"
 import { Durable } from "./durable.ts"
 import type { ActorRecord, JobRecord } from "./durable.ts"
@@ -156,7 +161,7 @@ const install = (engine: Engine, routing?: JobRouting) => {
           const key = bodyCall(scope.name, attempt, ordinal)
           const journaled = record.steps.get(key)
           if (journaled !== undefined) return yield* Effect.orDie(decodeReply(journaled))
-          const declaration: Action | undefined = request.actor.actions[request.member]
+          const declaration: CommandDeclaration | undefined = request.actor.commands[request.member]
           const own = Durable.addressOf(request.actor.name, request.id) === owner.address
           if (declaration === undefined || (declaration.internal && !own))
             return yield* ActorError.make({
@@ -285,8 +290,8 @@ const install = (engine: Engine, routing?: JobRouting) => {
       },
       attempt,
       step,
-      emit: Object.fromEntries(
-        Object.entries<Event>(owner.actor.events).map(([event, schema]) => [
+      broadcast: Object.fromEntries(
+        Object.entries<Broadcast>(owner.actor.broadcasts).map(([event, schema]) => [
           event,
           (value: Decoded) =>
             Effect.flatMap(engine.channel(owner.address), (channel) =>
@@ -506,7 +511,7 @@ const install = (engine: Engine, routing?: JobRouting) => {
     ambiguous: boolean,
   ): Effect.Effect<void, ActorError> => {
     const member = declaration.onFailure
-    const target: Action | undefined = owner.actor.actions[member]
+    const target: CommandDeclaration | undefined = owner.actor.commands[member]
     if (target === undefined) return Effect.void
     const fields = {
       job: record.jobId,

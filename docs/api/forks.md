@@ -20,7 +20,7 @@ Pass the actor type and the source id. Choose exactly one source: `--directory` 
 
 | Flag                       | Position                                   |
 | -------------------------- | ------------------------------------------ |
-| `--at <version>`           | A durable action count for the actor       |
+| `--at <version>`           | A durable command count for the actor      |
 | `--before <timestamp>`     | The state before an ISO timestamp          |
 | `--offset <n> --index <i>` | A segment offset and entry index; use both |
 
@@ -46,7 +46,7 @@ If the key schema cannot accept a derived UUID, pass an explicit `--to`.
 
 ## What a fork copies
 
-An actor version counts durable actions. Internally a position is `(shard, offset, entry index)`, because one segment can hold several actions.
+An actor version counts durable commands. Internally a position is `(shard, offset, entry index)`, because one segment can hold several commands.
 
 - A fork copies state and list roots. It does not copy client deduplication state, presence, or pending sends.
 - With `--with-work`, it also copies pending timers (with new ids) and open jobs (with new ids and their completed steps).

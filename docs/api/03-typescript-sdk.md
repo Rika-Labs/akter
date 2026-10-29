@@ -41,18 +41,18 @@ Use an `https:` URL for HTTP NDJSON requests, or `wss:` for a JSON WebSocket ses
 
 | Member           | Type                                                                                           |
 | ---------------- | ---------------------------------------------------------------------------------------------- |
-| An action        | A function returning an Effect with the typed success and declared failures                    |
+| A command        | A function returning an Effect with the typed success and declared failures                    |
 | `state`          | A Stream: a full frame first, then JSON patches                                                |
 | A view           | A function returning a Stream, which also starts with a full value                             |
 | A list           | `range(options)` for one read and `watch(options)` for a live window; lists are not in `state` |
-| An event         | A live Stream; events are not stored                                                           |
+| A broadcast      | A live Stream; broadcasts are not stored                                                       |
 | `join(presence)` | Opens a presence session; the server runs your `connect` and `disconnect` handlers             |
 
-Internal actions are not on the handle.
+Internal commands are not on the handle.
 
 ## Retries
 
-The client retries retryable transport failures with the same command id for ten minutes. A retry after a lost reply returns the stored outcome instead of running the action again. Streams resubscribe after a retryable end and begin with a fresh full value.
+The client retries retryable transport failures with the same command id for ten minutes. A retry after a lost reply returns the stored outcome instead of running the command again. Streams resubscribe after a retryable end and begin with a fresh full value.
 
 ## Find
 

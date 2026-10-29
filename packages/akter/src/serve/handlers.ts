@@ -6,7 +6,7 @@ import type { RangeOptions } from "../contract/members.ts"
 import type { ByValue, StateFrame } from "../contract/handle.ts"
 import type { AnyActor } from "../contract/make.ts"
 import { isList } from "../contract/members.ts"
-import type { Action } from "../contract/members.ts"
+import type { Command } from "../contract/members.ts"
 import type { Engine } from "../execution/engine.ts"
 import { Transports } from "../execution/transport.ts"
 import type { Sharding } from "../runtime/sharding.ts"
@@ -160,8 +160,8 @@ const actorHandlers = (engine: Engine, actor: AnyActor, routing?: Sharding["Serv
       ),
     ),
   )
-  const actions: Record<string, Action> = actor.actions
-  for (const [member, declaration] of Object.entries(actions)) {
+  const commands: Record<string, Command> = actor.commands
+  for (const [member, declaration] of Object.entries(commands)) {
     if (declaration.internal) continue
     handlers.set(Tags.action(name, member), (payload: typeof ActionPayload.Type) =>
       call(actor, (session) =>
@@ -215,10 +215,10 @@ const actorHandlers = (engine: Engine, actor: AnyActor, routing?: Sharding["Serv
           .pipe(numbered, framed),
       ),
     )
-  for (const member of Object.keys(actor.events))
+  for (const member of Object.keys(actor.broadcasts))
     handlers.set(Tags.event(name, member), (payload: typeof TargetPayload.Type) =>
       stream(actor, (session) =>
-        bounded(reads(session).event({ actor, id: payload.id, member, params: null })),
+        bounded(reads(session).broadcast({ actor, id: payload.id, member, params: null })),
       ),
     )
   if (actor.presence !== undefined)

@@ -2,7 +2,7 @@ import { Result, Schema } from "effect"
 import { Caller } from "../contract/caller.ts"
 import { Crons } from "../contract/cron.ts"
 import type { AnyActor } from "../contract/make.ts"
-import type { Action } from "../contract/members.ts"
+import type { Command } from "../contract/members.ts"
 import type { Registered } from "../handlers/registry.ts"
 import { Actions } from "./action.ts"
 import { CommandIds } from "./command-ids.ts"
@@ -172,7 +172,7 @@ const resident = (
 
 /** Arms the next tick of every cron action of an actor, after `from`. */
 const armCrons = (image: ShardImage, record: ActorRecord, from: number): void => {
-  for (const [member, declaration] of Object.entries<Action>(record.actor.actions)) {
+  for (const [member, declaration] of Object.entries<Command>(record.actor.commands)) {
     if (declaration.cron === undefined) continue
     armCron(image, record.address, member, declaration.cron, from)
   }
@@ -239,7 +239,7 @@ const recordAction = (
       const fired = image.timers.get(entry.commandId)
       image.timers.delete(entry.commandId)
       const expression =
-        fired === undefined ? undefined : record.actor.actions[fired.timer.member]?.cron
+        fired === undefined ? undefined : record.actor.commands[fired.timer.member]?.cron
       if (expression !== undefined)
         armCron(image, record.address, entry.member, expression, entry.at)
     },
@@ -399,7 +399,7 @@ const record = (
       image.lastAt = Math.max(image.lastAt, at)
       if (skipped === undefined) return
       const owner = image.actors.get(skipped.address)
-      const expression = owner?.actor.actions[skipped.timer.member]?.cron
+      const expression = owner?.actor.commands[skipped.timer.member]?.cron
       if (expression !== undefined)
         armCron(image, skipped.address, skipped.timer.member, expression, at)
     },

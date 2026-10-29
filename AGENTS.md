@@ -45,7 +45,7 @@ This is a Bun/Turbo monorepo based on `rika-labs/monorepo-project-template`.
 ## Engineering rules
 
 - Read the owning contract before implementation.
-- Keep actions synchronous and deterministic: no I/O, no sleep, no clock, randomness or ids except through the action context. I/O belongs in jobs. Publish nothing (replies, events, views, sends, job starts) before the shard's segment is durable.
+- Keep commands synchronous and deterministic: no I/O, no sleep, no clock, randomness or ids except through the command context. I/O belongs in jobs. Publish nothing (replies, broadcasts, views, sends, job starts) before the shard's segment is durable.
 - Never treat process memory, TypeScript types, or a lease alone as authority. Write authority is the shard's create-once segment chain (the epoch); speculative in-memory state is never authority and never published.
 - Add a failure test for every durable transition.
 - Update the contract, ADR, API docs, and verification when behavior changes.
@@ -64,7 +64,7 @@ Publishing to npm goes through GitHub OIDC (npm trusted publishing); never mint 
 
 Use the repository commands in `package.json`. Evidence for concurrency, fencing, ownership, durability and recovery is the seeded simulator plus the real bucket protocol: MinIO in CI and the chosen object-storage provider nightly. Simulator, filesystem or MinIO results are not provider results; do not claim provider behavior without provider-specific evidence, and Neki is historical, not a backend.
 
-- Prefer a small set of integration/E2E scenarios through the real public API and storage. Exercise discarded actions (declared failure, defect, `PageMiss`, lost segment), interruption, retry, restart, stale and lost epochs, ambiguous appends, interrupted checkpoints and page uploads, replay, GC and fork races, and denied access where relevant; assert the resulting state and obligations, not just successful execution.
+- Prefer a small set of integration/E2E scenarios through the real public API and storage. Exercise discarded commands (declared failure, defect, `PageMiss`, lost segment), interruption, retry, restart, stale and lost epochs, ambiguous appends, interrupted checkpoints and page uploads, replay, GC and fork races, and denied access where relevant; assert the resulting state and obligations, not just successful execution.
 - Before adding a test, name the plausible wrong implementation it must reject. Derive expected values independently; use asymmetric inputs and both sides of important boundaries.
 - Keep focused type, algebraic, protocol and packaging tests when integration/E2E cannot establish that contract. Do not mock the boundary whose behavior the test claims to prove.
 - Consolidate fixtures and duplicate scenarios first. Delete a behavioral test only after identifying surviving evidence that rejects the same mistake; preserve distinct provider and failure-path evidence. A 0.1 suite retires only under the 0.2 authority rule above, with its dated evidence kept as history; never delete a failing 0.2 test because old source disappeared.

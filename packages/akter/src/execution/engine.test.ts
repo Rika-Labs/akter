@@ -3,7 +3,7 @@ import { Cause, Clock, Duration, Effect, Exit, Fiber, Metric, Result, Schema, St
 import type { Scope } from "effect"
 import { TestClock } from "effect/testing"
 import {
-  ActionDefect,
+  CommandDefect,
   Actor,
   ActorError,
   ActorUnavailable,
@@ -35,9 +35,9 @@ const Wallet = Actor.make("Wallet", {
     balance: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
     credits: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
-  actions: {
-    deposit: Actor.action(Schema.Finite, { success: Schema.Finite }),
-    pay: Actor.action(
+  commands: {
+    deposit: Actor.command(Schema.Finite, { success: Schema.Finite }),
+    pay: Actor.command(
       Schema.Struct({
         to: Schema.String,
         amount: Schema.Finite,
@@ -45,22 +45,22 @@ const Wallet = Actor.make("Wallet", {
       }),
       { fails: Refused },
     ),
-    credit: Actor.action(Schema.Finite, { internal: true }),
+    credit: Actor.command(Schema.Finite, { internal: true }),
   },
-  events: { changed: Actor.event(Schema.Finite) },
+  broadcasts: { changed: Actor.broadcast(Schema.Finite) },
 })
 
 const WalletLive = Wallet.toLayer({
-  deposit: (wallet, amount, { emit }) => {
+  deposit: (wallet, amount, { broadcast }) => {
     wallet.balance += amount
-    emit.changed(wallet.balance)
+    broadcast.changed(wallet.balance)
     return wallet.balance
   },
-  pay: (wallet, { to, amount, end }, { send, schedule, emit }) => {
+  pay: (wallet, { to, amount, end }, { send, schedule, broadcast }) => {
     wallet.balance -= amount
     send(Wallet, to).credit(amount)
     schedule("1 minute").credit(amount)
-    emit.changed(wallet.balance)
+    broadcast.changed(wallet.balance)
     if (end === "fail") return Refused.make({ reason: "declared" })
     if (end === "throw") throw new Error("boom")
   },
@@ -143,7 +143,7 @@ describe("F1: a declared failure or a defect discards the action's staged effect
         yield* Simulation.advance("2 minutes")
         expect(declared).toEqual(Refused.make({ reason: "declared" }))
         const defect = Exit.isFailure(thrown) ? Cause.squash(thrown.cause) : undefined
-        expect(Schema.is(ActionDefect)(defect) && defect.kind).toBe("Thrown")
+        expect(Schema.is(CommandDefect)(defect) && defect.kind).toBe("Thrown")
         expect(events).toEqual([101])
         const [after, b] = yield* Effect.all([
           Simulation.state(Wallet, "a"),

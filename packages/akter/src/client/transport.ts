@@ -56,7 +56,7 @@ const isClientError = (error: CallFailure | RpcClientError.RpcClientError) =>
 
 /**
  * A response that never arrived as a valid envelope. A lost connection is safe to retry: an
- * action resends its command id, so the server runs it at most once, and a read resubscribes.
+ * command resends its command id, so the server runs it at most once, and a read resubscribes.
  */
 const transportError = (error: RpcClientError.RpcClientError) =>
   ActorError.make({
@@ -210,7 +210,7 @@ const makeTransport = (options: ClientOptions, connection: Connection) =>
             params: request.params,
           }),
         ),
-      event: (request) =>
+      broadcast: (request) =>
         streamed<Schema.Json>(Tags.event(request.actor.name, request.member), { id: request.id }),
       range: (request) =>
         retrying(
@@ -372,7 +372,7 @@ const connected = (options: ClientOptions, connection: Connection) =>
       }).pipe(Layer.provide([FetchHttpClient.layer, RpcSerialization.layerNdjson]))
 
 /**
- * The `Client` every handle calls through, over `/rpc`. Each action mints a command id from the
+ * The `Client` every handle calls through, over `/rpc`. Each command mints a command id from the
  * client's clock and retries with that same id after a lost connection or a retryable refusal;
  * each stream resubscribes after a lost connection and starts again from a full value. A WebSocket
  * session that lapses at its reauthorization bound is replaced by reconnecting.

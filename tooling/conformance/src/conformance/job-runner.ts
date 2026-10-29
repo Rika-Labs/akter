@@ -73,13 +73,13 @@ export const Worker = Actor.make("JobWorker", {
     finished: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
     failed: Schema.Array(JobFailure).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   }),
-  actions: {
-    submit: Actor.action(Task),
-    credit: Actor.action(Schema.Int, { internal: true, success: Schema.Int }),
-    complete: Actor.action(Schema.String, { internal: true }),
-    rejected: Actor.action(JobFailure, { internal: true }),
+  commands: {
+    submit: Actor.command(Task),
+    credit: Actor.command(Schema.Int, { internal: true, success: Schema.Int }),
+    complete: Actor.command(Schema.String, { internal: true }),
+    rejected: Actor.command(JobFailure, { internal: true }),
   },
-  events: { token: Actor.event(Schema.String) },
+  broadcasts: { token: Actor.broadcast(Schema.String) },
   jobs: {
     work: Actor.job({
       payload: Task,
@@ -100,7 +100,7 @@ export const Worker = Actor.make("JobWorker", {
 /** A job keeps finished steps across retries, including non-JSON results and actor calls. */
 const work = (
   task: Task,
-  { self, step, attempt, emit, id }: JobContext<"JobWorker", DefOf<typeof Worker>>,
+  { self, step, attempt, broadcast, id }: JobContext<"JobWorker", DefOf<typeof Worker>>,
 ) =>
   Effect.gen(function* () {
     const io = yield* JobIO
@@ -125,7 +125,7 @@ const work = (
       const text = yield* step(
         "stream",
         tokens.pipe(
-          Stream.tap((token: string) => emit.token(token)),
+          Stream.tap((token: string) => broadcast.token(token)),
           Stream.runFold(
             () => "",
             (all, token) => all + token,

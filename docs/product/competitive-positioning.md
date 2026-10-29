@@ -1,6 +1,6 @@
 # Competitive positioning
 
-Akter is a durable actor framework for applications whose unit of ownership is a room, order, agent session, or device. A synchronous action produces a recorded outcome, and Effect jobs carry I/O beyond the request lifetime.
+Akter is a durable actor framework for applications whose unit of ownership is a room, order, agent session, or device. A synchronous command produces a recorded outcome, and Effect jobs carry I/O beyond the request lifetime.
 
 The 0.2 differentiator is a bucket-backed authoritative log plus typed live access, not relational table ownership or generated clients. Self-hosting uses one S3-compatible store; Cloud manages an environment store.
 

@@ -10,8 +10,8 @@ import { Client, Handles, MemberCodec } from "./handle.ts"
 import type { Handle } from "./handle.ts"
 import { isList } from "./members.ts"
 import type {
-  Action,
-  Event,
+  Broadcast,
+  Command,
   Job,
   JobFailure,
   MemberSchema,
@@ -24,7 +24,15 @@ export type State = Schema.Struct<Fields>
 
 /** What `access` is asked about: the kind of request, the member and the actor id. */
 export interface AccessRequest {
-  readonly kind: "action" | "state" | "list" | "view" | "event" | "join" | "find" | "reauthorize"
+  readonly kind:
+    | "command"
+    | "state"
+    | "list"
+    | "view"
+    | "broadcast"
+    | "join"
+    | "find"
+    | "reauthorize"
   readonly member: string
 }
 
@@ -32,9 +40,9 @@ export interface AccessRequest {
 export interface Def {
   readonly key: MemberSchema
   readonly state: State
-  readonly actions: Record<string, Action>
+  readonly commands: Record<string, Command>
   readonly views: Record<string, View>
-  readonly events: Record<string, Event>
+  readonly broadcasts: Record<string, Broadcast>
   readonly jobs: Record<string, Job>
   readonly presence: OptionalSchema
   readonly caller: Caller
@@ -86,16 +94,16 @@ export interface Actor<Name extends string, D extends Def> {
   readonly name: Name
   readonly key: D["key"]
   readonly state: D["state"]
-  readonly actions: D["actions"]
+  readonly commands: D["commands"]
   readonly views: D["views"]
-  readonly events: D["events"]
+  readonly broadcasts: D["broadcasts"]
   readonly jobs: D["jobs"]
   readonly presence: D["presence"]
   readonly access: (caller: Caller, request: AccessRequest) => boolean
   readonly implementation: Context.Service<Implementation<Name>, Registered>
   readonly "~def"?: D
 
-  /** The one layer per actor: actions, views, jobs and presence handlers in one object. */
+  /** The one layer per actor: commands, views, jobs and presence handlers in one object. */
   toLayer<H extends Handlers<Name, D>>(
     handlers: H & NoExtraHandlers<H, Handlers<Name, D>, Name>,
   ): LayerOf<Name, JobServices<H, D["jobs"]>>
@@ -118,14 +126,14 @@ type StateCheck<S extends State> = [RequiredEncodedKeys<S["fields"]>] extends [n
   ? unknown
   : TypeError<`state field '${RequiredEncodedKeys<S["fields"]>}' needs Schema.withDecodingDefault, Schema.optional or Actor.list`>
 
-type OnFailureCheck<J extends Record<string, Job>, A extends Record<string, Action>> = {
+type OnFailureCheck<J extends Record<string, Job>, A extends Record<string, Command>> = {
   readonly [K in keyof J]: J[K]["onFailure"] extends keyof A
     ? A[J[K]["onFailure"]]["internal"] extends true
       ? PayloadOf<A[J[K]["onFailure"]]["payload"]> extends JobFailure
         ? unknown
-        : TypeError<`job '${K & string}': onFailure action '${J[K]["onFailure"] & string}' must take Actor.JobFailure`>
-      : TypeError<`job '${K & string}': onFailure action '${J[K]["onFailure"] & string}' must be internal`>
-    : TypeError<`job '${K & string}': onFailure '${J[K]["onFailure"] & string}' is not an action of this actor`>
+        : TypeError<`job '${K & string}': onFailure command '${J[K]["onFailure"] & string}' must take Actor.JobFailure`>
+      : TypeError<`job '${K & string}': onFailure command '${J[K]["onFailure"] & string}' must be internal`>
+    : TypeError<`job '${K & string}': onFailure '${J[K]["onFailure"] & string}' is not a command of this actor`>
 }
 
 type Reserved = "state" | "join" | "connect" | "disconnect"
@@ -147,22 +155,22 @@ type CallerOf<Acc> = Acc extends ((caller: any, ...rest: Array<any>) => caller i
 
 type DefaultAccess = (caller: Caller) => caller is User | System
 
-/** The options of `Actor.make`: only `state` and `actions` are required. */
+/** The options of `Actor.make`: only `state` and `commands` are required. */
 export interface MakeOptions<
   K extends MemberSchema,
   S extends State,
-  A extends Record<string, Action>,
+  A extends Record<string, Command>,
   V extends Record<string, View>,
-  E extends Record<string, Event>,
+  E extends Record<string, Broadcast>,
   J extends Record<string, Job>,
   P extends OptionalSchema,
   Acc extends (caller: Caller, request: AccessRequest) => boolean,
 > {
   readonly key?: K
   readonly state: S & StateCheck<S>
-  readonly actions: A
+  readonly commands: A
   readonly views?: V
-  readonly events?: E
+  readonly broadcasts?: E
   readonly jobs?: J & OnFailureCheck<J, A>
   readonly presence?: P
   readonly access?: Acc
@@ -173,7 +181,7 @@ const reserved = new Set(["state", "join", "connect", "disconnect"])
 /**
  * Refuses at runtime what the types refuse at compile time, for callers that bypass them: a state
  * field without a decoding default, a duplicate or reserved member name, and an `onFailure` that
- * is not an internal action of the same actor.
+ * is not an internal command of the same actor.
  */
 const validate = (actor: AnyActor): void => {
   if (Result.isFailure(Schema.decodeResult(MemberCodec.json(actor.state))({})))
@@ -183,12 +191,12 @@ const validate = (actor: AnyActor): void => {
   const names = new Set<string>()
   const fields: Fields = actor.state.fields
   const jobs: Record<string, Job> = actor.jobs
-  const actions: Record<string, Action> = actor.actions
+  const commands: Record<string, Command> = actor.commands
   const lists = Object.entries(fields).flatMap(([name, field]) => (isList(field) ? [name] : []))
   for (const name of [
-    ...Object.keys(actor.actions),
+    ...Object.keys(actor.commands),
     ...Object.keys(actor.views),
-    ...Object.keys(actor.events),
+    ...Object.keys(actor.broadcasts),
     ...Object.keys(actor.jobs),
     ...lists,
   ]) {
@@ -197,25 +205,25 @@ const validate = (actor: AnyActor): void => {
     names.add(name)
   }
   for (const [name, declaration] of Object.entries(jobs)) {
-    const target = actions[declaration.onFailure]
+    const target = commands[declaration.onFailure]
     if (target === undefined || !target.internal)
       throw new Error(
-        `Actor ${actor.name}: job '${name}' needs onFailure naming an internal action`,
+        `Actor ${actor.name}: job '${name}' needs onFailure naming an internal command`,
       )
   }
 }
 
 /**
- * Declares an actor contract. Only `state` and `actions` are required; every other member appears
+ * Declares an actor contract. Only `state` and `commands` are required; every other member appears
  * when used. The default `access` admits `User` and `System` callers.
  */
 const make = <
   const Name extends string,
   S extends State,
-  A extends Record<string, Action>,
+  A extends Record<string, Command>,
   K extends MemberSchema = Schema.String,
   V extends Record<string, View> = {},
-  E extends Record<string, Event> = {},
+  E extends Record<string, Broadcast> = {},
   J extends Record<string, Job> = {},
   P extends OptionalSchema = undefined,
   Acc extends (caller: Caller, request: AccessRequest) => boolean = DefaultAccess,
@@ -227,9 +235,9 @@ const make = <
   {
     readonly key: K
     readonly state: S
-    readonly actions: A
+    readonly commands: A
     readonly views: V
-    readonly events: E
+    readonly broadcasts: E
     readonly jobs: J
     readonly presence: P
     readonly caller: CallerOf<Acc>
@@ -242,9 +250,9 @@ const make = <
     name,
     key,
     state: options.state,
-    actions: options.actions,
+    commands: options.commands,
     views: options.views ?? {},
-    events: options.events ?? {},
+    broadcasts: options.broadcasts ?? {},
     jobs: options.jobs ?? {},
     presence: options.presence,
     access: options.access ?? isAuthenticated,

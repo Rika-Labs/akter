@@ -50,7 +50,7 @@
     "akter/no-runtime-import-outside-runtime": "error",
     "akter/no-decision-references": "error",
     "akter/no-inline-comments": "error",
-    "akter/synchronous-actions": "error"
+    "akter/synchronous-commands": "error"
   },
   "overrides": [
     {
@@ -138,7 +138,7 @@
     {
       "files": ["packages/akter/src/contract/make.test.ts"],
       "rules": {
-        "akter/synchronous-actions": "off"
+        "akter/synchronous-commands": "off"
       }
     },
     {

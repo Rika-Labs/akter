@@ -60,7 +60,7 @@ A provider is supported only while `akter storage check` passes on it: atomic co
 
 - An actor manifest MUST hold the encoded state without lists, at most 256 KiB, and the root of each list's page tree.
 - `Actor.list` items MUST live in page trees ordered by `by` then `key`, with no size limit. A snapshot MUST write only the pages that changed.
-- A nonresident page MUST stop a synchronous action with the internal `PageMiss` signal. Its draft and all staged effects MUST be discarded; the resolver loads the missing hashes and reruns from the same command id and admission time. An absent bucket object remains `PageCorrupt`, never an empty list.
+- A nonresident page MUST stop a synchronous command with the internal `PageMiss` signal. Its draft and all staged effects MUST be discarded; the resolver loads the missing hashes and reruns from the same command id and admission time. An absent bucket object remains `PageCorrupt`, never an empty list.
 - The clean-page cache MUST be byte-bounded. An invocation MAY hold a larger temporary working set until its reruns finish, so eviction MUST NOT make a wide range retry forever. An owner MUST revalidate its lease after a page load before it answers or stages work.
 
 ## History

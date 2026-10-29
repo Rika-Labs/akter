@@ -7,7 +7,7 @@ description: "Build a Bun or Node image from this repository and run one runner 
 
 This recipe runs a counter app with Docker Compose so you can see a complete self-hosted deployment. It is for developers who plan to run their own Akter runners.
 
-The files are in [`apps/self-host`](https://github.com/Rika-Labs/akter/tree/main/apps/self-host). `src/server.ts` serves a counter actor with `Akter.serve` and `App.make`: one `add` action, a `count` view, and bearer-token authentication. The store is MinIO in the compose file, any S3-compatible bucket, or a directory for a single container.
+The files are in [`apps/self-host`](https://github.com/Rika-Labs/akter/tree/main/apps/self-host). `src/server.ts` serves a counter actor with `Akter.serve` and `App.make`: one `add` command, a `count` view, and bearer-token authentication. The store is MinIO in the compose file, any S3-compatible bucket, or a directory for a single container.
 
 <Warning>
 This recipe tracks `main` and runs one runner. Several runners need directly reachable peer addresses and mutual TLS credentials, which the compose file does not provision. Pin the commit you deploy.

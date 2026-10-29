@@ -12,7 +12,7 @@ description: "Move a 0.1 application to a fresh 0.2 store."
 | In 0.1                              | In 0.2                                                                                    |
 | ----------------------------------- | ----------------------------------------------------------------------------------------- |
 | Owned rows and relational queries   | Schema state, `Actor.list`, and id-only `X.find`                                          |
-| Effect command handlers             | Synchronous actions, with I/O in jobs declared in the same `toLayer`                      |
+| Effect command handlers             | Synchronous commands, with I/O in jobs declared in the same `toLayer`                     |
 | Client factories                    | `X.client(id)` and `AkterClient.layer`                                                    |
 | Database configuration              | One store bucket per environment, or a directory for local development                    |
 | SQL inspector and repair operations | Separately granted, audited operators for actors, shards, log, snapshot, fork, and replay |

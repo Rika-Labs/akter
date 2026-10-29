@@ -17,14 +17,14 @@ const Metered = Actor.make("Metered", {
     value: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
     items: Actor.list(Item, { key: "id", by: "at" }),
   }),
-  actions: {
-    add: Actor.action(Schema.Int, { success: Schema.Int }),
-    reject: Actor.action({ fails: Rejected }),
-    defect: Actor.action(),
-    load: Actor.action({ success: Schema.Int }),
-    start: Actor.action(),
-    startTimed: Actor.action(),
-    failed: Actor.action(JobFailure, { internal: true }),
+  commands: {
+    add: Actor.command(Schema.Int, { success: Schema.Int }),
+    reject: Actor.command({ fails: Rejected }),
+    defect: Actor.command(),
+    load: Actor.command({ success: Schema.Int }),
+    start: Actor.command(),
+    startTimed: Actor.command(),
+    failed: Actor.command(JobFailure, { internal: true }),
   },
   jobs: {
     work: Actor.job({
@@ -347,7 +347,7 @@ describe("runner usage attribution", () => {
   it("seed 8140: type attribution adds to runner totals without sharing another runner's counters", () => {
     const Other = Actor.make("OtherMetered", {
       state: Schema.Struct({}),
-      actions: { touch: Actor.action() },
+      commands: { touch: Actor.command() },
     })
     const OtherLive = Other.toLayer({ touch: () => {} })
     return Simulation.run(

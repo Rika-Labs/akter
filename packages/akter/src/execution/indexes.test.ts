@@ -23,9 +23,9 @@ const Item = Actor.make("IndexedItem", {
       Schema.withDecodingDefault(Effect.succeed({ value: 0 })),
     ),
   }),
-  actions: {
-    set: Actor.action(Schema.Struct({ score: Schema.Finite, label: Schema.String })),
-    reject: Actor.action({ fails: Refused }),
+  commands: {
+    set: Actor.command(Schema.Struct({ score: Schema.Finite, label: Schema.String })),
+    reject: Actor.command({ fails: Refused }),
   },
 })
 const Live = Item.toLayer({

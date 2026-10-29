@@ -15,24 +15,24 @@ Recovery MUST derive authority and consequences only from `meta/store`, segments
 
 1. Store MUST choose the newest intact checkpoint and list the segments after its offset. The tail MUST be gapless; a gap MUST refuse the shard. A checkpoint whose manifest is undecodable or names a missing page MUST be skipped; if the remaining log no longer reaches the skipped checkpoint's offset, the shard MUST be refused rather than reopened from an incomplete prefix.
 2. Store MUST create the next empty open segment using `If-None-Match: *`. Its offset is the new epoch. A conflict means another runner opened first: re-list and retry a bounded number of times, then give the shard up. Taking this epoch alone MUST NOT permit the engine to serve before recovery succeeds.
-3. The engine MUST load the checkpoint's shard state and replay the tail. Replay MUST compare each recorded outcome and raise `ReplayMismatch` on a difference ([actions](02-actions.md)). An incompatible build or an undecodable checkpoint state MUST refuse the shard, never substitute default state.
+3. The engine MUST load the checkpoint's shard state and replay the tail. Replay MUST compare each recorded outcome and raise `ReplayMismatch` on a difference ([commands](02-actions.md)). An incompatible build or an undecodable checkpoint state MUST refuse the shard, never substitute default state.
 4. After successful recovery, deliver pending sends, resume open jobs, and fire timers that came due. A timer due during downtime MUST retain its original due time while recovery decides whether to fire it. Connection cleanup (run `disconnect` for every connection the previous owner recorded) remains a proposal obligation for runner integration.
 
 Actors are rebuilt lazily from their manifest plus their tail entries when first used. A replayed shard MUST reach the same states and outcomes from any retained checkpoint (I3).
 
 ## Unknown outcomes
 
-- A crash before an action's segment is durable MUST lose the action and everything staged by it and by same-shard actions that ran on it; none of it may have been observed (I2).
+- A crash before a command's segment is durable MUST lose the command and everything staged by it and by same-shard commands that ran on it; none of it may have been observed (I2).
 - A crash after the segment is durable but before the reply MUST be answered on retry from the stored outcome without running the handler again ([durability](03-durability.md)).
 - An append whose outcome is unknown MUST be resolved by the segment header before any reopen; if the bucket cannot be reached, the owner MUST close the shard without publishing and the next open decides.
-- A retryable failure of an admitted action MUST answer the caller with a retryable reason (`ActorUnavailable` or `ShardMoved`); the caller retries with the same id.
+- A retryable failure of an admitted command MUST answer the caller with a retryable reason (`ActorUnavailable` or `ShardMoved`); the caller retries with the same id.
 - Corrupt or missing pages and undecodable checkpoints MUST NOT produce default state ([storage](06-storage.md)).
 
 ## Drain and release handoff
 
 - For each owned shard, engine drain MUST stop admission (callers get `ShardMoved` with `retryAfter`), flush the committer, write a checkpoint, and append a final segment holding one `Released` entry. Drain MUST finish within its configured bound and report `{ outcome: "clean" | "timedOut", shards: [{ shard, offset, nextDue }], actions?, jobSeconds? }`. `offset` is the final durable offset; `nextDue` is the earliest pending timer or cron tick in epoch milliseconds, or `null` when none remains. Optional top-level `actions` and `jobSeconds` are cumulative runner-local attribution since open, including previously released or lost shards and locally interrupted attempts. New producers MUST include them; decoders MUST accept legacy reports without them. Missing totals are unknown, not zero. If release cannot complete within the bound, drain MUST close the shard without publishing undurable work and report `timedOut`.
 - The runner integration MUST make the runner unready before engine drain stops admission. A self-hosted runner MUST print `DRAINED` followed by the JSON report, then close its runtime scope. `RuntimeControl.waitForSignal` waits for SIGTERM or SIGINT without prematurely interrupting the engine; the self-host recipe uses it on Bun and Node.
-- Closing the runtime MAY cut off admitted actions; a cut-off action, or one sent during or after shutdown, MUST fail with a retryable reason within a bound and MUST NOT wait without end.
+- Closing the runtime MAY cut off admitted commands; a cut-off command, or one sent during or after shutdown, MUST fail with a retryable reason within a bound and MUST NOT wait without end.
 - A runner of another release MUST NOT open a shard whose last segment is not `Released` unless the owning runner's lease object has expired; the create-once fence decides between racers.
 - A new release MUST start in standby and open shards only through the rule above.
 - An orderly assignment change MUST write the shard's `Released` record before releasing its advisory lock. While a runner drain is still writing `Released` records, the runner MUST keep renewing its heartbeat and MUST NOT release any advisory lock, even after its own membership view has disabled it. A failed release MUST NOT hand that live runner's lock to another release. A drained runner MUST NOT re-register or renew its heartbeat; unregistration and advisory cleanup use only the remaining drain budget.
@@ -54,7 +54,7 @@ Owner validity uses elapsed time on the owner's own clock ([actor authority](01-
 - A store is restored from a copy of its bucket. Every runner of the store MUST be stopped before a restore and stay stopped until it completes.
 - A restore MUST include `meta/store`, each shard's newest checkpoint and every segment after it, and every page reachable from those checkpoints; before any runner restarts, every restored checkpoint's pages MUST be verified by existence and digest. A shard whose copy is incomplete MUST be refused, never opened with default state.
 - A restore MUST also include `meta/retention` when present and the operator audit objects; omitting it would silently restore the initial retention rather than the effective policy. An absent retention record in a store that never changed policy still uses `meta/store`.
-- After a restore, pending sends, timers, job journals and deduplication state recover as after a crash. An external id that expired MUST stay refused. Actions durable after the copy was taken are lost; a retry of such an id MAY run again, and their external consequences are the operator's to reconcile.
+- After a restore, pending sends, timers, job journals and deduplication state recover as after a crash. An external id that expired MUST stay refused. Commands durable after the copy was taken are lost; a retry of such an id MAY run again, and their external consequences are the operator's to reconcile.
 - A stopped `akter dev` store is copied by copying its whole directory.
 
 ## Startup and runners

@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { afterAll, describe, it } from "vitest"
 import { RuleTester } from "oxlint/plugins-dev"
 
-import { synchronousActionsRule } from "./synchronous-actions.ts"
+import { synchronousCommandsRule } from "./synchronous-commands.ts"
 
 RuleTester.describe = describe
 
@@ -15,7 +15,7 @@ const tester = new RuleTester({ languageOptions: { parserOptions: { lang: "ts" }
 
 const contract = `import { Actor } from "@rikalabs/akter"
 const Room = Actor.make("Room", {
-  actions: { post: Actor.action(), count: Actor.action() },
+  commands: { post: Actor.command(), count: Actor.command() },
   views: { summary: Actor.view() },
   jobs: { notify: Actor.job({}), "digest": Actor.job({}) },
 })
@@ -23,13 +23,13 @@ const Room = Actor.make("Room", {
 
 const layer = (handlers: string) => `${contract}Room.toLayer({ ${handlers} })`
 
-const action = (body: string) => layer(`post: (room, body, ctx) => { ${body} }`)
+const command = (body: string) => layer(`post: (room, body, ctx) => { ${body} }`)
 
 const job = (body: string) => layer(`notify: async (payload, job) => { ${body} }`)
 
 const error = (messageId: string, data?: Record<string, string>) => ({ messageId, data })
 
-const root = mkdtempSync(join(tmpdir(), "akter-synchronous-actions-"))
+const root = mkdtempSync(join(tmpdir(), "akter-synchronous-commands-"))
 
 afterAll(() => rmSync(root, { recursive: true, force: true }))
 
@@ -39,10 +39,10 @@ writeFileSync(
   join(root, "contracts", "room.ts"),
   `import { Actor } from "@rikalabs/akter"
 export const Room = Actor.make("Room", {
-  actions: { post: Actor.action() },
+  commands: { post: Actor.command() },
   jobs: { notify: Actor.job({}) },
 })
-export const Lobby = Actor.make("Lobby", { actions: { open: Actor.action() } })
+export const Lobby = Actor.make("Lobby", { commands: { open: Actor.command() } })
 export default Actor.make("Default", { jobs: { sync: Actor.job({}) } })
 `,
 )
@@ -66,26 +66,26 @@ const implementation = (specifier: string, name: string, handlers: string) => ({
   filename: join(root, "server", "room.ts"),
 })
 
-tester.run("akter/synchronous-actions", synchronousActionsRule, {
+tester.run("akter/synchronous-commands", synchronousCommandsRule, {
   valid: [
-    action("return ctx.now() + 1"),
-    action("room.title = body; return ctx.random()"),
-    action("const id = ctx.id(); room.items.put({ id })"),
-    action("return Math.floor(1.5) + Math.ceil(1.5) + Math.round(1.5) + Math.trunc(1.5)"),
-    action("return Math.abs(-1) + Math.min(1, 2) + Math.max(1, 2) + Math.sign(-3)"),
-    action("return Math.sqrt(2) + Math.fround(1.1) + Math.clz32(8) + Math.imul(3, 4)"),
-    action("return Math.PI + Math.E + Math.SQRT2 + Math.LN10"),
-    action("return String(body) + body.toString()"),
-    action("return body ? 2 * 2 : 2 + 2"),
-    action("let n = 2; n *= 3; return n"),
-    action("const Date = ctx; return Date.now()"),
-    action("const { Date } = ctx; return Date.now()"),
-    action("return room.Date + room.process + room.crypto + room.performance + ctx.Promise"),
-    action("return { Date: 1, process: 2, Intl: 3 }"),
-    action("const e = new Error('x'); return e.message"),
-    action("try { return 1 } catch (error) { return error }"),
-    action("try { return 1 } catch { return 2 }"),
-    action("const cache: Map<string, Date> = new Map(); return cache.size"),
+    command("return ctx.now() + 1"),
+    command("room.title = body; return ctx.random()"),
+    command("const id = ctx.id(); room.items.put({ id })"),
+    command("return Math.floor(1.5) + Math.ceil(1.5) + Math.round(1.5) + Math.trunc(1.5)"),
+    command("return Math.abs(-1) + Math.min(1, 2) + Math.max(1, 2) + Math.sign(-3)"),
+    command("return Math.sqrt(2) + Math.fround(1.1) + Math.clz32(8) + Math.imul(3, 4)"),
+    command("return Math.PI + Math.E + Math.SQRT2 + Math.LN10"),
+    command("return String(body) + body.toString()"),
+    command("return body ? 2 * 2 : 2 + 2"),
+    command("let n = 2; n *= 3; return n"),
+    command("const Date = ctx; return Date.now()"),
+    command("const { Date } = ctx; return Date.now()"),
+    command("return room.Date + room.process + room.crypto + room.performance + ctx.Promise"),
+    command("return { Date: 1, process: 2, Intl: 3 }"),
+    command("const e = new Error('x'); return e.message"),
+    command("try { return 1 } catch (error) { return error }"),
+    command("try { return 1 } catch { return 2 }"),
+    command("const cache: Map<string, Date> = new Map(); return cache.size"),
     layer("post: (room, at: Date, ctx): Promise<void> => undefined"),
     job("await Promise.resolve(Date.now())"),
     job("return Math.sin(Date.now() ** 2) + Math.random() + performance.now()"),
@@ -121,31 +121,31 @@ tester.run("akter/synchronous-actions", synchronousActionsRule, {
     `import { Actor } from "@rikalabs/akter"\nconst Room = Actor.make("Room")\nRoom.toLayer({ post: (Effect) => Effect.succeed(1) })`,
   ],
   invalid: [
-    { code: action("return Date.now()"), errors: [error("date")] },
-    { code: action("return new Date()"), errors: [error("date")] },
-    { code: action("const D = Date; return D"), errors: [error("date")] },
-    { code: action("return body instanceof Date"), errors: [error("date")] },
-    { code: action("return Math.random()"), errors: [error("random")] },
-    { code: action("return Math['random']()"), errors: [error("random")] },
-    { code: action("return Math.sin(1)"), errors: [error("mathInexact", { name: "sin" })] },
-    { code: action("return Math.cos(1)"), errors: [error("mathInexact", { name: "cos" })] },
-    { code: action("return Math.exp(1)"), errors: [error("mathInexact", { name: "exp" })] },
-    { code: action("return Math.log(1)"), errors: [error("mathInexact", { name: "log" })] },
-    { code: action("return Math.pow(2, 3)"), errors: [error("mathInexact", { name: "pow" })] },
-    { code: action("return Math.hypot(3, 4)"), errors: [error("mathInexact", { name: "hypot" })] },
-    { code: action("return Math.cbrt(8)"), errors: [error("mathInexact", { name: "cbrt" })] },
-    { code: action("return Math['tan'](2)"), errors: [error("mathInexact", { name: "tan" })] },
-    { code: action("const m = Math; return m"), errors: [error("mathDynamic")] },
-    { code: action("return Math[body](1)"), errors: [error("mathDynamic")] },
-    { code: action("const { sin } = Math; return sin"), errors: [error("mathDynamic")] },
-    { code: action("return 2 ** 8"), errors: [error("exponent")] },
-    { code: action("let n = 2; n **= 3; return n"), errors: [error("exponent")] },
-    { code: action("return crypto.randomUUID()"), errors: [error("crypto")] },
-    { code: action("return performance.now()"), errors: [error("performance")] },
-    { code: action("return process.env.HOME"), errors: [error("process")] },
-    { code: action("return globalThis.name"), errors: [error("globalThis")] },
-    { code: action("return Promise.resolve(1)"), errors: [error("promise")] },
-    { code: action("return new Promise(() => {})"), errors: [error("promise")] },
+    { code: command("return Date.now()"), errors: [error("date")] },
+    { code: command("return new Date()"), errors: [error("date")] },
+    { code: command("const D = Date; return D"), errors: [error("date")] },
+    { code: command("return body instanceof Date"), errors: [error("date")] },
+    { code: command("return Math.random()"), errors: [error("random")] },
+    { code: command("return Math['random']()"), errors: [error("random")] },
+    { code: command("return Math.sin(1)"), errors: [error("mathInexact", { name: "sin" })] },
+    { code: command("return Math.cos(1)"), errors: [error("mathInexact", { name: "cos" })] },
+    { code: command("return Math.exp(1)"), errors: [error("mathInexact", { name: "exp" })] },
+    { code: command("return Math.log(1)"), errors: [error("mathInexact", { name: "log" })] },
+    { code: command("return Math.pow(2, 3)"), errors: [error("mathInexact", { name: "pow" })] },
+    { code: command("return Math.hypot(3, 4)"), errors: [error("mathInexact", { name: "hypot" })] },
+    { code: command("return Math.cbrt(8)"), errors: [error("mathInexact", { name: "cbrt" })] },
+    { code: command("return Math['tan'](2)"), errors: [error("mathInexact", { name: "tan" })] },
+    { code: command("const m = Math; return m"), errors: [error("mathDynamic")] },
+    { code: command("return Math[body](1)"), errors: [error("mathDynamic")] },
+    { code: command("const { sin } = Math; return sin"), errors: [error("mathDynamic")] },
+    { code: command("return 2 ** 8"), errors: [error("exponent")] },
+    { code: command("let n = 2; n **= 3; return n"), errors: [error("exponent")] },
+    { code: command("return crypto.randomUUID()"), errors: [error("crypto")] },
+    { code: command("return performance.now()"), errors: [error("performance")] },
+    { code: command("return process.env.HOME"), errors: [error("process")] },
+    { code: command("return globalThis.name"), errors: [error("globalThis")] },
+    { code: command("return Promise.resolve(1)"), errors: [error("promise")] },
+    { code: command("return new Promise(() => {})"), errors: [error("promise")] },
     {
       code: layer("post: async (room) => { await room.sync() }"),
       errors: [error("asyncFunction"), error("await")],
@@ -159,76 +159,76 @@ tester.run("akter/synchronous-actions", synchronousActionsRule, {
       errors: [error("asyncFunction")],
     },
     {
-      code: action("return async () => 1"),
+      code: command("return async () => 1"),
       errors: [error("asyncFunction")],
     },
     {
-      code: action("const wait = async function () { return 1 }; return wait"),
+      code: command("const wait = async function () { return 1 }; return wait"),
       errors: [error("asyncFunction")],
     },
     {
-      code: action("async function later() { return 1 } return later"),
+      code: command("async function later() { return 1 } return later"),
       errors: [error("asyncFunction")],
     },
     {
-      code: action("return (async () => { await 1 })"),
+      code: command("return (async () => { await 1 })"),
       errors: [error("asyncFunction"), error("await")],
     },
     {
       code: layer("post: async (room, body) => { for await (const x of body) { x } }"),
       errors: [error("asyncFunction"), error("await")],
     },
-    { code: action("return setTimeout(() => {}, 1)"), errors: [error("timer")] },
-    { code: action("return setInterval(() => {}, 1)"), errors: [error("timer")] },
-    { code: action("return setImmediate(() => {})"), errors: [error("timer")] },
-    { code: action("queueMicrotask(() => {})"), errors: [error("timer")] },
-    { code: action("clearTimeout(body)"), errors: [error("timer")] },
-    { code: action("clearInterval(body)"), errors: [error("timer")] },
-    { code: action("return new Intl.NumberFormat().format(1)"), errors: [error("intl")] },
+    { code: command("return setTimeout(() => {}, 1)"), errors: [error("timer")] },
+    { code: command("return setInterval(() => {}, 1)"), errors: [error("timer")] },
+    { code: command("return setImmediate(() => {})"), errors: [error("timer")] },
+    { code: command("queueMicrotask(() => {})"), errors: [error("timer")] },
+    { code: command("clearTimeout(body)"), errors: [error("timer")] },
+    { code: command("clearInterval(body)"), errors: [error("timer")] },
+    { code: command("return new Intl.NumberFormat().format(1)"), errors: [error("intl")] },
     {
-      code: action("return body.toLocaleString()"),
+      code: command("return body.toLocaleString()"),
       errors: [error("locale", { name: "toLocaleString" })],
     },
     {
-      code: action("return body.toLocaleDateString('en')"),
+      code: command("return body.toLocaleDateString('en')"),
       errors: [error("locale", { name: "toLocaleDateString" })],
     },
     {
-      code: action("return body.toLocaleTimeString()"),
+      code: command("return body.toLocaleTimeString()"),
       errors: [error("locale", { name: "toLocaleTimeString" })],
     },
     {
-      code: action("return body.localeCompare('a')"),
+      code: command("return body.localeCompare('a')"),
       errors: [error("locale", { name: "localeCompare" })],
     },
     {
-      code: action("return room.names.sort((a, b) => a.localeCompare(b))"),
+      code: command("return room.names.sort((a, b) => a.localeCompare(b))"),
       errors: [error("locale", { name: "localeCompare" })],
     },
-    { code: action("return (255).toString(16)"), errors: [error("radix")] },
-    { code: action("return body?.toString(2)"), errors: [error("radix")] },
+    { code: command("return (255).toString(16)"), errors: [error("radix")] },
+    { code: command("return body?.toString(2)"), errors: [error("radix")] },
     {
-      code: action("try { return 1 } catch (e) { return e.message }"),
+      code: command("try { return 1 } catch (e) { return e.message }"),
       errors: [error("errorDetail", { name: "message" })],
     },
     {
-      code: action("try { return 1 } catch (e) { return e.stack }"),
+      code: command("try { return 1 } catch (e) { return e.stack }"),
       errors: [error("errorDetail", { name: "stack" })],
     },
     {
-      code: action("try { return 1 } catch (e) { return e?.['message'] }"),
+      code: command("try { return 1 } catch (e) { return e?.['message'] }"),
       errors: [error("errorDetail", { name: "message" })],
     },
     {
-      code: action("try { return 1 } catch ({ message }) { return message }"),
+      code: command("try { return 1 } catch ({ message }) { return message }"),
       errors: [error("errorDetail", { name: "message" })],
     },
     {
-      code: action("try { return 1 } catch ({ stack: trace }) { return trace }"),
+      code: command("try { return 1 } catch ({ stack: trace }) { return trace }"),
       errors: [error("errorDetail", { name: "stack" })],
     },
-    { code: action("return structuredClone(room)"), errors: [error("structuredClone")] },
-    { code: action("return Effect.succeed(1)"), errors: [error("effect")] },
+    { code: command("return structuredClone(room)"), errors: [error("structuredClone")] },
+    { code: command("return Effect.succeed(1)"), errors: [error("effect")] },
     {
       code: layer("post: function* (room) { yield* room.next() }"),
       errors: [error("yield")],
@@ -270,31 +270,31 @@ tester.run("akter/synchronous-actions", synchronousActionsRule, {
       errors: [error("date")],
     },
     {
-      code: action("const stamp = () => Date.now(); return stamp()"),
+      code: command("const stamp = () => Date.now(); return stamp()"),
       errors: [error("date")],
     },
     {
-      code: action("function stamp() { return Math.sin(1) } return stamp()"),
+      code: command("function stamp() { return Math.sin(1) } return stamp()"),
       errors: [error("mathInexact", { name: "sin" })],
     },
     {
-      code: action("return room.items.map((item) => item.at ** 2)"),
+      code: command("return room.items.map((item) => item.at ** 2)"),
       errors: [error("exponent")],
     },
     {
-      code: action("return Date.now() + performance.now() + Math.random()"),
+      code: command("return Date.now() + performance.now() + Math.random()"),
       errors: [error("date"), error("performance"), error("random")],
     },
     {
-      code: action("return Math.sin(2) ** 2"),
+      code: command("return Math.sin(2) ** 2"),
       errors: [error("exponent"), error("mathInexact", { name: "sin" })],
     },
     {
-      code: action("return Date.now() + Date.now()"),
+      code: command("return Date.now() + Date.now()"),
       errors: [error("date"), error("date")],
     },
     {
-      code: action("return Math.sin(Math.cos(1))"),
+      code: command("return Math.sin(Math.cos(1))"),
       errors: [error("mathInexact", { name: "sin" }), error("mathInexact", { name: "cos" })],
     },
     {
@@ -306,7 +306,7 @@ tester.run("akter/synchronous-actions", synchronousActionsRule, {
       errors: [error("date")],
     },
     {
-      code: `import { Actor } from "@rikalabs/akter"\nconst Room = Actor.make("Room", { actions: {} } satisfies Definition) as Contract\nRoom.toLayer({ post: () => Date.now() })`,
+      code: `import { Actor } from "@rikalabs/akter"\nconst Room = Actor.make("Room", { commands: {} } satisfies Definition) as Contract\nRoom.toLayer({ post: () => Date.now() })`,
       errors: [error("date")],
     },
     {

@@ -142,7 +142,7 @@ const noOwner = (): ActorError => ActorError.make({ reason: ShardMoved.make({}) 
 
 /**
  * The simulator: engines over one in-process bucket with seeded faults, a seeded fiber scheduler
- * and `TestClock`, every action run twice and compared, `Math.random` replaced for the run, and
+ * and `TestClock`, every command run twice and compared, `Math.random` replaced for the run, and
  * the invariants checked after every `settle`. Each runner has its own store instance and writer
  * over the shared bucket. A runner layer assigns every shard to one owner: clients reach that
  * owner and retry with the same id while it is not open, and every `REFRESH` the layer assigns a
@@ -409,8 +409,8 @@ const layer = <const Actors extends ReadonlyArray<AnyActor>>(
             Stream.suspend(() => reads(request)?.state(request) ?? Stream.fromEffect(missing)),
           view: (request) =>
             Stream.suspend(() => reads(request)?.view(request) ?? Stream.fromEffect(missing)),
-          event: (request) =>
-            Stream.suspend(() => reads(request)?.event(request) ?? Stream.fromEffect(missing)),
+          broadcast: (request) =>
+            Stream.suspend(() => reads(request)?.broadcast(request) ?? Stream.fromEffect(missing)),
           range: (request) => Effect.suspend(() => reads(request)?.range(request) ?? missing),
           watch: (request) =>
             Stream.suspend(() => reads(request)?.watch(request) ?? Stream.fromEffect(missing)),
@@ -615,7 +615,7 @@ const state = <X extends AnyActor>(
   })
 
 /**
- * Writes an instance's initial state as an operator would, durably, before its first action; a
+ * Writes an instance's initial state as an operator would, durably, before its first command; a
  * write lost to an injected crash or outage is staged again on the reopened shard, after the same
  * backoff a client uses.
  */

@@ -39,15 +39,15 @@ const Ledger = Actor.make("Ledger", {
     total: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
     deliveries: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
-  actions: {
-    add: Actor.action(Schema.Finite, { success: Schema.Finite }),
-    send: Actor.action(Schema.Struct({ to: Schema.String, amount: Schema.Finite })),
-    receive: Actor.action(Schema.Finite, { internal: true }),
-    remind: Actor.action(Schema.Finite),
+  commands: {
+    add: Actor.command(Schema.Finite, { success: Schema.Finite }),
+    send: Actor.command(Schema.Struct({ to: Schema.String, amount: Schema.Finite })),
+    receive: Actor.command(Schema.Finite, { internal: true }),
+    remind: Actor.command(Schema.Finite),
   },
   access: (caller: Caller, request: AccessRequest) => {
     if (request.kind === "find") findChecks++
-    return request.kind === "action" && request.member === "add"
+    return request.kind === "command" && request.member === "add"
       ? isUser(caller) && caller.subject === "ana"
       : isAuthenticated(caller)
   },
