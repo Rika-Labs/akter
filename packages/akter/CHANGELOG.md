@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.3.0 (2026-10-29)
+
+The framework and CLI release together at `0.3.0` on the `latest` npm dist-tag. Akter now uses domain-driven names: a caller's request is a **command** and a live, never-stored value is a **broadcast**. Stores written by 0.2 open unchanged: every spelling written to a store, an audit record or the `/rpc` wire keeps its 0.2 form.
+
+### Breaking changes
+
+- `Actor.action` is `Actor.command`, the `actions` option is `commands`, and `ActionContext`, `ActionHandler` and `ActionDefect` are `CommandContext`, `CommandHandler` and `CommandDefect`. A defect reaches a client named `CommandDefect`.
+- `Actor.event` is `Actor.broadcast`, the `events` option is `broadcasts`, `ctx.emit` in commands and jobs is `ctx.broadcast`, and the `Event` type is `Broadcast`. `Transport.event` is `Transport.broadcast`.
+- `access` sees request kinds `"command"` and `"broadcast"` instead of `"action"` and `"event"`; `classifyRpc` returns `"command"` instead of `"action"`.
+- `Actor.job` no longer takes `retry` or `timeout`. Attach them as policies: `Actor.job({ ... }).pipe(Job.retry({ times, schedule }), Job.timeout("30 seconds"))`. `times` counts retries after the first attempt, so 0.2's `attempts: 3` is `times: 2`; `schedule` is an Effect `Schedule` for the delay before each retry. `Retry` is `{ times, schedule? }`.
+- None of the 0.2 spellings is kept as an alias.
+- The `effect`, `@effect/platform-bun` and `@effect/platform-node` peers are `~4.0.3`: Effect 4.0 patch releases only. Effect 4.1.0 removed `Crypto` from the `effect` root entry, which Akter imports, so 0.3.0 does not support Effect 4.1.
+
+### New
+
+- `Actor.job({ onSuccess })` names an internal command that receives the job's success value. The value is journaled before it is delivered, under an id derived from the job, so a crash or a retry delivers it exactly once. A job without `onSuccess` behaves as in 0.2.
+- Each retry delay is computed from the job's `Schedule` when the failure is journaled and replayed from the log, never recomputed. A schedule that ends stops the retries early.
+- `Story` in `@rikalabs/akter/testing` runs one actor's command and view handlers with no engine and no store. A story gives a state and a command and checks the reply or failure, the new state and every staged send, timer, job start and broadcast; `Story.effect` runs the same steps as an Effect.
+- `Job` is exported from `@rikalabs/akter` as both the type and the policy namespace.
+- `App.make` names the actor its layer leaves unimplemented and the `toLayer` call to add.
+- The naming guide documents imperative commands and jobs, past-tense results (`succeeded<Job>`, `failed<Job>`) and broadcasts, and dotted actor names such as `Billing.Invoice`.
+
 ## 0.2.2 (2026-10-15)
 
 The framework and CLI release together at `0.2.2` on the `latest` npm dist-tag. Stores written by 0.2.0 and 0.2.1 open unchanged.
