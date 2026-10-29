@@ -35,12 +35,11 @@ export {
   Unauthorized,
 } from "./contract/errors.ts"
 
-export { JobFailure } from "./contract/members.ts"
+export { Job, JobFailure } from "./contract/members.ts"
 export type {
   Broadcast,
   Command,
   DeclaredError,
-  Job,
   KeyField,
   List,
   ListDraft,

@@ -1,5 +1,16 @@
-import { Clock, Context, Deferred, Duration, Effect, Layer, Match, Schema, Stream } from "effect"
-import { Actor, JobFailure, user } from "../../../../packages/akter/src/index.ts"
+import {
+  Clock,
+  Context,
+  Deferred,
+  Duration,
+  Effect,
+  Layer,
+  Match,
+  Schedule,
+  Schema,
+  Stream,
+} from "effect"
+import { Actor, Job, JobFailure, user } from "../../../../packages/akter/src/index.ts"
 import type { DefOf, JobContext } from "../../../../packages/akter/src/index.ts"
 import { DurableClock } from "../../../../packages/akter/src/server.ts"
 import { CommandIds } from "../../../../packages/akter/src/execution/command-ids.ts"
@@ -77,23 +88,17 @@ export const Worker = Actor.make("JobWorker", {
     submit: Actor.command(Task),
     credit: Actor.command(Schema.Int, { internal: true, success: Schema.Int }),
     complete: Actor.command(Schema.String, { internal: true }),
-    rejected: Actor.command(JobFailure, { internal: true }),
+    failedWork: Actor.command(JobFailure, { internal: true }),
   },
   broadcasts: { token: Actor.broadcast(Schema.String) },
   jobs: {
-    work: Actor.job({
-      payload: Task,
-      retry: { attempts: 3, backoff: "100 millis" },
-      concurrency: 2,
-      onFailure: "rejected",
-    }),
-    timed: Actor.job({
-      payload: Task,
-      retry: { attempts: 3, backoff: "100 millis" },
-      timeout: "2 seconds",
-      concurrency: 2,
-      onFailure: "rejected",
-    }),
+    work: Actor.job({ payload: Task, concurrency: 2, onFailure: "failedWork" }).pipe(
+      Job.retry({ times: 2, schedule: Schedule.spaced("100 millis") }),
+    ),
+    timed: Actor.job({ payload: Task, concurrency: 2, onFailure: "failedWork" }).pipe(
+      Job.retry({ times: 2, schedule: Schedule.spaced("100 millis") }),
+      Job.timeout("2 seconds"),
+    ),
   },
 })
 
@@ -149,7 +154,7 @@ export const WorkerLive = Worker.toLayer({
   complete: (worker, id) => {
     worker.finished.push(id)
   },
-  rejected: (worker, failure) => {
+  failedWork: (worker, failure) => {
     worker.failed.push(failure)
   },
   work,

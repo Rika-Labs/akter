@@ -16,9 +16,9 @@ export const Ledger = Actor.make("ProcessLedger", {
     receive: Actor.command(Schema.Finite, { internal: true }),
     remind: Actor.command(Schema.Struct({ at: Schema.Finite, amount: Schema.Finite })),
     submit: Actor.command(Work),
-    rejected: Actor.command(JobFailure, { internal: true }),
+    failedWork: Actor.command(JobFailure, { internal: true }),
   },
-  jobs: { work: Actor.job({ payload: Work, onFailure: "rejected" }) },
+  jobs: { work: Actor.job({ payload: Work, onFailure: "failedWork" }) },
 })
 
 export const LedgerLive = Ledger.toLayer({
@@ -39,7 +39,7 @@ export const LedgerLive = Ledger.toLayer({
   submit: (_, work, { start }) => {
     start.work(work)
   },
-  rejected: () => {},
+  failedWork: () => {},
   work: ({ to, amount, delay }, { self, step }) =>
     Effect.gen(function* () {
       const receiver = yield* Ledger.client(to)

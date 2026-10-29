@@ -1,6 +1,6 @@
 ---
 title: "Jobs"
-description: "Run I/O as journaled Effects: steps, retries, failure delivery, and durable sleep."
+description: "Run I/O as journaled Effects: steps, result delivery, retry and timeout policies, and durable sleep."
 ---
 
 # Jobs
@@ -9,23 +9,33 @@ A job runs I/O as an Effect, in the same `toLayer` as the actor's synchronous co
 
 ## Declare a job
 
-`Actor.job({ payload?, retry?, timeout?, concurrency?, onFailure })`
+`Actor.job({ payload?, concurrency?, onSuccess?, onFailure })`
 
-| Option        | Default                       | Meaning                                           |
-| ------------- | ----------------------------- | ------------------------------------------------- |
-| `payload`     | none                          | Schema of the job's input                         |
-| `retry`       | `{ attempts: 1, backoff: 0 }` | Total attempts and the wait between them          |
-| `timeout`     | none                          | Longest an attempt may run                        |
-| `concurrency` | `1`                           | How many runs of this job may be active at once   |
-| `onFailure`   | required                      | An internal command that takes `Actor.JobFailure` |
+| Option        | Default  | Meaning                                                                      |
+| ------------- | -------- | ---------------------------------------------------------------------------- |
+| `payload`     | none     | Schema of the job's input                                                    |
+| `concurrency` | `1`      | How many runs of this job may be active at once                              |
+| `onSuccess`   | none     | An internal command that receives the handler's success value as its payload |
+| `onFailure`   | required | An internal command that takes `Actor.JobFailure`                            |
+
+Name the result commands as facts: `succeeded<Job>` for `onSuccess` and `failed<Job>` for `onFailure`.
+
+Retry and timeout are policies piped onto the declaration with `Job` from `@rikalabs/akter`:
+
+| Policy                            | Default    | Meaning                                                                                               |
+| --------------------------------- | ---------- | ----------------------------------------------------------------------------------------------------- |
+| `Job.retry({ times, schedule? })` | no retries | Up to `times` retries after the first attempt; `schedule` gives the delay before each, otherwise none |
+| `Job.timeout(duration)`           | none       | Longest an attempt may run, from its durable start                                                    |
+
+`Job.retry({ times: 2 })` allows three attempts in all. The schedule is an Effect `Schedule`; the delay before retry `n` is the schedule's `n`th delay, computed when attempt `n` fails and journaled with that failure, so a crash or owner move keeps the original deadline. A schedule that ends, such as one limited with `Schedule.upTo({ times })`, stops retrying before `times` is spent.
 
 No cancellation, compensation, or workflow-run handle is exposed.
 
 ## Write the handler
 
 ```ts
-import { Context, Effect, Schema, Stream } from "effect"
-import { Actor } from "@rikalabs/akter"
+import { Context, Effect, Schedule, Schema, Stream } from "effect"
+import { Actor, Job } from "@rikalabs/akter"
 import { DurableClock } from "@rikalabs/akter/server"
 
 class Model extends Context.Service<Model, { stream(prompt: string): Stream.Stream<string> }>()(
@@ -38,16 +48,16 @@ const Chat = Actor.make("Chat", {
   }),
   commands: {
     ask: Actor.command(Schema.String),
-    save: Actor.command(Schema.String, { internal: true }),
-    failed: Actor.command(Actor.JobFailure, { internal: true }),
+    succeededGenerate: Actor.command(Schema.String, { internal: true }),
+    failedGenerate: Actor.command(Actor.JobFailure, { internal: true }),
   },
   broadcasts: { token: Actor.broadcast(Schema.String) },
   jobs: {
     generate: Actor.job({
       payload: Schema.String,
-      retry: { attempts: 3, backoff: "2 seconds" },
-      onFailure: "failed",
-    }),
+      onSuccess: "succeededGenerate",
+      onFailure: "failedGenerate",
+    }).pipe(Job.retry({ times: 2, schedule: Schedule.exponential("2 seconds") })),
   },
 })
 
@@ -55,13 +65,13 @@ const ChatLive = Chat.toLayer({
   ask: (_chat, prompt, ctx) => {
     ctx.start.generate(prompt)
   },
-  save: (chat, text) => {
+  succeededGenerate: (chat, text) => {
     chat.answer = text
   },
-  failed: (chat) => {
+  failedGenerate: (chat) => {
     chat.answer = "Something went wrong."
   },
-  generate: (prompt, { self, step, broadcast }) =>
+  generate: (prompt, { step, broadcast }) =>
     Effect.gen(function* () {
       const model = yield* Model
       const text = yield* step(
@@ -74,13 +84,15 @@ const ChatLive = Chat.toLayer({
           ),
         ),
       )
-      yield* step("save", self.save(text))
       yield* DurableClock.sleep({ name: "cooldown", duration: "10 seconds" })
+      return text
     }),
 })
 ```
 
-The handler receives the payload and `{ self, step, broadcast, id, attempt }`. `attempt` starts at 1. Services the handler needs flow into the type of `toLayer`.
+The handler receives the payload and `{ self, step, broadcast, id, attempt }`. `attempt` starts at 1. Services the handler needs flow into the type of `toLayer`. With `onSuccess`, the handler's Effect must succeed with that command's payload type (`void` when the command takes none); without it, the success value is discarded.
+
+The two retries above wait 2 and then 4 seconds.
 
 ## Steps
 
@@ -92,6 +104,10 @@ The handler receives the payload and `{ self, step, broadcast, id, attempt }`. `
 
 Calls from a job to an actor get ids derived from the job, the step (or `body`), the attempt, and the call's position. A crash replay keeps the attempt and returns the receiver's stored outcome. A deliberate retry gets fresh ids, so put calls that must not repeat inside a step, or make the receiving command idempotent. Calls in one scope run in sequence. Parallel calls need separate steps.
 
+## When the job succeeds
+
+With `onSuccess`, the handler's success value is journaled before anything else happens, encoded with the command's payload schema, and then delivered once to that command under a command id derived from the job. A crash after the value is journaled does not run the handler again: the next owner delivers the journaled value, so a handler whose result differs between runs outside its steps still delivers the first result. A crash after delivery resends the same value with the same id and gets the receiver's stored outcome, so the command applies once. The job then completes, whatever that command returns: its declared failure or defect is recorded on the receiver and does not fail or retry the job. Without `onSuccess`, a job ends as in 0.2.
+
 ## When retries run out
 
 `onFailure` receives `{ job, declaration, key?, payload, attempts, cause, ambiguous }` once. `payload` is in its encoded form. `cause` is `Failed`, `Defect`, or `Timeout`. `ambiguous` is true when a step was running and may already have reached its provider. A typed step failure clears the ambiguity. A crash during failure delivery retries with the same derived command id and keeps the recorded cause.
@@ -102,7 +118,7 @@ Calls from a job to an actor get ids derived from the job, the step (or `body`),
 
 ## Broadcasts from jobs
 
-A broadcast sent from a job is published immediately and can repeat after a retry. It is not stored. Save final results through an actor call, as the example does with `save`.
+A broadcast sent from a job is published immediately and can repeat after a retry. It is not stored. Save final results through `onSuccess`, as the example does with `succeededGenerate`, or through an actor call inside a step.
 
 ## With several runners
 

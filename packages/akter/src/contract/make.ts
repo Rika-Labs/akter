@@ -136,6 +136,16 @@ type OnFailureCheck<J extends Record<string, Job>, A extends Record<string, Comm
     : TypeError<`job '${K & string}': onFailure '${J[K]["onFailure"] & string}' is not a command of this actor`>
 }
 
+type OnSuccessCheck<J extends Record<string, Job>, A extends Record<string, Command>> = {
+  readonly [K in keyof J]: J[K]["onSuccess"] extends undefined
+    ? unknown
+    : J[K]["onSuccess"] extends keyof A
+      ? A[J[K]["onSuccess"]]["internal"] extends true
+        ? unknown
+        : TypeError<`job '${K & string}': onSuccess command '${J[K]["onSuccess"] & string}' must be internal`>
+      : TypeError<`job '${K & string}': onSuccess '${J[K]["onSuccess"] & string}' is not a command of this actor`>
+}
+
 type Reserved = "state" | "join" | "connect" | "disconnect"
 
 type Duplicates<A, V, E, J, L> =
@@ -171,7 +181,7 @@ export interface MakeOptions<
   readonly commands: A
   readonly views?: V
   readonly broadcasts?: E
-  readonly jobs?: J & OnFailureCheck<J, A>
+  readonly jobs?: J & OnFailureCheck<J, A> & OnSuccessCheck<J, A>
   readonly presence?: P
   readonly access?: Acc
 }
@@ -180,8 +190,8 @@ const reserved = new Set(["state", "join", "connect", "disconnect"])
 
 /**
  * Refuses at runtime what the types refuse at compile time, for callers that bypass them: a state
- * field without a decoding default, a duplicate or reserved member name, and an `onFailure` that
- * is not an internal command of the same actor.
+ * field without a decoding default, a duplicate or reserved member name, and an `onFailure` or
+ * `onSuccess` that is not an internal command of the same actor.
  */
 const validate = (actor: AnyActor): void => {
   if (Result.isFailure(Schema.decodeResult(MemberCodec.json(actor.state))({})))
@@ -209,6 +219,12 @@ const validate = (actor: AnyActor): void => {
     if (target === undefined || !target.internal)
       throw new Error(
         `Actor ${actor.name}: job '${name}' needs onFailure naming an internal command`,
+      )
+    if (declaration.onSuccess === undefined) continue
+    const receiver = commands[declaration.onSuccess]
+    if (receiver === undefined || !receiver.internal)
+      throw new Error(
+        `Actor ${actor.name}: job '${name}' needs onSuccess naming an internal command`,
       )
   }
 }

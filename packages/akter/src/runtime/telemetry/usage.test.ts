@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Clock, Context, Deferred, Effect, Exit, Fiber, Layer, Schema } from "effect"
+import { Clock, Context, Deferred, Effect, Exit, Fiber, Layer, Schedule, Schema } from "effect"
 import { TestClock } from "effect/testing"
-import { Actor, JobFailure, user } from "../../index.ts"
+import { Actor, Job, JobFailure, user } from "../../index.ts"
 import { DrainReport, RuntimeControl, Telemetry } from "../../server.ts"
 import { Simulation, SimulationService } from "../../testing/index.ts"
 import { CommandIds } from "../../execution/command-ids.ts"
@@ -27,11 +27,10 @@ const Metered = Actor.make("Metered", {
     failed: Actor.command(JobFailure, { internal: true }),
   },
   jobs: {
-    work: Actor.job({
-      retry: { attempts: 2, backoff: "100 millis" },
-      onFailure: "failed",
-    }),
-    timed: Actor.job({ timeout: "1200 millis", onFailure: "failed" }),
+    work: Actor.job({ onFailure: "failed" }).pipe(
+      Job.retry({ times: 1, schedule: Schedule.spaced("100 millis") }),
+    ),
+    timed: Actor.job({ onFailure: "failed" }).pipe(Job.timeout("1200 millis")),
   },
 })
 

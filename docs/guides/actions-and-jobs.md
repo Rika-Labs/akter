@@ -56,8 +56,8 @@ The log records these values for replay. Views follow the same rule: they read d
 Declare a job with `Actor.job`, start it from a command, and implement it in the same `toLayer`. This example confirms an order by email:
 
 ```ts
-import { Context, Effect, Schema } from "effect"
-import { Actor } from "@rikalabs/akter"
+import { Context, Effect, Schedule, Schema } from "effect"
+import { Actor, Job } from "@rikalabs/akter"
 
 class Mailer extends Context.Service<
   Mailer,
@@ -74,12 +74,10 @@ const Order = Actor.make("Order", {
     failed: Actor.command(Actor.JobFailure, { internal: true }),
   },
   jobs: {
-    confirm: Actor.job({
-      payload: Schema.String,
-      retry: { attempts: 3, backoff: "5 seconds" },
-      timeout: "30 seconds",
-      onFailure: "failed",
-    }),
+    confirm: Actor.job({ payload: Schema.String, onFailure: "failed" }).pipe(
+      Job.retry({ times: 2, schedule: Schedule.spaced("5 seconds") }),
+      Job.timeout("30 seconds"),
+    ),
   },
 })
 
@@ -108,7 +106,8 @@ const OrderLive = Order.toLayer({
 
 - `ctx.start.confirm(email)` stages the job. It starts only after the command's segment is durable.
 - `step(name, effect)` journals the result. A completed step never runs again, even if a later step causes a retry.
-- `onFailure` names an internal command that takes `Actor.JobFailure`. It runs once when retries are spent.
+- `Job.retry({ times: 2, ... })` allows two retries after the first attempt, five seconds apart, and `Job.timeout` bounds each attempt.
+- `onFailure` names an internal command that takes `Actor.JobFailure`. It runs once when retries are spent. An optional `onSuccess` names an internal command that receives the job's success value once.
 - Internal commands are not on the client handle or `/rpc`; only the engine reaches them.
 
 <Warning>

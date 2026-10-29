@@ -138,13 +138,19 @@ export const AttemptEntry = Schema.TaggedStruct("Attempt", {
   at: Schema.Finite,
 })
 
-/** An attempt's terminal failure, recorded before any backoff or failure action. */
+/**
+ * An attempt's terminal failure, recorded before any backoff or failure action. `retryAt` is the
+ * journaled deadline of the next attempt; `final` records whether the retry policy stopped here, so
+ * replay never consults the policy again. An entry without `final` decides by the declaration's
+ * retry count, as entries written before the field existed did.
+ */
 export const JobFailedEntry = Schema.TaggedStruct("JobFailed", {
   jobId: Schema.String,
   attempt: Schema.Int,
   cause: Schema.Literals(["Failed", "Defect", "Timeout"]),
   ambiguous: Schema.Boolean,
   retryAt: Schema.Finite,
+  final: Schema.optionalKey(Schema.Boolean),
 })
 
 /** Encoded workflow bookkeeping owned and fenced by the job's shard. */

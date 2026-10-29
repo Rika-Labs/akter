@@ -134,7 +134,7 @@ export const jobConformance = <OpenError, ClientError>(
               log.filter((entry) => Entry.guards.Action(entry) && entry.member === "credit").length,
             ).toBe(1)
             expect(
-              log.filter((entry) => Entry.guards.Action(entry) && entry.member === "rejected")
+              log.filter((entry) => Entry.guards.Action(entry) && entry.member === "failedWork")
                 .length,
             ).toBe(point === "afterFailure" ? 1 : 0)
           }),

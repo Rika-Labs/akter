@@ -1,6 +1,6 @@
-import { Duration, Effect, Schema } from "effect"
+import { Effect, Pipeable, Schema } from "effect"
 import { Crons } from "./cron.ts"
-import type { Cause } from "effect"
+import type { Cause, Duration, Schedule } from "effect"
 
 /** A schema that needs no Effect services to encode or decode, so a member codec runs anywhere. */
 export type MemberSchema = Schema.Top & {
@@ -18,8 +18,8 @@ export type OptionalSchema = MemberSchema | undefined
 
 /**
  * A declared command. `internal` commands are not on the client handle or `/rpc`; the engine's own
- * calls reach them (`schedule`, `cron`, a job's `self`, `onFailure`, another actor's `send`). A
- * `cron` command is internal and takes no payload.
+ * calls reach them (`schedule`, `cron`, a job's `self`, `onSuccess`, `onFailure`, another actor's
+ * `send`). A `cron` command is internal and takes no payload.
  */
 export interface Command<
   P extends OptionalSchema = OptionalSchema,
@@ -105,39 +105,88 @@ const broadcast = <A extends MemberSchema>(schema: A): Broadcast<A> => ({
   schema,
 })
 
-/** How a job retries a failed attempt. */
+/**
+ * How a job retries a failed attempt: at most `times` retries after the first attempt, each after
+ * the delay `schedule` gives for it. Without a schedule a retry starts at once; a schedule that ends
+ * stops retrying early.
+ */
 export interface Retry {
-  readonly attempts: number
-  readonly backoff: Duration.Input
+  readonly times: number
+  readonly schedule?: Schedule.Schedule<unknown, unknown, never, never> | undefined
 }
 
-/** A declared job: the only place for I/O. */
-export interface Job<P extends OptionalSchema = OptionalSchema, F extends string = string> {
+/**
+ * A declared job: the only place for I/O. `onSuccess` and `onFailure` name internal commands of
+ * the same actor that receive the job's result; `retry` and `timeout` are policies attached with
+ * `.pipe(Job.retry(...), Job.timeout(...))`.
+ */
+export interface Job<
+  P extends OptionalSchema = OptionalSchema,
+  F extends string = string,
+  S extends string | undefined = string | undefined,
+>
+  extends Pipeable.Pipeable {
   readonly kind: "Job"
   readonly payload: P
   readonly retry: Retry
   readonly timeout: Duration.Input | undefined
   readonly concurrency: number
   readonly onFailure: F
+  readonly onSuccess: S
 }
+
+/** The fields of a job declaration, without the `pipe` method its prototype carries. */
+type JobFields<J extends Job> = Omit<J, "pipe">
+
+const JobProto: Pipeable.Pipeable = {
+  pipe() {
+    return Pipeable.pipeArguments(this, arguments)
+  },
+}
+
+const declare = <J extends Job>(fields: JobFields<J>): J =>
+  Object.assign(Object.create(JobProto), fields)
 
 const job = <
   P extends MemberSchema | undefined = undefined,
   const F extends string = string,
+  const S extends string | undefined = undefined,
 >(options: {
   readonly payload?: P
-  readonly retry?: Retry
-  readonly timeout?: Duration.Input
   readonly concurrency?: number
+  readonly onSuccess?: S
   readonly onFailure: F
-}): Job<NoInfer<P>, NoInfer<F>> => ({
-  kind: "Job",
-  payload: options.payload as P,
-  retry: options.retry ?? { attempts: 1, backoff: Duration.zero },
-  timeout: options.timeout,
-  concurrency: options.concurrency ?? 1,
-  onFailure: options.onFailure,
-})
+}): Job<NoInfer<P>, NoInfer<F>, NoInfer<S>> =>
+  declare({
+    kind: "Job",
+    payload: options.payload as P,
+    retry: { times: 0 },
+    timeout: undefined,
+    concurrency: options.concurrency ?? 1,
+    onFailure: options.onFailure,
+    onSuccess: options.onSuccess as S,
+  })
+
+/**
+ * Retries a failed attempt up to `times` more times; `schedule` gives the delay before each retry.
+ * The delay is fixed when the failure is journaled, so replay and owner moves never recompute it.
+ */
+const retry =
+  (options: Retry) =>
+  <J extends Job>(declaration: J): J => {
+    if (!Number.isSafeInteger(options.times) || options.times < 0)
+      throw new Error("Job.retry needs times as a whole number of retries, zero or more")
+    return declare<J>({ ...declaration, retry: options })
+  }
+
+/** Bounds each attempt to `duration`, measured from the attempt's durable start. */
+const timeout =
+  (duration: Duration.Input) =>
+  <J extends Job>(declaration: J): J =>
+    declare<J>({ ...declaration, timeout: duration })
+
+/** Job policies, attached with `Actor.job(...).pipe(Job.retry(...), Job.timeout(...))`. */
+export const Job = { retry, timeout }
 
 /** A field of an item that a list can key or order by. */
 export type KeyField<T> = {

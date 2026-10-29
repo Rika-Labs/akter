@@ -10,7 +10,9 @@ import {
   Option,
   Predicate,
   PubSub,
+  Pull,
   Result,
+  Schedule,
   Schema,
   Semaphore,
 } from "effect"
@@ -25,6 +27,7 @@ import type {
   Command as CommandDeclaration,
   Job,
   MemberSchema,
+  Retry,
 } from "../contract/members.ts"
 import { CommandIds } from "./command-ids.ts"
 import { Durable } from "./durable.ts"
@@ -90,6 +93,14 @@ const stepValue = (value: Schema.Json | undefined): Schema.Json =>
 
 const fromStepValue = (journaled: Schema.Json): Decoded =>
   Predicate.hasProperty(journaled, "value") ? journaled.value : undefined
+
+/**
+ * The internal step holding a successful attempt's value, encoded with the `onSuccess` command's
+ * payload schema. NUL keeps it out of the step names a handler may use, and a crash replay delivers
+ * this value instead of running the body again, so a body that differs between runs outside its
+ * steps still delivers what the first run returned.
+ */
+const succeeded = "\u0000onSuccess"
 
 /**
  * Runs durable jobs on their actor's shard. A job starts once its start is durable, and again from
@@ -329,17 +340,61 @@ const install = (engine: Engine, routing?: JobRouting) => {
               ),
             ),
           )
-    return Effect.flatMap(limited, () => {
+    return Effect.flatMap(limited, (value) => {
       const missing = Array.from(record.steps.keys()).filter(
         (name) => !name.startsWith("\u0000") && !visited.has(name),
       )
-      if (missing.length === 0) return Effect.void
-      record.suspended = `missing completed steps: ${missing.join(", ")}`
-      return Effect.interrupt
+      if (missing.length > 0) {
+        record.suspended = `missing completed steps: ${missing.join(", ")}`
+        return Effect.interrupt
+      }
+      const receiver: CommandDeclaration | undefined =
+        declaration.onSuccess === undefined
+          ? undefined
+          : owner.actor.commands[declaration.onSuccess]
+      if (receiver === undefined) return Effect.void
+      return Effect.suspend(() =>
+        journal(
+          shard,
+          Entry.cases.Step.make({
+            jobId: record.jobId,
+            name: succeeded,
+            attempt,
+            value: stepValue(Layouts.codec(receiver.payload).encode(value)),
+          }),
+        ),
+      ).pipe(Effect.orDie)
     })
   }
 
   const timedOut: Opaque = {}
+
+  /**
+   * The delay before retrying failed attempt `attempt`, or `undefined` when no retry follows: the
+   * attempts reached `times + 1` or the schedule ended. A fresh step function stepped once per
+   * attempt at the failure time gives the delay; the caller journals it, so replay never steps the
+   * schedule again.
+   */
+  const retryDelay = (
+    policy: Retry,
+    attempt: number,
+    now: number,
+  ): Effect.Effect<number | undefined> =>
+    Effect.gen(function* () {
+      if (attempt > policy.times) return undefined
+      if (policy.schedule === undefined) return 0
+      const step = yield* Schedule.toStep(policy.schedule)
+      let delay = 0
+      for (let stepped = 0; stepped < attempt; stepped++) {
+        const next = yield* step(now, undefined).pipe(
+          Effect.map(([, duration]) => Option.some(Duration.toMillis(duration))),
+          Pull.catchDone(() => Effect.succeedNone),
+        )
+        if (Option.isNone(next)) return undefined
+        delay = next.value
+      }
+      return delay
+    })
 
   const causeOf = (cause: Cause.Cause<Opaque>): JobCause => {
     if (Cause.hasDies(cause)) return "Defect"
@@ -414,9 +469,14 @@ const install = (engine: Engine, routing?: JobRouting) => {
             })
             const body = Effect.gen(function* () {
               while (true) {
+                const result = record.steps.get(succeeded)
+                if (result !== undefined && declaration.onSuccess !== undefined) {
+                  yield* deliverSuccess(record, owner, declaration.onSuccess, result)
+                  return
+                }
                 const failed = record.failure
                 if (failed !== undefined) {
-                  if (failed.attempt >= declaration.retry.attempts) {
+                  if (failed.final ?? failed.attempt > declaration.retry.times) {
                     yield* deliverFailure(
                       record,
                       owner,
@@ -460,9 +520,14 @@ const install = (engine: Engine, routing?: JobRouting) => {
                 if (record.suspended !== undefined) return yield* Effect.interrupt
                 if (Exit.isSuccess(exit)) {
                   yield* count(Metrics.jobs, { job: record.job, outcome: "success" }, 1)
+                  const value = record.steps.get(succeeded)
+                  if (value !== undefined && declaration.onSuccess !== undefined)
+                    yield* deliverSuccess(record, owner, declaration.onSuccess, value)
                   return
                 }
                 if (Cause.hasInterruptsOnly(exit.cause)) return yield* Effect.interrupt
+                const failedAt = yield* Clock.currentTimeMillis
+                const delay = yield* retryDelay(declaration.retry, attempt, failedAt)
                 yield* journal(
                   shard,
                   Entry.cases.JobFailed.make({
@@ -470,9 +535,8 @@ const install = (engine: Engine, routing?: JobRouting) => {
                     attempt,
                     cause: causeOf(exit.cause),
                     ambiguous: progress.size > 0,
-                    retryAt:
-                      (yield* Clock.currentTimeMillis) +
-                      Duration.toMillis(Duration.fromInputUnsafe(declaration.retry.backoff)),
+                    retryAt: failedAt + (delay ?? 0),
+                    final: delay === undefined,
                   }),
                 )
                 yield* count(Metrics.jobs, { job: record.job, outcome: "failure" }, 1)
@@ -501,6 +565,29 @@ const install = (engine: Engine, routing?: JobRouting) => {
         Effect.provideService(JobOwner, { shard, generation: engine.generation(shard) }),
       )
     })
+
+  /**
+   * Delivers a successful attempt's journaled value to the `onSuccess` command under an id derived
+   * from the job alone, so a crash replay resends the same value with the same id and gets the
+   * receiver's stored outcome. The job completes whatever that outcome is: a declared failure or a
+   * defect of the command is recorded on the receiver, as for `onFailure`.
+   */
+  const deliverSuccess = (
+    record: JobRecord,
+    owner: ActorRecord,
+    member: string,
+    journaled: Schema.Json,
+  ): Effect.Effect<void, ActorError> =>
+    (routing?.execute ?? engine.execute)({
+      origin: Origin.cases.JobCall.make({ jobId: record.jobId }),
+      commandId: CommandIds.derive(record.jobId, "onSuccess"),
+      actor: owner.actor,
+      keyJson: owner.keyJson,
+      member,
+      payload: fromStepValue(journaled) as Schema.Json,
+      caller: caller(record),
+      connection: undefined,
+    }).pipe(Transports.retryWhileUnavailable, Effect.asVoid)
 
   const deliverFailure = (
     record: JobRecord,

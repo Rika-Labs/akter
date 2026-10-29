@@ -9,11 +9,21 @@ import {
   Fiber,
   Layer,
   Random,
+  Schedule,
   Schema,
   Stream,
 } from "effect"
 import { TestClock } from "effect/testing"
-import { Actor, ActorError, JobFailure, Unauthorized, anonymous, isUser, user } from "../index.ts"
+import {
+  Actor,
+  ActorError,
+  Job,
+  JobFailure,
+  Unauthorized,
+  anonymous,
+  isUser,
+  user,
+} from "../index.ts"
 import { InvariantViolation, SIMULATION_SEED_BASE, Simulation, SimulationService } from "./index.ts"
 
 class InsufficientFunds extends Schema.TaggedError<InsufficientFunds>()("InsufficientFunds", {
@@ -106,16 +116,13 @@ const Outbox = Actor.make("Outbox", {
       success: Schema.String,
     }),
     delivered: Actor.command(Schema.String, { internal: true }),
-    deadLetter: Actor.command(JobFailure, { internal: true }),
+    failedDeliver: Actor.command(JobFailure, { internal: true }),
   },
   jobs: {
-    deliver: Actor.job({
-      payload: Envelope,
-      retry: { attempts: 4, backoff: "10 millis" },
-      timeout: "1 second",
-      concurrency: 3,
-      onFailure: "deadLetter",
-    }),
+    deliver: Actor.job({ payload: Envelope, concurrency: 3, onFailure: "failedDeliver" }).pipe(
+      Job.retry({ times: 3, schedule: Schedule.spaced("10 millis") }),
+      Job.timeout("1 second"),
+    ),
   },
 })
 
@@ -142,7 +149,7 @@ const OutboxLive = Outbox.toLayer({
   delivered: (outbox, id) => {
     if (outbox.pending.delete(id)) outbox.sent += 1
   },
-  deadLetter: (outbox, failure) => {
+  failedDeliver: (outbox, failure) => {
     const id = failure.key ?? failure.job
     outbox.pending.delete(id)
     outbox.dead.push(id)
@@ -222,10 +229,11 @@ const Agent = Actor.make("Agent", {
   jobs: {
     generate: Actor.job({
       payload: Schema.Struct({ askId: Schema.String, prompt: Schema.String }),
-      retry: { attempts: 3, backoff: "50 millis" },
-      timeout: "30 seconds",
       onFailure: "failed",
-    }),
+    }).pipe(
+      Job.retry({ times: 2, schedule: Schedule.spaced("50 millis") }),
+      Job.timeout("30 seconds"),
+    ),
   },
 })
 
@@ -336,18 +344,15 @@ const Room = Actor.make("Room", {
     count: Actor.command({ success: Schema.Finite }),
     startTyping: Actor.command(),
     prune: Actor.command({ cron: "0 3 * * *" }),
-    notifyFailed: Actor.command(JobFailure, { internal: true }),
+    failedNotify: Actor.command(JobFailure, { internal: true }),
   },
   views: { summary: Actor.view(Summary) },
   broadcasts: { typing: Actor.broadcast(Schema.String) },
   jobs: {
-    notify: Actor.job({
-      payload: Email,
-      retry: { attempts: 5, backoff: "2 seconds" },
-      timeout: "1 minute",
-      concurrency: 10,
-      onFailure: "notifyFailed",
-    }),
+    notify: Actor.job({ payload: Email, concurrency: 10, onFailure: "failedNotify" }).pipe(
+      Job.retry({ times: 4, schedule: Schedule.spaced("2 seconds") }),
+      Job.timeout("1 minute"),
+    ),
   },
   presence: Schema.Struct({ name: Schema.String }),
   access: isUser,
@@ -388,7 +393,7 @@ const RoomLive = Room.toLayer({
   prune: (room, _, { now }) => {
     room.messages.deleteBefore(now() - 30 * 86_400_000)
   },
-  notifyFailed: (room, failure) => {
+  failedNotify: (room, failure) => {
     room.messages.put(
       Message.make({
         id: failure.job,

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "@effect/vitest"
 import { expectTypeOf } from "vitest"
-import { Effect, Layer, Schema } from "effect"
-import { Actor, JobFailure, isUser } from "../index.ts"
-import type { ActorError, DefOf, Handle } from "../index.ts"
+import { Effect, Layer, Schedule, Schema } from "effect"
+import { Actor, Job, JobFailure, isUser } from "../index.ts"
+import type { ActorError, DefOf, Handle, Handlers } from "../index.ts"
 import { Simulation } from "../testing/index.ts"
 import type { SimulationService } from "../testing/index.ts"
 import type { Implementation } from "../handlers/registry.ts"
@@ -25,20 +25,20 @@ const Doc = Actor.make("Doc", {
   commands: {
     rename: Actor.command(Schema.String, { fails: Forbidden }),
     size: Actor.command({ success: Schema.Finite }),
-    indexFailed: Actor.command(JobFailure, { internal: true }),
+    failedIndex: Actor.command(JobFailure, { internal: true }),
   },
   views: {
     plain: Actor.view(Schema.Finite),
     page: Actor.view(Schema.Array(Schema.Finite), { params: Schema.Finite }),
   },
   broadcasts: { saved: Actor.broadcast(Schema.String) },
-  jobs: { index: Actor.job({ payload: Schema.String, onFailure: "indexFailed" }) },
+  jobs: { index: Actor.job({ payload: Schema.String, onFailure: "failedIndex" }) },
 })
 
 const handlers = {
   rename: () => undefined,
   size: () => 1,
-  indexFailed: () => undefined,
+  failedIndex: () => undefined,
   plain: () => 1,
   page: () => [1],
   index: () => Effect.void,
@@ -81,21 +81,89 @@ describe("Actor.make", () => {
     expect(() =>
       Actor.make("Mailer", {
         state,
-        commands: { sendFailed: Actor.command(JobFailure) },
+        commands: { failedSend: Actor.command(JobFailure) },
         // @ts-expect-error the onFailure target must be internal
-        jobs: { send: Actor.job({ payload: Schema.String, onFailure: "sendFailed" }) },
+        jobs: { send: Actor.job({ payload: Schema.String, onFailure: "failedSend" }) },
       }),
     ).toThrow(/needs onFailure naming an internal command/)
     expect(() =>
       Actor.make("Resender", {
         state,
         commands: {},
-        // @ts-expect-error `resendFailed` is not a command
-        jobs: { resend: Actor.job({ payload: Schema.String, onFailure: "resendFailed" }) },
+        // @ts-expect-error `failedResend` is not a command
+        jobs: { resend: Actor.job({ payload: Schema.String, onFailure: "failedResend" }) },
       }),
     ).toThrow(/needs onFailure naming an internal command/)
     // @ts-expect-error every job declares onFailure
     expect(() => Actor.job({ payload: Schema.String })).toBeDefined()
+  })
+
+  it("refuses an onSuccess that is public or not a command of the actor, and types the job's success by it", () => {
+    const state = Schema.Struct({ sent: unit })
+    const commands = {
+      failedSend: Actor.command(JobFailure, { internal: true }),
+      succeededPublish: Actor.command(Schema.Int),
+    }
+    expect(() =>
+      Actor.make("PublicSuccess", {
+        state,
+        commands,
+        jobs: {
+          // @ts-expect-error the onSuccess target must be internal
+          send: Actor.job({ onSuccess: "succeededPublish", onFailure: "failedSend" }),
+        },
+      }),
+    ).toThrow(/needs onSuccess naming an internal command/)
+    expect(() =>
+      Actor.make("MissingSuccess", {
+        state,
+        commands,
+        jobs: {
+          // @ts-expect-error `succeededSend` is not a command
+          send: Actor.job({ onSuccess: "succeededSend", onFailure: "failedSend" }),
+        },
+      }),
+    ).toThrow(/needs onSuccess naming an internal command/)
+    const Sender = Actor.make("Sender", {
+      state,
+      commands: {
+        ...commands,
+        succeededSend: Actor.command(Schema.Int, { internal: true }),
+        succeededPing: Actor.command({ internal: true }),
+      },
+      jobs: {
+        send: Actor.job({ onSuccess: "succeededSend", onFailure: "failedSend" }),
+        ping: Actor.job({ onSuccess: "succeededPing", onFailure: "failedSend" }),
+        fire: Actor.job({ onFailure: "failedSend" }),
+      },
+    })
+    type H = Handlers<"Sender", DefOf<typeof Sender>>
+    expectTypeOf<ReturnType<H["send"]>>().toEqualTypeOf<Effect.Effect<number, unknown, any>>()
+    expectTypeOf<ReturnType<H["ping"]>>().toEqualTypeOf<Effect.Effect<void, unknown, any>>()
+    expectTypeOf<ReturnType<H["fire"]>>().toEqualTypeOf<Effect.Effect<unknown, unknown, any>>()
+    expectTypeOf(Effect.succeed("sent")).not.toExtend<ReturnType<H["send"]>>()
+  })
+
+  it("attaches retry and timeout as policies that keep the declaration (rejects options that drop onSuccess or a negative retry count)", () => {
+    const declared = Actor.job({
+      payload: Schema.String,
+      onSuccess: "succeededSync",
+      onFailure: "failedSync",
+    })
+    const schedule = Schedule.exponential("2 seconds")
+    const piped = declared.pipe(Job.retry({ times: 2, schedule }), Job.timeout("30 seconds"))
+    expectTypeOf(piped).toEqualTypeOf(declared)
+    expect([piped.retry, piped.timeout, piped.onSuccess, piped.onFailure]).toEqual([
+      { times: 2, schedule },
+      "30 seconds",
+      "succeededSync",
+      "failedSync",
+    ])
+    expect([declared.retry, declared.timeout]).toEqual([{ times: 0 }, undefined])
+    expect(() => declared.pipe(Job.retry({ times: -1 }))).toThrow(/whole number of retries/)
+    expect(() => declared.pipe(Job.retry({ times: 1.5 }))).toThrow(/whole number of retries/)
+    // @ts-expect-error retry is a policy, not an option
+    expect(Actor.job({ onFailure: "failedSync", retry: { times: 1 } }).retry).toEqual({ times: 0 })
   })
 
   it("refuses a cron command with a payload, and a schedule in a fixed offset or an unknown zone", () => {
@@ -253,8 +321,8 @@ describe("X.client and X.find", () => {
         doc.plain(1),
         // @ts-expect-error `page` needs its params
         doc.page(),
-        // @ts-expect-error `indexFailed` is internal
-        doc.indexFailed,
+        // @ts-expect-error `failedIndex` is internal
+        doc.failedIndex,
         // @ts-expect-error `tags` is not a scalar field
         Doc.find({ where: { tags: ["a"] } }),
         // @ts-expect-error lists cannot order a query

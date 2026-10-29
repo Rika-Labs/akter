@@ -186,11 +186,21 @@ export type ViewHandler<D extends Def, V extends View> = (
   ctx: ViewContext<D>,
 ) => V["success"]["Type"]
 
+/**
+ * What a job's Effect succeeds with: the payload of its `onSuccess` command, which receives it, or
+ * `void` when that command takes none; anything when the job has no `onSuccess`.
+ */
+export type JobSuccess<D extends Def, J extends Job> = J["onSuccess"] extends keyof D["commands"]
+  ? D["commands"][J["onSuccess"]]["payload"] extends Schema.Top
+    ? PayloadOf<D["commands"][J["onSuccess"]]["payload"]>
+    : void
+  : unknown
+
 /** A job handler: the only place for I/O. Its requirements flow into the layer type. */
 export type JobHandler<Name extends string, D extends Def, J extends Job> = (
   payload: PayloadOf<J["payload"]>,
   ctx: JobContext<Name, D>,
-) => Effect.Effect<unknown, unknown, any>
+) => Effect.Effect<JobSuccess<D, J>, unknown, any>
 
 /** `connect` or `disconnect`: a command over the draft receiving the presence value. */
 export type PresenceHandler<Name extends string, D extends Def> = (

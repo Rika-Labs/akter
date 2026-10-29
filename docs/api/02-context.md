@@ -45,7 +45,7 @@ Items live in content-addressed pages, so list growth does not grow the actor's 
 
 ## Jobs
 
-A job receives its payload and `{ self, step, broadcast, id, attempt }` and returns an Effect. `step(name, effect)` journals JSON or void results; pass a schema as the second argument for other values. A completed step never runs again. A failed or interrupted step may already have reached an external provider, so use provider idempotency keys. See [Jobs](./jobs.md).
+A job receives its payload and `{ self, step, broadcast, id, attempt }` and returns an Effect. When the job declares `onSuccess`, the Effect succeeds with that command's payload, which is delivered to it once; otherwise its value is discarded. `step(name, effect)` journals JSON or void results; pass a schema as the second argument for other values. A completed step never runs again. A failed or interrupted step may already have reached an external provider, so use provider idempotency keys. See [Jobs](./jobs.md).
 
 ## Callers and access
 
@@ -57,4 +57,4 @@ A caller is one of:
 | `Anonymous` | none                                                                                                             |
 | `System`    | `source` (`send`, `timer`, `cron`, `job`, `operator`, `process`), `subject`, and optional `ref` and `onBehalfOf` |
 
-`access(caller, request)` decides whether a request is admitted. `request.kind` is `command`, `state`, `list`, `view`, `broadcast`, `join`, `find`, or `reauthorize`, and `request.member` names the member. The default admits `User` and `System` only. Internal commands are reached only by the engine: schedules, cron, jobs, failure handlers, and sends.
+`access(caller, request)` decides whether a request is admitted. `request.kind` is `command`, `state`, `list`, `view`, `broadcast`, `join`, `find`, or `reauthorize`, and `request.member` names the member. The default admits `User` and `System` only. Internal commands are reached only by the engine: schedules, cron, jobs, job results (`onSuccess`, `onFailure`), and sends.
