@@ -25,11 +25,19 @@ export interface App<Actors extends ReadonlyArray<AnyActor> = ReadonlyArray<AnyA
   readonly layer: Layer.Layer<ImplementationOf<Actors[number]>, AppLayerFailed, AppServices>
 }
 
+type Missing<I> = I extends { readonly "~akter/Implementation": infer Name extends string }
+  ? Name
+  : never
+
+/**
+ * Names each actor the layer leaves unimplemented and the line that fixes it, so the compiler's
+ * message says what to add rather than only that something is missing.
+ */
 type Complete<Actors extends ReadonlyArray<AnyActor>, Provided> = [
   Exclude<ImplementationOf<Actors[number]>, Provided>,
 ] extends [never]
   ? unknown
-  : TypeError<"App.make: the layer does not implement every actor in `actors`">
+  : TypeError<`App.make: the layer does not implement actor '${Missing<Exclude<ImplementationOf<Actors[number]>, Provided>>}'; add its ${Missing<Exclude<ImplementationOf<Actors[number]>, Provided>>}.toLayer({ ... }) to the layer`>
 
 const DeclaredActors = Schema.Array(Schema.Struct({ name: Schema.String }))
 

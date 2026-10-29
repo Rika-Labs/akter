@@ -50,7 +50,8 @@
     "akter/no-runtime-import-outside-runtime": "error",
     "akter/no-decision-references": "error",
     "akter/no-inline-comments": "error",
-    "akter/synchronous-commands": "error"
+    "akter/synchronous-commands": "error",
+    "akter/result-command-names": "error"
   },
   "overrides": [
     {
