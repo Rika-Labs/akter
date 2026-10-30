@@ -14,18 +14,18 @@ isolated agent-browser session, not a shared signed-in profile. Never reuse or c
 
 ## Source of truth
 
-- `docs/vision/` defines product intent.
-- `docs/contracts/` defines runtime guarantees.
-- `docs/architecture/` defines internal design.
-- `docs/api/` defines public developer interfaces.
-- `docs/verification/` defines evidence required before claiming support.
+- `docs/internals/vision/` defines product intent.
+- `docs/internals/contracts/` defines runtime guarantees.
+- `docs/internals/architecture/` defines internal design.
+- `docs/core/`, `docs/guides/`, `docs/deploy/` and `docs/reference/` document the public developer interfaces.
+- `docs/internals/verification/` defines evidence required before claiming support.
 - Hosted-platform code, research and deployment infrastructure live in the private Akter Cloud repository; they do not define the framework contract.
 
 If these conflict, stop and record an ADR. Do not silently choose the easiest interpretation.
 
 ## 0.2 authority
 
-`main` carries 0.2; the rewrite landed there from `rewrite/0.2` for the 0.2.0 release. ADRs 0124–0137 in `docs/decisions/` and the contracts whose status line reads "proposal (0.2)" define the target. Any 0.1 code that remains is replaced milestone by milestone (E1–E8); where it disagrees with a 0.2 contract, the contract is the target and the code is not evidence of support. A contract is promoted, and its status line changes, when the failure evidence of its milestone lands. A 0.1 test or conformance group is deleted only when a 0.2 contract restates its guarantee with a test that rejects the same wrong implementation, or an accepted 0.2 ADR removes the behavior; the deleting change names which.
+`main` carries 0.2; the rewrite landed there from `rewrite/0.2` for the 0.2.0 release. ADRs 0124–0137 in `docs/internals/decisions/` and the contracts whose status line reads "proposal (0.2)" define the target. Any 0.1 code that remains is replaced milestone by milestone (E1–E8); where it disagrees with a 0.2 contract, the contract is the target and the code is not evidence of support. A contract is promoted, and its status line changes, when the failure evidence of its milestone lands. A 0.1 test or conformance group is deleted only when a 0.2 contract restates its guarantee with a test that rejects the same wrong implementation, or an accepted 0.2 ADR removes the behavior; the deleting change names which.
 
 ## Repository model
 
@@ -40,7 +40,7 @@ This is a Bun/Turbo monorepo based on `rika-labs/monorepo-project-template`.
 - Tooling belongs in `tooling/*`.
 - Effect is the runtime foundation; do not create a separate Effect package.
 - The only client is the Effect client exported from `@rikalabs/akter` (`X.client(id)`, `X.find`), over one RPC group at `/rpc`; there is no Promise facade or second runtime. The root entry imports no store, cluster or SQL module, so contracts can be shared with browser code.
-- Naming and folder rules are in `docs/architecture/repository-structure.md`; deviations go in `tooling/structure/src/exemptions.ts`.
+- Naming and folder rules are in `docs/internals/architecture/repository-structure.md`; deviations go in `tooling/structure/src/exemptions.ts`.
 
 ## Engineering rules
 
@@ -58,7 +58,7 @@ Ship trunk-based, the way Amp does: commit small changes and push them straight 
 
 ## Releases
 
-Publishing to npm goes through GitHub OIDC (npm trusted publishing); never mint a publish token for `release.yml` or any other CI publish. The only exception is the one-time bootstrap of a package that does not exist yet, which [Releasing](docs/operations/05-releasing.md) describes.
+Publishing to npm goes through GitHub OIDC (npm trusted publishing); never mint a publish token for `release.yml` or any other CI publish. The only exception is the one-time bootstrap of a package that does not exist yet, which [Releasing](docs/internals/releasing.md) describes.
 
 ## Verification
 

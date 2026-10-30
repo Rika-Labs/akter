@@ -1,62 +1,58 @@
 # @rikalabs/akter
 
-The Effect-native framework for durable actors, realtime state, background jobs and agents.
+Durable actors for TypeScript, built on [Effect](https://effect.website).
+
+Akter is a framework for backends that hold state. You model each thing your app keeps state for, like a chat room, an order or an agent session, as an actor with a typed state, the commands that change it, and the jobs that talk to the outside world. Akter keeps every actor in one S3-compatible bucket, so there's no database to run.
 
 ## Install
 
 ```sh
-bun add @rikalabs/akter effect
+bun add @rikalabs/akter effect@~4.0.3 @effect/platform-bun@~4.0.3 @effect/platform-node-shared@~4.0.3
+bun add -d @rikalabs/akter-cli
 ```
 
-Use Bun 1.4.2+ or Node 24+. The runtime needs the matching `@effect/platform-bun` or `@effect/platform-node` package. Stores use an S3-compatible bucket (`Store.s3`) or a directory (`Store.fileSystem`); no SQL driver is required by the framework.
+Akter runs on Bun 1.4.2 or later and Node 24 or later. On Node, install `@effect/platform-node@~4.0.3` in place of `@effect/platform-bun`. This release needs Effect 4.0.x; the `@effect/platform-node-shared` pin keeps a 4.1 release of it out of your install.
 
-## Declare and implement an actor
+## An actor
 
 ```ts
-import { Actor } from "@rikalabs/akter"
 import { Effect, Schema } from "effect"
+import { Actor } from "@rikalabs/akter"
 
 export const Counter = Actor.make("Counter", {
   state: Schema.Struct({
-    value: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
-    labels: Actor.list(Schema.Struct({ id: Schema.String, value: Schema.String }), {
-      key: "id",
-      by: "id",
-    }),
+    count: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
-  commands: { add: Actor.command(Schema.Finite, { success: Schema.Finite }) },
+  commands: {
+    add: Actor.command(Schema.Number, { success: Schema.Number }),
+  },
 })
 
 export const CounterLive = Counter.toLayer({
   add: (counter, amount) => {
-    counter.value += amount
-    return counter.value
+    counter.count += amount
+    return counter.count
   },
 })
 ```
 
-Commands are synchronous and deterministic. They publish no reply, broadcast, send, timer or job until their bucket-log segment is durable. Jobs are the only place for I/O.
-
-## Client and server
-
-```ts
-import { Akter, App, Auth, Store } from "@rikalabs/akter/server"
-
-const app = App.make({ actors: [Counter], layer: CounterLive })
-const server = Akter.serve({ app, auth: Auth.none })
-```
-
-Provide `Store.fileSystem(".akter/store")` for local development or `Store.s3({ bucket, credentials })` for an S3-compatible store. The single Effect client is `Counter.client(id)`. Its commands are Effects, state and views are Streams, lists expose `range` and watch, and static `Counter.find({ where, orderBy, limit })` returns ids only.
-
-The one RPC group is `/rpc`: WebSocket JSON and HTTP NDJSON. The server can opt into `/metrics` with `prometheus: true`; `Telemetry.layer` composes OTLP traces/metrics and Effect DevTools without an OTLP logs exporter.
+A command handler is a synchronous function that changes a draft of the state and returns a reply. Akter stores the change before the reply goes out, and throws the whole change away if the handler fails. I/O goes in jobs, which record each step so a retry never repeats finished work.
 
 ## Entry points
 
-| Entry                     | Use                                                          |
-| ------------------------- | ------------------------------------------------------------ |
-| `@rikalabs/akter`         | Browser-safe contracts, callers, errors and actor types      |
-| `@rikalabs/akter/server`  | `Akter.serve`, `App`, `Store`, operator grants and telemetry |
-| `@rikalabs/akter/client`  | The same Effect client transport                             |
-| `@rikalabs/akter/testing` | Seeded simulation and failure evidence                       |
+| Entry                     | What's in it                                                          |
+| ------------------------- | --------------------------------------------------------------------- |
+| `@rikalabs/akter`         | `Actor`, callers and errors. Safe to import in a browser.             |
+| `@rikalabs/akter/server`  | `Akter.serve`, `App`, `Auth`, `Store`, `Telemetry` and operator tools |
+| `@rikalabs/akter/client`  | `AkterClient`, the Effect client                                      |
+| `@rikalabs/akter/testing` | `Story` and `Simulation`                                              |
 
-See the [0.2 documentation](https://docs.akter.dev) for contracts, storage layout, operator commands and verification limits.
+## Documentation
+
+- [Getting started](https://github.com/Rika-Labs/akter/blob/main/docs/getting-started.md)
+- [Documentation](https://github.com/Rika-Labs/akter/blob/main/docs/README.md)
+- [Changelog](https://github.com/Rika-Labs/akter/blob/main/packages/akter/CHANGELOG.md)
+
+## License
+
+Apache-2.0

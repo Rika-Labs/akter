@@ -21,7 +21,7 @@ Done: every claim has evidence from the running system on the exact SHA you ship
    After duplicate, concurrent or rejected calls, verify both the state and pending obligations. Use
    seeded Simulation and bucket evidence at the level [testing](../../../docs/guides/testing.md) requires.
 5. **Checks.** Choose the root and package commands from their manifests and the owning
-   [verification record](../../../docs/verification/README.md); `bun run check` is the full root check.
+   [verification record](../../../docs/internals/verification/README.md); `bun run check` is the full root check.
    Prove the regression test fails on the wrong implementation without weakening existing tests.
    For documentation-only edits, audit links/paths and formatting; don't start an unrelated stack.
    Clean up (stack reference), then hand the SHA to `break-it`.

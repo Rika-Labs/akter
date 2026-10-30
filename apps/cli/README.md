@@ -1,16 +1,21 @@
-# Akter CLI
+# @rikalabs/akter-cli
 
-`@rikalabs/akter-cli` provides Effect CLI commands for Akter Cloud, storage checks, local development and audited operator reads.
+The `akter` command for [Akter](https://github.com/Rika-Labs/akter): run an app locally, check a storage bucket, and inspect a running server.
 
-```text
-akter dev --entry src/app.ts --dir .akter/store --port 8080
-akter inspect actor Room room-1
-akter inspect shard 0
-akter log tail 0 --follow
-akter log export 0
-akter snapshot 0
-akter replay 0 --current
-akter storage check --directory .akter/store
+```sh
+bun add -d @rikalabs/akter-cli
 ```
 
-`akter dev` uses the filesystem store and can enable Effect DevTools. Operator commands use a separate bearer credential from `AKTER_OPERATOR_TOKEN` (or an explicit `--token-env`) and separate grants for inspection, logs, snapshots, outcomes and replay. Reads are audited before they answer. Cloud commands (`login`, `logout`, `whoami`, `deploy`, `env`, `keys`, `logs`) remain available.
+Install it at the same version as `@rikalabs/akter`.
+
+| Command                                     | What it does                               |
+| ------------------------------------------- | ------------------------------------------ |
+| `akter dev`                                 | Serves `src/app.ts` on `127.0.0.1:8080`    |
+| `akter storage check --bucket <bucket>`     | Checks that a bucket works with Akter      |
+| `akter inspect actor <Type> <id>`           | Shows what's stored for one actor          |
+| `akter log tail <shard> --follow`           | Follows one shard's command log            |
+| `akter fork <Type> <id> --at <n> --to <id>` | Copies an actor's history into a new actor |
+
+Operator commands such as `inspect` and `log` use their own credential, read from `AKTER_OPERATOR_TOKEN`, and every request is audited.
+
+See the [CLI reference](https://github.com/Rika-Labs/akter/blob/main/docs/reference/cli.md) for every command and flag.

@@ -25,6 +25,10 @@ tester.run("akter/no-decision-references", noDecisionReferencesRule, {
     { code: "/** Placement rows (ADR-0006). */\nexport {}", errors: [error] },
     { code: "// Reconciled with ADRs 0010-0012.\nexport {}", errors: [error] },
     { code: "// see docs/decisions/0010-one-way-effect-native-api.md\nexport {}", errors: [error] },
+    {
+      code: "// see docs/internals/decisions/0010-one-way-effect-native-api.md\nexport {}",
+      errors: [error],
+    },
     { code: "/*\n * Upcasts run in order (v4 decision 162).\n */\nexport {}", errors: [error] },
     { code: "// per decisions #4 and #5\nexport {}", errors: [error] },
     {

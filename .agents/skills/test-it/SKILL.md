@@ -14,7 +14,7 @@ and a full pass through every surface the change touches finds nothing wrong.
    with the requirement, the public entry points and the repo's test commands, never your diff or plan.
 2. **The tester writes unit and integration tests** per [references/rules.md](references/rules.md), at
    the level [testing](../../../docs/guides/testing.md) and the owning
-   [verification record](../../../docs/verification/README.md) require, and runs them.
+   [verification record](../../../docs/internals/verification/README.md) require, and runs them.
 3. **A failing test is the code's problem.** Fix the code, or send the tester evidence that the test
    asserts the wrong behavior. Never edit, skip or loosen a test yourself.
 4. **The tester proves each test bites:** revert or mutate the line it covers, watch it fail, restore.

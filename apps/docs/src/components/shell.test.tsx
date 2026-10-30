@@ -26,7 +26,7 @@ afterEach(() => {
 const setup = () => {
   const user = userEvent.setup()
   const view = render(
-    <PathnameContext.Provider value="/quickstart">
+    <PathnameContext.Provider value="/getting-started">
       <Shell logo={<span>Akter</span>} sidebars={sidebars}>
         <a href="/elsewhere">Outside link</a>
       </Shell>
@@ -129,7 +129,7 @@ describe("Shell drawer", () => {
     const { user, opener, part } = setup()
 
     await user.click(opener)
-    await user.click(screen.getByRole("link", { name: "quickstart" }))
+    await user.click(screen.getByRole("link", { name: "getting-started" }))
 
     expect(part(".ak-shell")?.hasAttribute("data-drawer")).toBe(false)
     expect(document.activeElement).toBe(opener)
@@ -139,7 +139,7 @@ describe("Shell drawer", () => {
     const { user, opener, part } = setup()
 
     await user.click(opener)
-    screen.getByRole("link", { name: "quickstart" }).focus()
+    screen.getByRole("link", { name: "getting-started" }).focus()
     await user.keyboard("{Enter}")
 
     expect(part(".ak-shell")?.hasAttribute("data-drawer")).toBe(false)
@@ -150,7 +150,7 @@ describe("Shell drawer", () => {
     const { user, opener, part } = setup()
 
     await user.click(opener)
-    await user.click(screen.getByRole("link", { name: "guides/concepts" }))
+    await user.click(screen.getByRole("link", { name: "core/actors" }))
     expect(part(".ak-shell")?.hasAttribute("data-drawer")).toBe(false)
 
     await user.click(opener)

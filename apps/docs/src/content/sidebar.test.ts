@@ -20,7 +20,7 @@ describe("buildSidebars", () => {
     expect(first?.heading).toBe("Get started")
     expect(first?.items.slice(0, 2).map((item) => [item.title, item.href])).toEqual([
       ["Welcome", "/welcome"],
-      ["T:quickstart", "/quickstart"],
+      ["T:getting-started", "/getting-started"],
     ])
   })
 
@@ -30,11 +30,7 @@ describe("buildSidebars", () => {
     expect(api?.groups[0]).toEqual({
       items: [{ title: "API reference", href: "/api/overview", icon: "square-code" }],
     })
-    expect(api?.groups.slice(1).map((group) => group.heading)).toEqual([
-      "Runtime",
-      "Clients and CLI",
-      "Conventions",
-    ])
+    expect(api?.groups.slice(1).map((group) => group.heading)).toEqual(["Reference"])
   })
 
   it("carries each page's description to its item, the home page of a section included", () => {
@@ -43,7 +39,9 @@ describe("buildSidebars", () => {
 
     expect(items.find((item) => item.href === "/welcome")?.description).toBe("D:welcome")
     expect(items.find((item) => item.href === "/api/overview")?.description).toBe("D:api/overview")
-    expect(items.find((item) => item.href === "/quickstart")?.description).toBe("D:quickstart")
+    expect(items.find((item) => item.href === "/getting-started")?.description).toBe(
+      "D:getting-started",
+    )
     expect(items.every((item) => item.description === "D:" + item.href.slice(1))).toBe(true)
   })
 

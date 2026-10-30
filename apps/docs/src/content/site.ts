@@ -1,7 +1,6 @@
 export const siteName = "Akter"
 
-export const siteDescription =
-  "The framework for durable actors, deterministic actions, journaled jobs, realtime state, and bucket-backed stores."
+export const siteDescription = "Durable actors for TypeScript, built on Effect."
 
 export const marketingUrl = "https://akter.dev"
 

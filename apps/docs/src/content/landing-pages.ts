@@ -40,20 +40,20 @@ export const welcomePage: LandingPage = {
       heading: "Start here",
       columns: 3,
       cards: [
-        { title: "Quickstart", slug: "quickstart" },
-        { title: "Akter Cloud", slug: "cloud/get-started" },
+        { title: "Getting started", slug: "getting-started" },
+        { title: "Why Akter", slug: "why-akter" },
       ],
     },
     {
       heading: "What you can do",
       columns: 3,
       cards: [
-        { title: "Concepts", slug: "guides/concepts" },
-        { title: "Commands and jobs", slug: "guides/actions-and-jobs" },
+        { title: "Actors", slug: "core/actors" },
+        { title: "Commands", slug: "core/commands" },
+        { title: "Jobs", slug: "core/jobs" },
+        { title: "Realtime", slug: "core/realtime" },
         { title: "Testing", slug: "guides/testing" },
-        { title: "Deploy", slug: "guides/deploy" },
-        { title: "Self-host", slug: "operations/self-host" },
-        { title: "Server API", slug: "api/01-server-api" },
+        { title: "Deploying", slug: "deploy/overview" },
       ],
     },
   ],
@@ -63,8 +63,7 @@ export const welcomePage: LandingPage = {
 export const apiOverviewPage = (titles: PageTitles): LandingPage => ({
   slug: "api/overview",
   title: "API reference",
-  description:
-    "Reference for the server API, the Effect client, the CLI, and the Akter Cloud HTTP API.",
+  description: "Reference for the server, the CLI, errors, and Akter's guarantees and limits.",
   sections: navigation
     .filter((tab) => tab.product === "api-reference")
     .flatMap((tab) => tab.groups)

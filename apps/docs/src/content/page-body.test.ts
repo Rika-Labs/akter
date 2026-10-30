@@ -1,7 +1,11 @@
+import remarkParse from "remark-parse"
+import remarkStringify from "remark-stringify"
+import { unified } from "unified"
 import { describe, expect, it } from "vitest"
 
 import { publishedSlugs } from "./navigation.ts"
 import { pageBody } from "./page-body.ts"
+import { remarkAdmonitionTags } from "./remark-docs.ts"
 
 describe("pageBody", () => {
   it("rewrites every link of every published page, so one dead link anywhere fails this test", () => {
@@ -13,25 +17,30 @@ describe("pageBody", () => {
   })
 
   it("drops the leading heading and frontmatter", () => {
-    const body = pageBody("guides/concepts")
+    const body = pageBody("getting-started")
 
-    expect(body.startsWith("## ")).toBe(true)
+    expect(body).not.toMatch(/^# /m)
+    expect(body.startsWith("In this tutorial")).toBe(true)
     expect(body).not.toContain("title:")
   })
 
   it("turns the warning tag into a quote and keeps its text", () => {
-    const body = pageBody("operations/self-host")
+    const body = String(
+      unified()
+        .use(remarkParse)
+        .use(remarkAdmonitionTags)
+        .use(remarkStringify)
+        .processSync("<Warning>\nPin the commit you deploy.\n</Warning>\n"),
+    )
 
     expect(body).not.toContain("<Warning>")
-    expect(body).toMatch(/^> This recipe tracks `main`/m)
+    expect(body).toMatch(/^> Pin the commit you deploy\./m)
   })
 
   it("sends links to unpublished documents to GitHub and between published pages to routes", () => {
-    expect(pageBody("guides/concepts")).toContain(
-      "](https://github.com/Rika-Labs/akter/blob/main/docs/contracts/02-actions.md)",
+    expect(pageBody("guides/client")).toContain(
+      "](https://github.com/Rika-Labs/akter/blob/main/docs/internals/contracts/protocol.md)",
     )
-    expect(pageBody("operations/self-host")).toContain(
-      "](/api/01-server-api#several-runners-and-graceful-shutdown-02)",
-    )
+    expect(pageBody("deploy/overview")).toContain("](/reference/cli#akter-storage-check)")
   })
 })

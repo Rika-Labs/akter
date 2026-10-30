@@ -64,8 +64,8 @@ describe("SearchPalette", () => {
   it("limits empty-query suggestions to the selected product and restores all suggestions", async () => {
     const { user, requested, input } = await open([200])
     const hrefs = () => screen.getAllByRole("option").map((option) => option.getAttribute("href"))
-    const documentation = ["/quickstart", "/guides/concepts", "/cloud/get-started"]
-    const api = ["/api/01-server-api", "/api/06-cli"]
+    const documentation = ["/getting-started", "/core/actors", "/core/commands"]
+    const api = ["/reference/server", "/reference/cli"]
 
     expect(hrefs()).toEqual([...documentation, ...api])
 

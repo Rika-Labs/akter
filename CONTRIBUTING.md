@@ -39,7 +39,7 @@ Maintainers push small commits straight to `main` ([AGENTS.md](AGENTS.md#shippin
 
 [AGENTS.md](AGENTS.md) has the full rules. The main ones:
 
-- Contracts first: read the owning contract in `docs/contracts/` before implementing, and update the contract, ADR, API docs and verification when behavior changes.
+- Contracts first: read the owning contract in `docs/internals/contracts/` before implementing, and update the contract, ADR, API docs and verification when behavior changes.
 - Add a failure test for every durable transition. Prove concurrency, fencing, ownership and recovery with the seeded simulator plus the real bucket protocol.
 - No inline `//` or `/* */` comments. A reason the code cannot show goes in the JSDoc of the enclosing declaration.
 - Never weaken, skip or delete a test to make it pass.

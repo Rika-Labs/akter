@@ -11,12 +11,12 @@ change without rereading the code.
 1. **Question.** Write what you need to know in one sentence, and the change it's for.
 2. **Entry points.** Find where the behavior starts: the route, page, actor action, CLI command, job or
    workflow. Search by the user-visible word and Akter's terms from [README.md](../../../README.md) and
-   the owning [runtime contract](../../../docs/contracts/README.md).
+   the owning [runtime contract](../../../docs/internals/contracts/README.md).
 3. **Trace one real case** end to end through the actual code: who calls whom, what data moves, where
    state is stored, where access is checked, where it can fail. Run it on your stack if reading leaves
    doubt (`../prove-it/references/stack.md`).
 4. **Read the tests** for that path and the owning contract. Tests show existing evidence, not authority
-   over the 0.2 target; check the [support matrix](../../../docs/operations/support-matrix.md) for limits.
+   over the 0.2 target; check [guarantees and limits](../../../docs/reference/guarantees.md).
 5. **Read the history** for the surprising parts: `git log -S '<symbol>'`, `git log --follow <file>`,
    `git blame`. The commit message usually says why.
 6. **Fan out when it's big.** For a subsystem spanning several apps or packages, send 2–4 fresh agents in

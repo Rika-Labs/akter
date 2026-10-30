@@ -8,8 +8,8 @@ import { firstHeading, stripFrontmatter } from "./headings.ts"
 import { docsDirectory, readRepositoryFile } from "./repository.ts"
 
 describe("navigation", () => {
-  it("lists three tabs in order and no page twice", () => {
-    expect(navigation.map((tab) => tab.tab)).toEqual(["Guides", "Akter Cloud", "API reference"])
+  it("lists two tabs in order and no page twice", () => {
+    expect(navigation.map((tab) => tab.tab)).toEqual(["Guides", "API reference"])
     expect(new Set(publishedSlugs).size).toBe(publishedSlugs.length)
   })
 
@@ -29,7 +29,7 @@ describe("navigation", () => {
   it("never publishes a document that is internal by location", () => {
     for (const slug of publishedSlugs)
       expect(slug, slug).not.toMatch(
-        /^(decisions|contracts|architecture|verification|vision|milestones|security)\//,
+        /^(internals|decisions|contracts|architecture|verification|vision|milestones|security)\//,
       )
   })
 
@@ -42,11 +42,7 @@ describe("navigation", () => {
 
   it("puts every tab in one of the two sections and names each section's home page", () => {
     expect(products.map((product) => product.id)).toEqual(["documentation", "api-reference"])
-    expect(navigation.map((tab) => tab.product)).toEqual([
-      "documentation",
-      "documentation",
-      "api-reference",
-    ])
+    expect(navigation.map((tab) => tab.product)).toEqual(["documentation", "api-reference"])
     expect(products.map((product) => productOf(product.home.slice(1)))).toEqual(
       products.map((product) => product.id),
     )

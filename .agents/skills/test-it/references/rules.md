@@ -42,6 +42,6 @@ Cover these before anything clever, wherever they apply:
 ## Place it right
 
 - Tests are colocated as `x.test.ts` beside the owner (example filename). Follow the
-  [repository structure](../../../../docs/architecture/repository-structure.md); deviations need an entry
+  [repository structure](../../../../docs/internals/architecture/repository-structure.md); deviations need an entry
   in `tooling/structure/src/exemptions.ts`. `bun run lint:structure` checks placement.
 - Reuse the owner's fixtures and runners; don't invent a new harness.

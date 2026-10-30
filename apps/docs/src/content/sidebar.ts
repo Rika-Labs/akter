@@ -29,11 +29,11 @@ export interface Sidebar {
 
 /** The pages the search palette lists before anything is typed, as sidebar addresses. */
 export const suggestedHrefs: ReadonlyArray<string> = [
-  "/quickstart",
-  "/guides/concepts",
-  "/cloud/get-started",
-  "/api/01-server-api",
-  "/api/06-cli",
+  "/getting-started",
+  "/core/actors",
+  "/core/commands",
+  "/reference/server",
+  "/reference/cli",
 ]
 
 const item = (slug: string, title: string, description: string | undefined): SidebarItem => ({

@@ -16,9 +16,9 @@ private Akter Cloud repository; do not invent local auth, seed, API or health ro
   does not prove the static export. See `apps/docs/next.config.ts` and `apps/docs/scripts/finish-export.ts`.
 - Framework behavior: use the public Effect client and seeded `Simulation` in
   [testing](../../../../docs/guides/testing.md). To run a real local server, follow the
-  [quickstart](../../../../docs/quickstart.md), with a fresh filesystem store and an unused port; check
+  [getting started](../../../../docs/getting-started.md) guide, with a fresh filesystem store and an unused port; check
   `GET /ready` and call the one RPC group at `/rpc` through `AkterClient.layer`.
-- Bucket/self-host behavior: follow [self-host operations](../../../../docs/operations/self-host.md)
+- Bucket/self-host behavior: follow [your own server](../../../../docs/deploy/docker.md#your-own-bucket)
   and the runnable files in `apps/self-host`. Isolate ports, credentials and storage before starting;
   the recipe's default port may already be occupied. Never attach a test to another checkout's store.
   Filesystem, simulator and MinIO results are not provider certification.

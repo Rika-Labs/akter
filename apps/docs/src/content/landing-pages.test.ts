@@ -33,13 +33,13 @@ describe("landingPages", () => {
 describe("renderLandingMarkdown", () => {
   it("writes the title, the description, a link back and every card as a link to its twin", () => {
     const markdown = renderLandingMarkdown(welcomePage, (slug) =>
-      slug === "quickstart" ? "Run your first actor." : undefined,
+      slug === "getting-started" ? "Run your first actor." : undefined,
     )
 
     expect(markdown.startsWith("# Welcome to Akter\n\n> ")).toBe(true)
-    expect(markdown).toContain("/welcome\n\n## Start here\n- [Quickstart](")
-    expect(markdown).toContain("/quickstart.md): Run your first actor.\n")
-    expect(markdown).toContain("- [Akter Cloud](")
+    expect(markdown).toContain("/welcome\n\n## Start here\n- [Getting started](")
+    expect(markdown).toContain("/getting-started.md): Run your first actor.\n")
+    expect(markdown).toContain("- [Why Akter](")
     expect(markdown).not.toContain("undefined")
   })
 })

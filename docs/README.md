@@ -1,21 +1,51 @@
 # Akter documentation
 
-This documentation describes Akter 0.2. The normative runtime target is in [contracts](contracts/README.md), design rationale is in [decisions](decisions/README.md), and executable evidence is in [verification](verification/README.md). A proposal is not a provider-support claim.
+New to Akter? Start with [Getting started](getting-started.md), then read the core concepts in order. Each page is short.
 
-## Public distribution
+## Start here
 
-- `@rikalabs/akter`: `Actor`, caller schemas, errors, contracts, and the Effect client.
-- `@rikalabs/akter/server`: `Akter.serve`, `Store.s3`, `Store.fileSystem`, `Store.memory`, and `App`.
-- `@rikalabs/akter/testing`: seeded `Simulation`.
+- [Getting started](getting-started.md): build, run, call and test a counter.
+- [Why Akter](why-akter.md): the problem Akter solves, and what it costs.
 
-The framework has one client model: `X.client(id)` and static `X.find(...)`, both Effect APIs. The server exposes one RPC group at `/rpc`: JSON over WebSocket and NDJSON over HTTP POST.
+## Core concepts
 
-## Storage and support
+1. [Actors](core/actors.md): state, ids, and putting an app together.
+2. [Commands](core/commands.md): changing state, failing safely, messages, timers and cron.
+3. [Jobs](core/jobs.md): I/O with recorded steps, retries and timeouts.
+4. [Lists](core/lists.md): data that grows without limit.
+5. [Realtime](core/realtime.md): live state, views, broadcasts and presence.
+6. [Access](core/access.md): authentication and who may do what.
+7. [Finding actors](core/find.md): looking up actor ids by their state.
 
-A durable deployment uses one bucket per environment. The bucket is the command log, fence, checkpoints, pages, indexes, runner bookkeeping, and operator audit records. `Store.fileSystem(dir)` is the local `akter dev` adapter; `Store.memory()` is for tests only. `akter storage check` probes a bucket or directory without opening a store.
+## Guides
 
-MinIO and filesystem results are local evidence only. R2, Tigris, and other providers remain unestablished until the provider-specific check passes and the support matrix records the run.
+- [Calling actors](guides/client.md): the client, credentials, errors and retries.
+- [Testing](guides/testing.md): `Story` for handlers, `Simulation` for everything else.
+- [Operating](guides/operating.md): metrics, operator tools, history, backups and troubleshooting.
+- [Changing state](guides/changing-state.md): evolving schemas without migrations.
 
-## Authority order
+## Deploy
 
-When pages disagree, use accepted decisions first, then the owning contract, then architecture and API pages. Dated verification pages preserve what was observed at the time and are not silently rewritten as current guarantees.
+Start with [Deploying](deploy/overview.md): what a server needs from a platform, the entry point, the image and the bucket. Then follow your platform's guide:
+
+- [Cloudflare](deploy/cloudflare.md), with Alchemy
+- [AWS](deploy/aws.md), with the CDK
+- [Google Cloud](deploy/google-cloud.md)
+- [Azure](deploy/azure.md)
+- [Fly.io](deploy/fly.md)
+- [Railway](deploy/railway.md)
+- [Render](deploy/render.md)
+- [DigitalOcean](deploy/digitalocean.md)
+- [Kubernetes](deploy/kubernetes.md), on any cluster
+- [Your own server](deploy/docker.md), with Docker Compose
+
+## Reference
+
+- [CLI](reference/cli.md)
+- [Server](reference/server.md)
+- [Errors](reference/errors.md)
+- [Guarantees and limits](reference/guarantees.md)
+
+## Internals
+
+[Internals](internals/README.md) is for people working on Akter itself: the runtime contracts, design decisions, architecture and test evidence. You don't need any of it to use Akter.

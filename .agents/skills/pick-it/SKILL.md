@@ -40,7 +40,7 @@ design: rethink-it.
 
 - **The real thing.** Match evidence to the claim: public-API seeded Simulation for engine failures,
   real buckets for protocol behavior, browser evidence for documentation UI. Follow
-  [testing](../../../docs/guides/testing.md) and [verification](../../../docs/verification/README.md);
+  [testing](../../../docs/guides/testing.md) and [verification](../../../docs/internals/verification/README.md);
   local or MinIO evidence never certifies a provider.
 - **Measure.** Visuals, speed and scale are decided by numbers, never by eye.
 - **Causes.** Fix where the system first went wrong; retries, sleeps and guards are not fixes.

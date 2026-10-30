@@ -1,99 +1,141 @@
----
-title: "Testing"
-description: "Test handlers with Story, test actors with the seeded Simulation, and check real buckets with akter storage check."
----
-
 # Testing
 
-Test the durable behavior of your actors, not only the happy path. `@rikalabs/akter/testing` has two tools. `Story` runs one actor's command and view handlers as plain functions. `Simulation` runs the real engine over a seeded in-memory bucket with controlled time, scheduling, and faults.
+`@rikalabs/akter/testing` has two tools, for two kinds of question.
 
-## Test handlers with Story
+- **`Story`** asks "does this handler make the right decision?" It runs one actor's command and view handlers as plain functions, with no engine, no store and no Effect runtime.
+- **`Simulation`** asks "does the system do the right thing?" It runs the real engine over an in-memory bucket, on a seeded scheduler, and can crash servers and lose writes on purpose.
 
-A story gives an actor a starting state, runs commands, and checks the reply or failure, the new state, and everything the command staged. It runs synchronously, with no engine, no store, and no Effect runtime, so it works in vitest, bun test, and node:test.
+Both work in `bun test`, Vitest and `node:test`. The examples here use the `Account` actor from [Commands](../core/commands.md) and the `Signup` actor from [Jobs](../core/jobs.md).
+
+## Story
+
+A story sets up a state, runs commands, and checks what each one did:
 
 ```ts
-import assert from "node:assert/strict"
-import { test } from "node:test"
+import { expect, test } from "bun:test"
 import { Story } from "@rikalabs/akter/testing"
-import { Counter, CounterLive, TooLarge } from "./counter.ts"
+import { Account, AccountLive, InsufficientFunds } from "./account.ts"
 
-test("add refuses to pass 100 and keeps the count", () => {
+test("withdraw refuses to overdraw and changes nothing", () => {
   Story.run(
-    Counter,
-    CounterLive,
-    Story.given({ count: 99 }),
-    Story.command("add", 2),
-    Story.expectFailure(TooLarge),
-    Story.state((state) => assert.equal(state.count, 99)),
-    Story.expectNothingStaged(),
+    Account,
+    AccountLive,
+    Story.given({ balance: 50 }),
+    Story.command("withdraw", 80),
+    Story.expectFailure(InsufficientFunds),
+    Story.state((state) => expect(state.balance).toBe(50)),
+    Story.command("withdraw", 30),
+    Story.expectReply(20),
   )
 })
 ```
 
-Each step is checked against the contract at compile time: command names and payloads, replies, failures, state fields, job and broadcast names and their values. When an expectation fails, `Story.run` throws a `StoryFailure` that names the step and shows what the command actually did. `Story.effect` runs the same steps as an Effect that fails with the `StoryFailure`.
-
-A command runs through the engine's own command runner. A declared failure or a thrown error discards the draft and everything the command staged, exactly as in production, and the next steps see the state from before the command. A failure or defect must be checked with `Story.expectFailure` or `Story.expectDefect` before the next command, or the story fails. Steps after a successful command see its new state.
+A failed command is thrown away exactly as it would be in production, so the next step sees the state from before it. Every step is type-checked against the actor: command names, payloads, replies, errors and state fields. When a check fails, `Story.run` throws a `StoryFailure` that names the step and shows what the command actually did.
 
 The steps:
 
-- `Story.given(state, { self? })` sets scalar fields and gives each list its items. `self` is the instance id handlers see as `ctx.self`; it defaults to `"story"`.
-- `Story.command(name, payload?, { caller?, now?, id?, random? })` runs a public or internal command. `caller` defaults to `System({ source: "process", subject: "process" })`, the caller `Simulation` uses, and `now` defaults to `0`. `id` and `random` list the values `ctx.id()` and `ctx.random()` return, in order; drawing more than you listed fails the story. Without them, the handler gets the engine's values, derived from the story's own command ids, which are the same on every run.
-- `Story.expectReply(value)`, `Story.expectFailure(ErrorClass or value)` and `Story.expectDefect({ kind?, detail? })` check how the last command ended.
-- `Story.expectSent(Target, id, command, payload?)`, `Story.expectScheduled(when, command, payload?)`, `Story.expectStarted(job, payload?, { key? })` and `Story.expectBroadcast(name, value)` each match one item the last command staged. `Story.expectNothingStaged()` fails if anything staged is still unmatched.
-- `Story.state((state) => ...)` passes the current state to your check, with each list as an array in `by` order. `Story.view(name, params?, (value) => ...)` reads a view.
+| Step                                                        | What it does                                                      |
+| ----------------------------------------------------------- | ----------------------------------------------------------------- |
+| `Story.given(state, { self })`                              | Sets the starting state, including list items, and the actor's id |
+| `Story.command(name, payload, { caller, now, id, random })` | Runs a command, public or internal; the options fix its context   |
+| `Story.expectReply(value)`                                  | Checks the reply                                                  |
+| `Story.expectFailure(ErrorClass)`                           | Checks the declared error                                         |
+| `Story.expectDefect({ kind, detail })`                      | Checks that the handler threw or broke a rule                     |
+| `Story.expectSent(Actor, id, command, payload)`             | Checks a `send`                                                   |
+| `Story.expectScheduled(when, command, payload)`             | Checks a timer                                                    |
+| `Story.expectStarted(job, payload, { key })`                | Checks a job start                                                |
+| `Story.expectBroadcast(name, value)`                        | Checks a broadcast                                                |
+| `Story.expectNothingStaged()`                               | Fails if anything staged hasn't been checked                      |
+| `Story.state(check)`                                        | Passes the current state, with lists as arrays, to your check     |
+| `Story.view(name, params, check)`                           | Passes a view's value to your check                               |
 
-A story never runs a job. To test what happens when a job finishes, run the internal command that receives its result, such as `Story.command("failedReport", failure)`. Internal commands can be called in a story, and they get a `System` caller.
+A failure or defect must be checked before the next command, so a story can't ignore one by accident.
 
-`Story.run` takes the layer from `toLayer` only to read its handlers. If your jobs need services, provide them to that layer, as `Simulation.run` requires. Stubs are fine, because a story never runs a job. A story does not check `access`.
+A story never runs a job. To test what happens when a job finishes, run the command that receives its result, such as `Story.command("failedSendWelcome", failure)`. If your jobs need services, provide stubs to the layer you pass in; a story only reads the handlers from it.
 
-### Story or Simulation
+`Story.effect` runs the same steps as an Effect, for test runners built on Effect.
 
-Use `Story` for the decisions a handler makes: replies, failures, state changes, and staged sends, timers, job starts, and broadcasts. Use `Simulation` for anything the engine does: durability, retries, delivery between actors, timers firing, jobs running, crashes, and recovery.
+## Simulation
 
-## Write a simulation test
+A simulation drives the actor through its client, the way your app will:
 
 ```ts
-import assert from "node:assert/strict"
-import { test } from "node:test"
-import { Effect } from "effect"
+import { expect, test } from "bun:test"
+import { Effect, Layer } from "effect"
 import { Simulation } from "@rikalabs/akter/testing"
-import { Counter, CounterLive, TooLarge } from "./counter.ts"
+import { Mailer, Signup, SignupLive } from "./signup.ts"
 
-test("a declared failure leaves the state unchanged", async () => {
+test("the welcome email goes out once, through crashes and lost writes", async () => {
+  const keys = new Set<string>()
+  const mailer = Layer.succeed(Mailer, {
+    send: ({ idempotencyKey }) =>
+      Effect.sync(() => {
+        keys.add(idempotencyKey)
+        return "message-1"
+      }),
+  })
+
   await Simulation.run(
-    { actors: [Counter], seed: 41 },
+    { actors: [Signup], seed: 7, faults: ["crash", "lostResponse", "unavailable"] },
     Effect.gen(function* () {
-      const counter = yield* Counter.client("test")
-      assert.equal(yield* counter.add(60), 60)
-      const failure = yield* Effect.flip(counter.add(70))
-      assert.ok(failure instanceof TooLarge)
+      const signup = yield* Signup.client("ada")
+      yield* signup.register("ada@example.com")
       yield* Simulation.settle
-      assert.equal((yield* Simulation.state(Counter, "test")).count, 60)
+      const state = yield* Simulation.state(Signup, "ada")
+      expect(state.welcome).toBe("sent")
+      expect(keys.size).toBe(1)
     }).pipe(Effect.scoped),
-    CounterLive,
+    SignupLive.pipe(Layer.provide(mailer)),
   )
 })
 ```
 
-This test uses the `add` command from [Commands and jobs](./actions-and-jobs.md), with `TooLarge` exported. It calls the actor through the public client, waits for pending work with `Simulation.settle`, and reads the full durable state, including lists, with `Simulation.state`.
+`Simulation.run` takes the options, the test program, and the actors' layer with every service provided. Inside the program:
 
-The `seed` makes the run repeatable. When a run breaks an invariant, the error names its seed, so keep it when you reduce the failure.
+- `Simulation.settle` runs until there's nothing left to do: no pending commands, sends, timers or jobs.
+- `Simulation.state(Actor, id)` reads what's actually stored, lists included.
+- `Simulation.advance("1 hour")` moves the clock forward, firing timers, cron ticks and retries as they come due.
+- `Simulation.crash(Actor, id)` crashes the server that owns an actor. Its memory is gone, and it recovers from the bucket.
+- `Simulation.as(caller)` runs part of the program as another caller.
+
+The clock is simulated, so an hour passes instantly.
+
+## Faults
+
+`faults` turns on failures between the engine and the bucket:
+
+| Fault          | What happens                                                   |
+| -------------- | -------------------------------------------------------------- |
+| `crash`        | The server crashes just before or just after a log write lands |
+| `lostResponse` | A write succeeds but the server never hears back               |
+| `unavailable`  | The bucket fails requests for a while                          |
+| `slowLog`      | Writes are delayed while other work goes on                    |
+
+These are the failures that break naive backends: the reply that was sent for a write that was lost, the retry that ran twice. A test that passes with faults on shows your actors behave correctly through them.
+
+## Seeds
+
+Everything in a simulation, including the order in which concurrent work runs and where faults strike, follows from `seed`. The same seed replays the same run, so a failure is always reproducible. Run a test over many seeds to cover more interleavings:
+
+```ts
+for (const seed of [1, 2, 3, 4, 5, 6, 7, 8]) test(`seed ${seed}`, () => run(seed))
+```
+
+## What the simulation checks for you
+
+When it settles, a simulation also checks Akter's own guarantees and fails with an `InvariantViolation` that names the seed. Among other things, it runs every command twice against a copy of the state and compares the results, which catches a handler that isn't [deterministic](../core/commands.md#stay-deterministic). A handler that reads `Date.now()` fails here rather than in production.
 
 ## What to test
 
-Before you write a test, name the wrong implementation it must reject. Use inputs that differ from each other and expected values you derived independently. A success-only test cannot show that a discard or recovery works.
+Before writing a test, think of the wrong implementation it should catch. A test that only checks the happy path can't tell you whether a failure is really thrown away. Cover the cases that matter for state that has to survive:
 
-Cover the cases where durability matters:
-
-- A declared failure and a defect, with the state unchanged.
-- A lost or ambiguous write, owner loss, and restart.
+- A declared failure and a thrown error, with the state unchanged afterward.
 - A retry with the same command id.
-- An interrupted job step.
+- A job step that fails, and one that crashes partway.
+- A crash, followed by recovery.
 
-Assert the resulting durable state, not only that the call returned. Pass `faults` to `Simulation.run` to inject crashes, lost responses, outages, and slow writes between the store and the bucket.
+Assert on what's stored with `Simulation.state`, not only on what a call returned.
 
-## Test a real bucket
+## Testing a real bucket
 
-The simulator and the filesystem store do not validate a provider. The repository's own integration tests use MinIO. None of these show how your provider behaves under load or power loss.
-
-Run [`akter storage check`](../api/06-cli.md#akter-storage-check) against the bucket you plan to use, and keep its output. See [Deploy](./deploy.md).
+A simulation uses an in-memory bucket, and the filesystem store is for one machine. Neither tells you how your storage provider behaves. Before you deploy, run [`akter storage check`](../reference/cli.md#akter-storage-check) against the bucket you'll use. See [Deploying](../deploy/overview.md).

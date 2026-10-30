@@ -4,17 +4,17 @@ import { dirname, join, resolve } from "node:path"
 const findRepositoryRoot = (start: string): string => {
   let current = resolve(start)
 
-  while (!existsSync(join(current, "docs", "quickstart.md"))) {
+  while (!existsSync(join(current, "docs", "getting-started.md"))) {
     const parent = dirname(current)
 
-    if (parent === current) throw new Error(`No docs/quickstart.md above ${start}`)
+    if (parent === current) throw new Error(`No docs/getting-started.md above ${start}`)
     current = parent
   }
 
   return current
 }
 
-/** The repository root, found by walking up from the working directory to `docs/quickstart.md`. */
+/** The repository root, found by walking up from the working directory to `docs/getting-started.md`. */
 export const repositoryRoot: string = findRepositoryRoot(process.cwd())
 
 /** The repository's documentation directory, the single source of every published page. */

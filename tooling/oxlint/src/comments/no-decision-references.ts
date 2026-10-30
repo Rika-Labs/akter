@@ -5,7 +5,7 @@ import { defineRule } from "@oxlint/plugins"
  * left to the review rule in `.amp/rules/quality/47-no-decision-references-in-code.md`;
  * this pattern fails CI on the literal forms without judgment.
  */
-const CITATION = /\bADRs?\b|\bdocs\/decisions\b|\bdecisions?\s+#?\d/i
+const CITATION = /\bADRs?\b|\bdocs\/(?:internals\/)?decisions\b|\bdecisions?\s+#?\d/i
 
 /**
  * Reports comments that cite a decision record instead of stating the reason.
@@ -15,7 +15,7 @@ export const noDecisionReferencesRule = defineRule({
     type: "suggestion",
     docs: {
       description:
-        "Disallow comments that cite an ADR, a numbered decision, or docs/decisions instead of stating the reason in place.",
+        "Disallow comments that cite an ADR, a numbered decision, or docs/internals/decisions instead of stating the reason in place.",
     },
     messages: {
       decisionReference:
