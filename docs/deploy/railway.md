@@ -1,74 +1,100 @@
 # Railway
 
-On Railway, the server is one service built from your `Dockerfile`, and the store is an R2 bucket. The service is described in `.railway/railway.ts`, Railway's [infrastructure as code](https://docs.railway.com/infrastructure-as-code) file.
+On Railway, the server runs as one service and the store is an R2 bucket. Alchemy's [Railway provider](https://alchemy.run/railway) creates the project and the service, uploads your code, and Railway builds it from your `Dockerfile`.
 
-Two things are different from a typical Railway app:
+Railway's own buckets come from Tigris, which doesn't accept the path-style requests Akter sends for new buckets, so the store is R2.
 
-- **The service has a volume it never uses.** Railway normally starts the new deployment and stops the old one once the new one is healthy, which is the opposite of what Akter needs. It never runs two deployments of a service that has a volume, so attaching one makes every deploy stop the old server first.
-- **The bucket is R2, not a Railway bucket.** Railway's buckets come from Tigris, which no longer accepts the path-style requests Akter sends for new buckets.
+You need:
 
-You need the `src/server.ts`, `Dockerfile` and `.dockerignore` from [Deploying](overview.md), an [R2 bucket](overview.md#create-an-r2-bucket), and the `railway` command.
+- The `src/server.ts`, `Dockerfile` and `.dockerignore` from [Deploying](overview.md), and `infra/store.ts` from [The bucket](overview.md#the-bucket).
+- A Railway account, and an account or workspace token if you deploy from CI.
 
-## Describe the service
+## Install
 
 ```sh
-bun add -d railway
+bun add -d alchemy @alchemy.run/cloudflare @alchemy.run/railway
 ```
 
-Create `.railway/railway.ts`:
+## Describe the stack
+
+Create `alchemy.run.ts` in the project root:
 
 ```ts
-import { defineRailway, preserve, project, service, volume } from "railway/iac"
+import * as Cloudflare from "@alchemy.run/cloudflare"
+import * as Railway from "@alchemy.run/railway"
+import * as Alchemy from "alchemy"
+import { Config, Effect, Layer } from "effect"
+import { R2Store } from "./infra/store.ts"
 
-export default defineRailway(() => {
-  const handoff = volume("handoff")
+export default Alchemy.Stack(
+  "my-app",
+  {
+    providers: Layer.mergeAll(Cloudflare.providers(), Railway.providers()),
+    state: Cloudflare.state(),
+  },
+  Effect.gen(function* () {
+    const store = yield* R2Store
+    const project = yield* Railway.Project("Project")
+    const volume = yield* Railway.Volume("Volume", { project, mountPath: "/data" })
 
-  const server = service("server", {
-    healthcheck: "/ready",
-    volumeMounts: { "/handoff": handoff },
-    deploy: { drainingSeconds: 15 },
-    env: {
-      AKTER_STORAGE_BUCKET: "my-app-store",
-      AKTER_STORAGE_ENDPOINT: "https://ACCOUNT_ID.r2.cloudflarestorage.com",
-      AKTER_STORAGE_REGION: "auto",
-      AWS_ACCESS_KEY_ID: preserve(),
-      AWS_SECRET_ACCESS_KEY: preserve(),
-      AUTH_ISSUER: "https://login.example.com/",
-      AUTH_AUDIENCE: "my-app",
-      AUTH_JWKS_URL: "https://login.example.com/.well-known/jwks.json",
-    },
-  })
+    const server = yield* Railway.Service(
+      "Server",
+      {
+        project,
+        context: ".",
+        dockerfilePath: "Dockerfile",
+        port: 8080,
+        healthcheckPath: "/ready",
+        healthcheckTimeout: 120,
+        drainingSeconds: 30,
+        overlapSeconds: 0,
+        sleepApplication: false,
+        restartPolicyType: "ALWAYS",
+        env: {
+          AKTER_STORAGE_BUCKET: store.bucket,
+          AKTER_STORAGE_ENDPOINT: store.endpoint,
+          AKTER_STORAGE_REGION: "auto",
+          AWS_ACCESS_KEY_ID: store.accessKeyId,
+          AWS_SECRET_ACCESS_KEY: store.secretAccessKey,
+          AUTH_ISSUER: yield* Config.String("AUTH_ISSUER"),
+          AUTH_AUDIENCE: yield* Config.String("AUTH_AUDIENCE"),
+          AUTH_JWKS_URL: yield* Config.String("AUTH_JWKS_URL"),
+        },
+      },
+      Effect.gen(function* () {
+        yield* Railway.MountVolume(volume, { path: "/data" })
+        return {}
+      }).pipe(Effect.provide(Railway.MountVolumeLive)),
+    )
 
-  return project("my-app", { resources: [server, handoff] })
-})
+    return { url: server.url }
+  }),
+)
 ```
 
-- **`volumeMounts`** attaches the volume, for the reason above. A volume also keeps the service to one replica.
-- **`healthcheck`** makes Railway wait for `/ready` before it sends traffic to a new deployment.
-- **`drainingSeconds`** gives the server 15 seconds between SIGTERM and SIGKILL. Railway's default is 0.
-- **`preserve()`** leaves the bucket's keys out of the file. You set them with the CLI below, and later applies keep them.
-
-Railway sets `PORT`, and the server listens on it.
+- **`Volume`** holds nothing. It's there for how Railway deploys a service with a volume: it never runs two deployments of it at once, so it stops the old one before it starts the new one, and never runs replicas. Without a volume, Railway starts the new deployment first.
+- **`context: "."`** uploads the project, minus what `.dockerignore` leaves out, and Railway builds it with your `Dockerfile`. You don't need Docker locally.
+- **`drainingSeconds: 30`** gives the server 30 seconds between SIGTERM and SIGKILL. Railway's default is none.
+- **`healthcheckPath`** makes Railway wait for `/ready` before it routes traffic to a new deployment.
+- **`sleepApplication: false`** keeps the server running when no requests arrive.
+- **`url`** is the service's generated `*.up.railway.app` domain, which forwards to port 8080. WebSockets work through it.
 
 ## Deploy
 
 ```sh
-railway login
-railway init --name my-app
-railway config apply
-railway variable set --service server AWS_ACCESS_KEY_ID=<access key id> AWS_SECRET_ACCESS_KEY=<secret access key>
-railway up --service server
-railway domain --service server
+bun alchemy deploy --stage prod
 ```
 
-`config apply` shows the plan and creates the service and volume. `railway up` uploads the project, and Railway builds the `Dockerfile` it finds. `railway domain` gives the service a public URL. Check the server:
+The first time, Alchemy asks you to connect Railway, with OAuth or a token, and your Cloudflare account. In CI it reads `RAILWAY_API_TOKEN`. Then it uploads the project and waits for the deployment to pass its health check. Check the server:
 
 ```sh
-curl https://<your domain>/ready
+curl <url>/ready
 ```
 
 ## Releases
 
-Run `railway up --service server` again, or connect the service to your GitHub repository so each push deploys. Railway stops the old deployment, waits up to `drainingSeconds` for it to drain, and starts the new one. Clients retry through the gap.
+Run `bun alchemy deploy --stage prod` again. Railway builds the new image while the old deployment keeps serving, then stops the old deployment with SIGTERM and starts the new one. Clients retry through the gap.
 
-Railway sometimes moves a service to another host on its own. That's a restart of the same release, so it needs nothing from you.
+Because the old deployment stops before the new one passes its health check, a release that doesn't start leaves nothing running. Fix it and deploy again, or redeploy the previous deployment from Railway's dashboard.
+
+`bun alchemy destroy --stage prod` deletes the project. It leaves the bucket while it holds objects.

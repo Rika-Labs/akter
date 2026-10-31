@@ -19,12 +19,12 @@ A provider is supported for Akter stores only while `akter storage check` passes
 
 ## Matrix
 
-| Provider                        | Status                                        | Date       | Version                                                                                                                                                         | Result                                    | Evidence                                                                                        |
-| ------------------------------- | --------------------------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| MinIO (one node, one container) | passes locally and in CI; self-host reference | 2026-10-12 | MinIO RELEASE.2026-09-22T19-25-18Z (`cgr.dev/chainguard/minio`, digest in `packages/akter/compose.yaml`); `akter storage check` 0.2.0 (E7 change, before merge) | 7 of 7 probes pass; see the numbers below | [MinIO run](#minio-run-2026-10-12); CI runs the same probe in the `framework-integration` shard |
-| Cloudflare R2                   | not established                               |            |                                                                                                                                                                 |                                           | [Slot](#cloudflare-r2)                                                                          |
-| Tigris                          | not established                               |            |                                                                                                                                                                 |                                           | [Slot](#tigris)                                                                                 |
-| AWS S3                          | not established                               |            |                                                                                                                                                                 |                                           | [Slot](#aws-s3)                                                                                 |
+| Provider                        | Status                                        | Date       | Version                                                                                                                                                         | Result                                                                 | Evidence                                                                                        |
+| ------------------------------- | --------------------------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| MinIO (one node, one container) | passes locally and in CI; self-host reference | 2026-10-12 | MinIO RELEASE.2026-09-22T19-25-18Z (`cgr.dev/chainguard/minio`, digest in `packages/akter/compose.yaml`); `akter storage check` 0.2.0 (E7 change, before merge) | 7 of 7 probes pass; see the numbers below                              | [MinIO run](#minio-run-2026-10-12); CI runs the same probe in the `framework-integration` shard |
+| Cloudflare R2                   | fails one probe                               | 2026-10-31 | `akter storage check` 0.3.0 (published `@rikalabs/akter-cli`)                                                                                                   | 6 of 7 probes pass; `ordered listing with limit and start-after` fails | [R2 run](#cloudflare-r2)                                                                        |
+| Tigris                          | not established                               |            |                                                                                                                                                                 |                                                                        | [Slot](#tigris)                                                                                 |
+| AWS S3                          | not established                               |            |                                                                                                                                                                 |                                                                        | [Slot](#aws-s3)                                                                                 |
 
 "Not established" means no run exists: it does not mean the provider fails. The adapter's handling of AWS's `409` for a concurrent conditional write is from the provider's documentation, not from a test.
 
@@ -60,7 +60,32 @@ Each slot below is filled from `akter storage check --json` output run against a
 
 ### Cloudflare R2
 
-No run recorded. Fields to enter: date, `cli` version, account tier and jurisdiction, run location, endpoint origin, the seven verdicts, `per-key write rate` throttled count.
+One run, 2026-10-31, `akter storage check` 0.3.0 from the published `@rikalabs/akter-cli`. The bucket was a fresh R2 bucket in the default jurisdiction on a paid Workers account, created by the Cloudflare deploy guide's Alchemy stack and already holding one store. The run used a temporary account API token with **Workers R2 Storage Bucket Item Read** and **Write** on that bucket only, deleted afterwards. It ran from an Amp orb whose traffic leaves from Boise, Idaho, against the endpoint origin `https://<account id>.r2.cloudflarestorage.com` with region `auto`.
+
+```text
+akter storage check 0.3.0, 2026-10-31T02:32:54.642Z
+Target: S3 bucket akter-live-store-live-e5ociaxuh6qved45, endpoint https://<account id>.r2.cloudflarestorage.com, region auto
+The probe writes under check/ and removes what it wrote.
+
+PASS  conditional create race (6276 ms)
+      16 writers x 10 rounds: 0 rounds with two successful creators, 0 winners not stored, 3 unanswered writes
+PASS  compare-and-swap race (5545 ms)
+      16 writers x 10 rounds: 0 rounds with two successful swaps, 0 winners not stored, 0 unanswered writes
+PASS  list after write (6385 ms)
+      10 rounds: 0 created keys missing from the next listing, 0 deleted keys still listed
+FAIL  ordered listing with limit and start-after (1654 ms)
+      12 keys created out of order: the full listing is not in byte order; 4 pages of at most 5 by start-after do not return every key once, in order, 0 pages over the limit
+PASS  overwrite refreshes last-modified (2844 ms)
+      a plain PUT of identical bytes 2000 ms after the first moved last-modified by 2000 ms
+PASS  per-key write rate (2904 ms)
+      10 back-to-back writes to one key in 2750 ms: 0 throttled, 0 failed otherwise, last accepted write stored
+PASS  batch delete (1838 ms)
+      50 of 50 keys listed before one batch delete, 0 after
+```
+
+A second run with `--json` two minutes later gave the same verdicts; its conditional create race had 14 unanswered writes out of 160.
+
+The failure is in key order, not in paging. Listing the probe's twelve names directly through R2's S3 API returned `-, 0, 10, 1, 1a, 9, _, a.b, a, b, m, z`: R2 lists a key after every longer key that starts with it, where byte order puts `1` before `10` and `a` before `a.b`. Paging by five with `start-after` followed the same order and returned each key once. Twelve fixed-width 16-hex-digit keys created out of order came back in byte order, both in one listing and paged by five.
 
 ### Tigris
 

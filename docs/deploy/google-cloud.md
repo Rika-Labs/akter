@@ -1,49 +1,120 @@
 # Google Cloud
 
-On Google Cloud, the server runs on a [GKE Autopilot](https://cloud.google.com/kubernetes-engine/docs/concepts/autopilot-overview) cluster, using the [Kubernetes](kubernetes.md) manifest, and the store is an R2 bucket. Autopilot manages the nodes for you, and Cloud Build builds the image, so you don't need Docker locally.
+On Google Cloud, the server runs on a [GKE Autopilot](https://cloud.google.com/kubernetes-engine/docs/concepts/autopilot-overview) cluster as a StatefulSet with one pod, and the store is an R2 bucket. Alchemy's [GCP provider](https://alchemy.run/gcp) creates the cluster and an Artifact Registry repository, and its [Kubernetes provider](https://alchemy.run/kubernetes) runs the server on it.
 
-Two Google Cloud products look like a better fit and aren't:
+Cloud Run doesn't fit: it starts the new revision before it stops the old one, and gives a server only 10 seconds after SIGTERM. Google Cloud Storage can't hold the store either, because its S3 API has no conditional writes. That's why the bucket is R2.
 
-- **Cloud Run** starts each new revision before it stops the old one, and gives no way to change that. Every deploy would start a new release while the old one still owns the store.
-- **Cloud Storage** has no conditional writes in its S3-compatible API, so it can't hold an Akter store.
+You need:
 
-You need the `src/server.ts`, `Dockerfile` and `.dockerignore` from [Deploying](overview.md), an [R2 bucket](overview.md#create-an-r2-bucket), and the `gcloud` and `kubectl` commands.
+- The `src/server.ts`, `Dockerfile` and `.dockerignore` from [Deploying](overview.md), and `infra/store.ts` from [The bucket](overview.md#the-bucket).
+- `infra/kubernetes.ts` from the [Kubernetes guide](kubernetes.md#the-server).
+- Docker running locally. Alchemy builds the image on your machine and pushes it to Artifact Registry.
+- A Google Cloud project with billing, and the `gcloud` command.
 
-## Create the cluster and registry
-
-```sh
-gcloud config set project <PROJECT_ID>
-gcloud services enable container.googleapis.com artifactregistry.googleapis.com cloudbuild.googleapis.com
-
-gcloud container clusters create-auto my-app --region us-central1
-gcloud artifacts repositories create my-app --repository-format=docker --location=us-central1
-```
-
-Clusters can usually pull from Artifact Registry in the same project as they are. If a pull is refused, grant the nodes' service account `roles/artifactregistry.reader` on the repository.
-
-## Build the image
+## Install
 
 ```sh
-gcloud builds submit --tag us-central1-docker.pkg.dev/<PROJECT_ID>/my-app/server:1
+bun add -d alchemy @alchemy.run/cloudflare @alchemy.run/gcp @alchemy.run/kubernetes @alchemy.run/docker
 ```
 
-Cloud Build uploads the project, builds the `Dockerfile`, and pushes the image.
+Turn on the APIs the stack uses:
+
+```sh
+gcloud services enable container.googleapis.com artifactregistry.googleapis.com --project <project>
+```
+
+## Describe the stack
+
+Create `alchemy.run.ts` in the project root:
+
+```ts
+import * as Cloudflare from "@alchemy.run/cloudflare"
+import * as Docker from "@alchemy.run/docker"
+import * as GCP from "@alchemy.run/gcp"
+import * as Kubernetes from "@alchemy.run/kubernetes"
+import * as Alchemy from "alchemy"
+import * as Output from "alchemy/Output"
+import { Effect, Layer } from "effect"
+import { byDigest, Server } from "./infra/kubernetes.ts"
+
+export default Alchemy.Stack(
+  "my-app",
+  {
+    providers: Layer.mergeAll(
+      Cloudflare.providers(),
+      GCP.providers(),
+      Kubernetes.providers(),
+      Docker.providers(),
+    ),
+    state: Cloudflare.state(),
+  },
+  Effect.gen(function* () {
+    const { region, accessToken } = yield* Effect.orDie(yield* GCP.GcpEnvironment)
+
+    const cluster = yield* GCP.Container.Cluster("Cluster", {
+      location: region,
+      autopilot: true,
+      releaseChannel: "REGULAR",
+    })
+    const repository = yield* GCP.ArtifactRegistry.Repository("Images", {
+      location: region,
+      format: "DOCKER",
+    })
+    const image = yield* Docker.Image("Image", {
+      name: Output.interpolate`${region}-docker.pkg.dev/${repository.project}/${repository.repositoryId}/server`,
+      build: { context: ".", platform: "linux/amd64" },
+      registry: {
+        server: `${region}-docker.pkg.dev`,
+        username: "oauth2accesstoken",
+        password: accessToken,
+      },
+    })
+
+    yield* Server({ cluster, image: byDigest(image) })
+    return { cluster: cluster.clusterId, location: cluster.location }
+  }),
+)
+```
+
+- **`Cluster`** is an Autopilot cluster in your default region. Google runs and scales its nodes.
+- **`Images`** is the Artifact Registry repository, and **`Image`** builds your `Dockerfile` for `linux/amd64` and pushes it there, signing in with the same Google credentials Alchemy deploys with.
+- **`byDigest`** deploys the image by its digest, so every new build rolls the pod. A tag such as `latest` wouldn't.
+- **`Server`** comes from `infra/kubernetes.ts`: the pod, its storage keys and a load balancer. The [Kubernetes guide](kubernetes.md#the-server) explains it.
 
 ## Deploy
 
+Connect your Google Cloud project once:
+
 ```sh
-gcloud container clusters get-credentials my-app --region us-central1
+bun alchemy profile edit --add GCP
 ```
 
-Then follow [Kubernetes](kubernetes.md) from [Store the keys](kubernetes.md#store-the-keys), with `image` set to the image you just pushed. The Service gets an external IP from a Google Cloud load balancer.
+Give it a service-account key with the Kubernetes Engine Admin, Artifact Registry Administrator and Service Account User roles, and a default region such as `us-east4`. You can also skip the profile and set `GOOGLE_ACCESS_TOKEN=$(gcloud auth print-access-token)` and `GOOGLE_PROJECT_ID`. Then deploy:
+
+```sh
+bun alchemy deploy --stage prod
+```
+
+The first deploy takes about ten minutes, most of it creating the cluster. Find the load balancer's address with `kubectl`:
+
+```sh
+gcloud container clusters get-credentials <cluster> --region <location> --project <project>
+kubectl get service akter -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+curl http://<ip>/ready
+```
+
+If the pod can't pull its image, the cluster's nodes need to read from Artifact Registry:
+
+```sh
+gcloud projects add-iam-policy-binding <project> \
+  --member=serviceAccount:<project number>-compute@developer.gserviceaccount.com \
+  --role=roles/artifactregistry.reader
+```
+
+For HTTPS, point a domain at the address through Cloudflare's proxy, or add a GKE Ingress with a managed certificate. An Ingress closes WebSockets after its backend timeout, 30 seconds by default, so raise it with a `BackendConfig`.
 
 ## Releases
 
-Build with a new tag and point the Deployment at it:
+Run `bun alchemy deploy --stage prod` again. Kubernetes replaces the pod: it sends the old one SIGTERM, waits for it to exit, and only then starts the new one. Autopilot upgrades nodes on its own, and moves the pod the same way.
 
-```sh
-gcloud builds submit --tag us-central1-docker.pkg.dev/<PROJECT_ID>/my-app/server:2
-kubectl set image deployment/my-app server=us-central1-docker.pkg.dev/<PROJECT_ID>/my-app/server:2
-```
-
-The `Recreate` strategy stops the old pod before the new one starts.
+Before `bun alchemy destroy --stage prod`, delete the load balancer with `kubectl delete service akter --wait`, so Google removes it before the cluster goes. Destroy leaves the bucket while it holds objects.

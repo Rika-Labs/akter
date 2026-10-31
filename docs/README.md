@@ -26,18 +26,16 @@ New to Akter? Start with [Getting started](getting-started.md), then read the co
 
 ## Deploy
 
-Start with [Deploying](deploy/overview.md): what a server needs from a platform, the entry point, the image and the bucket. Then follow your platform's guide:
+Start with [Deploying](deploy/overview.md): what a server needs from a platform, the entry point, the image, the bucket and [Alchemy](https://alchemy.run), which every guide deploys with. Then follow your platform's guide:
 
-- [Cloudflare](deploy/cloudflare.md), with Alchemy
-- [AWS](deploy/aws.md), with the CDK
+- [Cloudflare](deploy/cloudflare.md)
+- [AWS](deploy/aws.md)
 - [Google Cloud](deploy/google-cloud.md)
-- [Azure](deploy/azure.md)
 - [Fly.io](deploy/fly.md)
 - [Railway](deploy/railway.md)
-- [Render](deploy/render.md)
-- [DigitalOcean](deploy/digitalocean.md)
+- [Hetzner](deploy/hetzner.md)
 - [Kubernetes](deploy/kubernetes.md), on any cluster
-- [Your own server](deploy/docker.md), with Docker Compose
+- [Your own server](deploy/docker.md), over SSH
 
 ## Reference
 

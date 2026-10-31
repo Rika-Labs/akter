@@ -2,6 +2,8 @@
 
 Your actors don't change between your laptop and production. Three things do: the store becomes a bucket, requests need real authentication, and you run the server process yourself. This page covers the parts every deployment shares. The pages after it set up each platform step by step.
 
+Every guide uses [Alchemy](https://alchemy.run). One TypeScript file, `alchemy.run.ts`, describes the bucket, the server and everything around them, and `bun alchemy deploy` creates them or brings them up to date. Like Akter, Alchemy is built on Effect.
+
 ## What Akter needs
 
 An Akter server is one long-running process that owns your app's state. That shapes what it needs from a platform:
@@ -11,24 +13,22 @@ An Akter server is one long-running process that owns your app's state. That sha
 - **The old server stops before the new one starts.** When a server crashes, the next one replays the commands it hadn't checkpointed, and only the build that wrote them may replay them. A clean stop writes a checkpoint, so the next release starts from it. If a new release starts while the old one is still running, it takes over a store full of the old build's commands, can't replay them, and both servers stop serving. See [Releases](#releases).
 - **A health check on `/ready`.** It answers `200` while the server takes traffic and `503` while it starts up or shuts down.
 - **Time to shut down.** On SIGTERM the server drains for up to the deadline you give it, 8 seconds in the example below. Give it at least 15 seconds before the platform kills it.
-- **An S3-compatible bucket** with conditional writes. See [Choose a bucket](#choose-a-bucket).
+- **An S3-compatible bucket** with conditional writes. See [Buckets](#buckets).
 
-Many platforms start the new version first and stop the old one once it's healthy, which is the opposite of what Akter needs. The guides below pick a product, or a setting, on each platform that stops the old server first.
+Many platforms start the new version first and stop the old one once it's healthy, which is the opposite of what Akter needs. Each guide below picks the product and settings on its platform that stop the old server first.
 
 ## Where to deploy
 
-| Platform                        | The server runs on                  | The bucket      |
-| ------------------------------- | ----------------------------------- | --------------- |
-| [Cloudflare](cloudflare.md)     | Containers, set up with Alchemy     | R2              |
-| [AWS](aws.md)                   | ECS on Fargate, set up with the CDK | S3              |
-| [Google Cloud](google-cloud.md) | GKE Autopilot                       | R2              |
-| [Azure](azure.md)               | AKS                                 | R2              |
-| [Fly.io](fly.md)                | a Fly Machine                       | R2              |
-| [Railway](railway.md)           | a service with a volume             | R2              |
-| [Render](render.md)             | a web service with a disk           | R2              |
-| [DigitalOcean](digitalocean.md) | a Droplet                           | R2              |
-| [Kubernetes](kubernetes.md)     | any cluster                         | R2 or S3        |
-| [Your own server](docker.md)    | Docker Compose                      | R2, S3 or MinIO |
+| Platform                        | The server runs on          | The bucket |
+| ------------------------------- | --------------------------- | ---------- |
+| [Cloudflare](cloudflare.md)     | a Container behind a Worker | R2         |
+| [AWS](aws.md)                   | ECS on Fargate              | S3         |
+| [Google Cloud](google-cloud.md) | GKE Autopilot               | R2         |
+| [Fly.io](fly.md)                | a Fly Machine               | R2         |
+| [Railway](railway.md)           | a service with a volume     | R2         |
+| [Hetzner](hetzner.md)           | a Cloud server with Docker  | R2         |
+| [Kubernetes](kubernetes.md)     | any cluster                 | R2         |
+| [Your own server](docker.md)    | Docker, over SSH            | R2         |
 
 Serverless functions such as AWS Lambda and Vercel can't run Akter, because nothing keeps running between requests.
 
@@ -119,60 +119,117 @@ EXPOSE 8080
 CMD ["bun", "server.js"]
 ```
 
-Add a `.dockerignore`, so local files stay out of the build:
+Add a `.dockerignore`, so local files, secrets and the deploy code stay out of the build:
 
 ```text
 node_modules
 dist
 .akter
+.alchemy
+.env*
+alchemy.run.ts
+infra
 ```
 
 You can try the bundle without Docker: run `bun build src/server.ts --target=bun --outfile=dist/server.js`, set the variables above, and run `bun dist/server.js`.
 
-## Choose a bucket
+## Set up Alchemy
+
+Install Alchemy:
+
+```sh
+bun add -d alchemy
+```
+
+Each guide adds the providers it uses, and gives you its `alchemy.run.ts`. The guides were checked against Alchemy `2.0.0-beta.84`. Alchemy 2 is in beta, so if an example no longer compiles, install that version.
+
+A few things hold for every guide:
+
+- **Sign in once.** The first `bun alchemy deploy` asks you to connect each provider the stack uses, and saves the credentials to a local profile in `~/.alchemy`. In CI, Alchemy reads them from environment variables instead; each guide names them.
+- **Use a stage.** Deploy with `--stage prod`. Each stage gets its own bucket and server, and without `--stage` you deploy a personal stage named after you.
+- **Settings.** The stacks read `AUTH_ISSUER`, `AUTH_AUDIENCE` and `AUTH_JWKS_URL` with `Config.String`, from your shell or a `.env` file.
+- **State.** Alchemy keeps a record of what it deployed, so it can update and destroy it later. The guides keep it in your Cloudflare account, or in your AWS account on AWS, so you can deploy from any machine. It holds the bucket's keys, so guard the account accordingly.
+- **Don't rename the server.** Renaming a resource in `alchemy.run.ts`, or moving it to another app or cluster, makes Alchemy create the new one before it deletes the old one, so two servers would run at once. Remove the old one in one deploy and add the new one in the next.
+
+### The bucket
+
+The Cloudflare guide binds its bucket straight to its Worker, and AWS uses S3. Every other stack gets its store from `infra/store.ts`, which creates an R2 bucket, and an R2 API token that can read and write that bucket and nothing else:
+
+```ts
+import { createHash } from "node:crypto"
+import * as Cloudflare from "@alchemy.run/cloudflare"
+import * as Output from "alchemy/Output"
+import { Effect, Redacted } from "effect"
+
+export const R2Store = Effect.gen(function* () {
+  const { accountId } = yield* yield* Cloudflare.CloudflareEnvironment
+  const bucket = yield* Cloudflare.R2.Bucket("Store")
+  const token = yield* Cloudflare.ApiToken.AccountApiToken("StoreToken", {
+    policies: [
+      {
+        effect: "allow",
+        permissionGroups: [
+          "Workers R2 Storage Bucket Item Read",
+          "Workers R2 Storage Bucket Item Write",
+        ],
+        resources: bucket.bucketName.pipe(
+          Output.map((name) => ({
+            [`com.cloudflare.edge.r2.bucket.${accountId}_default_${name}`]: "*",
+          })),
+        ),
+      },
+    ],
+  })
+  return {
+    bucket: bucket.bucketName,
+    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+    accessKeyId: token.tokenId,
+    secretAccessKey: token.value.pipe(
+      Output.map((value) =>
+        Redacted.make(createHash("sha256").update(Redacted.value(value)).digest("hex")),
+      ),
+    ),
+  }
+})
+```
+
+R2 turns any API token into S3 keys: the access key id is the token's id, and the secret is the SHA-256 of the token's value. The stacks pass these to the server as `AKTER_STORAGE_*` and `AWS_*` variables.
+
+`bun alchemy destroy` doesn't delete a bucket that still has objects in it, so your data survives tearing a stack down.
+
+## Buckets
 
 Akter writes everything to one bucket, and settles who owns the store with conditional writes (`If-None-Match` and `If-Match`). The provider has to support them exactly.
 
-- **Cloudflare R2** works with every platform, and doesn't charge for traffic out. The guides use it unless the platform has its own bucket that works.
-- **AWS S3** is the natural choice on AWS, where the server can use a role instead of keys.
-- **MinIO** works if you run your own storage.
+- **Cloudflare R2** works with every platform, and doesn't charge for traffic out. The guides use it everywhere but AWS. One check fails on R2 today, see [Check it](#check-it).
+- **AWS S3** is the natural choice on AWS, where the server reaches it with a role instead of keys.
+- **MinIO** works if you run your own storage. See [Your own server](docker.md#your-own-bucket).
 
 Some buckets don't work:
 
 | Bucket                                       | Why                                                                                                |
 | -------------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | Google Cloud Storage                         | Its S3-compatible API has no conditional writes                                                    |
-| DigitalOcean Spaces                          | No conditional writes                                                                              |
-| Azure Blob Storage                           | No S3 API                                                                                          |
 | Tigris, including Fly.io and Railway buckets | New buckets only accept virtual-hosted URLs, and Akter uses path-style URLs with a custom endpoint |
-
-### Create an R2 bucket
-
-1. In the Cloudflare dashboard, open **R2 Object Storage** and create a bucket, `my-app-store` say. Put it near where the server will run.
-2. Under **API Tokens**, create an account API token with **Object Read & Write** permission, limited to that bucket.
-3. Copy the **Access Key ID** and **Secret Access Key**. Cloudflare shows the secret once.
-
-Then set:
-
-```sh
-AKTER_STORAGE_BUCKET=my-app-store
-AKTER_STORAGE_ENDPOINT=https://<ACCOUNT_ID>.r2.cloudflarestorage.com
-AKTER_STORAGE_REGION=auto
-AWS_ACCESS_KEY_ID=<access key id>
-AWS_SECRET_ACCESS_KEY=<secret access key>
-```
-
-`<ACCOUNT_ID>` is on the R2 overview page. Give each environment its own bucket and its own token.
 
 ### Check it
 
-Before you rely on a bucket, check it from a machine with the same variables set:
+Before you rely on a bucket, check it. For an R2 bucket, create a temporary token in the Cloudflare dashboard: under **R2 Object Storage**, **Manage API tokens**, give it **Object Read & Write** on the bucket the stack created, and copy its keys. Then run, from any machine:
 
 ```sh
+AKTER_STORAGE_BUCKET=<bucket> \
+AKTER_STORAGE_ENDPOINT=https://<ACCOUNT_ID>.r2.cloudflarestorage.com \
+AKTER_STORAGE_REGION=auto \
+AWS_ACCESS_KEY_ID=<access key id> \
+AWS_SECRET_ACCESS_KEY=<secret access key> \
 bunx akter storage check
 ```
 
-The check races conditional writes, lists, overwrites and deletes against the real bucket, and prints what it measured. It writes only under `check/` and cleans up after itself. Every probe should pass. Keep the output: it's the evidence that this provider, region and endpoint behave the way Akter needs. See [`akter storage check`](../reference/cli.md#akter-storage-check).
+Delete the token afterwards. The check races conditional writes, lists, overwrites and deletes against the real bucket, and prints what it measured. It writes only under `check/` and cleans up after itself. Every probe should pass.
+
+R2 fails one probe, `ordered listing with limit and start-after`: it lists a key after the longer keys that start with it, so `10` comes before `1` and `a.b` before `a`. The other six pass. Until that is resolved, R2 doesn't meet Akter's definition of a supported bucket. The [storage providers](../reference/guarantees.md#storage-providers) section has the run.
+
+Keep the output: it's the evidence that this provider, region and endpoint behave the way Akter needs. See [`akter storage check`](../reference/cli.md#akter-storage-check).
 
 ## Releases
 

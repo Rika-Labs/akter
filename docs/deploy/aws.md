@@ -1,123 +1,222 @@
 # AWS
 
-On AWS, the server runs as one task on [ECS](https://aws.amazon.com/ecs/) with Fargate, behind an Application Load Balancer, and the store is an S3 bucket. The task reaches the bucket with an IAM role, so there are no keys to manage. The [AWS CDK](https://docs.aws.amazon.com/cdk/) describes it all in one TypeScript file.
+On AWS, the server runs as one task on [ECS](https://aws.amazon.com/ecs/) with Fargate, behind an Application Load Balancer, and the store is an S3 bucket. The task reaches the bucket with an IAM role, so there are no keys to manage. Alchemy's [AWS provider](https://alchemy.run/aws) builds the image, pushes it to ECR and creates everything else.
 
 You need:
 
-- The `src/server.ts`, `Dockerfile` and `.dockerignore` from [Deploying](overview.md). Add `cdk.out` to `.dockerignore`.
-- Docker running locally. The CDK builds the image and pushes it to ECR.
-- AWS credentials in your shell, for example from `aws sso login`.
+- The `src/server.ts`, `Dockerfile` and `.dockerignore` from [Deploying](overview.md).
+- Docker running locally. Alchemy builds the image on your machine.
+- An AWS account you can create VPCs, IAM roles, ECS services and S3 buckets in.
 
 ## Install
 
 ```sh
-bun add -d aws-cdk-lib constructs aws-cdk
-echo '{ "app": "bun infra/aws.ts" }' > cdk.json
+bun add -d alchemy @alchemy.run/aws
 ```
 
 ## Describe the stack
 
-Create `infra/aws.ts`:
+Create `alchemy.run.ts` in the project root:
 
 ```ts
-import { App, CfnOutput, Duration, Stack } from "aws-cdk-lib"
-import * as ec2 from "aws-cdk-lib/aws-ec2"
-import * as ecs from "aws-cdk-lib/aws-ecs"
-import { ApplicationLoadBalancedFargateService } from "aws-cdk-lib/aws-ecs-patterns"
-import { Platform } from "aws-cdk-lib/aws-ecr-assets"
-import * as s3 from "aws-cdk-lib/aws-s3"
+import * as AWS from "@alchemy.run/aws"
+import * as Alchemy from "alchemy"
+import * as Output from "alchemy/Output"
+import { Config, Effect } from "effect"
 
-const app = new App()
-const stack = new Stack(app, "MyApp")
+export default Alchemy.Stack(
+  "my-app",
+  { providers: AWS.providers(), state: AWS.state() },
+  Effect.gen(function* () {
+    const bucket = yield* AWS.S3.Bucket("Store", { objectLockEnabled: false })
+    const storeAccess = yield* AWS.IAM.Policy("StoreAccess", {
+      policyDocument: {
+        Version: "2012-10-17",
+        Statement: [
+          {
+            Effect: "Allow",
+            Action: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+            Resource: Output.interpolate`${bucket.bucketArn}/*`,
+          },
+          { Effect: "Allow", Action: ["s3:ListBucket"], Resource: bucket.bucketArn },
+        ],
+      },
+    })
 
-const store = new s3.Bucket(stack, "Store", {
-  blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-  enforceSSL: true,
-})
+    const network = yield* AWS.EC2.Network("Network", {
+      cidrBlock: "10.42.0.0/16",
+      availabilityZones: 2,
+      nat: "none",
+    })
+    const lbSecurityGroup = yield* AWS.EC2.SecurityGroup("LoadBalancerSecurityGroup", {
+      vpcId: network.vpcId,
+      description: "Akter load balancer",
+      ingress: [{ ipProtocol: "tcp", fromPort: 80, toPort: 80, cidrIpv4: "0.0.0.0/0" }],
+    })
+    const taskSecurityGroup = yield* AWS.EC2.SecurityGroup("TaskSecurityGroup", {
+      vpcId: network.vpcId,
+      description: "Akter server",
+      ingress: [
+        {
+          ipProtocol: "tcp",
+          fromPort: 8080,
+          toPort: 8080,
+          referencedGroupId: lbSecurityGroup.groupId,
+        },
+      ],
+    })
 
-const vpc = new ec2.Vpc(stack, "Vpc", { maxAzs: 2, natGateways: 0 })
+    const loadBalancer = yield* AWS.ELBv2.LoadBalancer("LoadBalancer", {
+      type: "application",
+      scheme: "internet-facing",
+      subnets: network.publicSubnetIds,
+      securityGroups: [lbSecurityGroup.groupId],
+      attributes: { "idle_timeout.timeout_seconds": "3600" },
+    })
+    const targetGroup = yield* AWS.ELBv2.TargetGroup("TargetGroup", {
+      vpcId: network.vpcId,
+      port: 8080,
+      protocol: "HTTP",
+      targetType: "ip",
+      healthCheckPath: "/ready",
+      healthCheckInterval: "10 seconds",
+      healthyThresholdCount: 2,
+      unhealthyThresholdCount: 3,
+      attributes: { "deregistration_delay.timeout_seconds": "5" },
+    })
+    const listener = yield* AWS.ELBv2.Listener("Listener", {
+      loadBalancerArn: loadBalancer.loadBalancerArn,
+      port: 80,
+      protocol: "HTTP",
+      defaultActions: [
+        { type: "forward", targetGroups: [{ targetGroupArn: targetGroup.targetGroupArn }] },
+      ],
+    })
 
-const server = new ApplicationLoadBalancedFargateService(stack, "Server", {
-  vpc,
-  cpu: 512,
-  memoryLimitMiB: 1024,
-  desiredCount: 1,
-  minHealthyPercent: 0,
-  maxHealthyPercent: 100,
-  circuitBreaker: { rollback: true },
-  assignPublicIp: true,
-  taskSubnets: { subnetType: ec2.SubnetType.PUBLIC },
-  idleTimeout: Duration.hours(1),
-  taskImageOptions: {
-    image: ecs.ContainerImage.fromAsset(".", { platform: Platform.LINUX_AMD64 }),
-    containerPort: 8080,
-    environment: {
-      AKTER_STORAGE_BUCKET: store.bucketName,
-      AKTER_STORAGE_REGION: stack.region,
-      AUTH_ISSUER: "https://login.example.com/",
-      AUTH_AUDIENCE: "my-app",
-      AUTH_JWKS_URL: "https://login.example.com/.well-known/jwks.json",
-    },
-  },
-})
+    const cluster = yield* AWS.ECS.Cluster("Cluster", {})
+    yield* AWS.ECS.Service("Server", {
+      cluster,
+      context: ".",
+      port: 8080,
+      cpu: 512,
+      memory: 1024,
+      runtimePlatform: { cpuArchitecture: "X86_64", operatingSystemFamily: "LINUX" },
+      container: { name: "server", stopTimeout: 30, linuxParameters: { initProcessEnabled: true } },
+      env: {
+        AKTER_STORAGE_BUCKET: bucket.bucketName,
+        AKTER_STORAGE_REGION: bucket.region,
+        AUTH_ISSUER: yield* Config.String("AUTH_ISSUER"),
+        AUTH_AUDIENCE: yield* Config.String("AUTH_AUDIENCE"),
+        AUTH_JWKS_URL: yield* Config.String("AUTH_JWKS_URL"),
+      },
+      taskRoleManagedPolicyArns: [storeAccess.policyArn],
+      logging: { retention: "30 days" },
+      desiredCount: 1,
+      launchType: "FARGATE",
+      vpcId: network.vpcId,
+      subnets: network.publicSubnetIds,
+      securityGroups: [taskSecurityGroup.groupId],
+      assignPublicIp: true,
+      loadBalancers: [
+        {
+          targetGroupArn: Output.all(targetGroup.targetGroupArn, listener.listenerArn).pipe(
+            Output.map(([targetGroupArn]) => targetGroupArn),
+          ),
+          containerName: "server",
+          containerPort: 8080,
+        },
+      ],
+      healthCheckGracePeriod: "60 seconds",
+      availabilityZoneRebalancing: "DISABLED",
+      deploymentConfiguration: {
+        strategy: "ROLLING",
+        minimumHealthyPercent: 0,
+        maximumPercent: 100,
+      },
+    })
 
-server.targetGroup.configureHealthCheck({ path: "/ready", interval: Duration.seconds(10) })
-server.targetGroup.setAttribute("deregistration_delay.timeout_seconds", "5")
-store.grantReadWrite(server.taskDefinition.taskRole)
-
-new CfnOutput(stack, "Bucket", { value: store.bucketName })
+    return { url: Output.interpolate`http://${loadBalancer.dnsName}`, bucket: bucket.bucketName }
+  }),
+)
 ```
 
-- **`desiredCount: 1`** runs one server.
-- **`minHealthyPercent: 0` and `maxHealthyPercent: 100`** make every deploy stop the old task before it starts the new one. ECS's default does the opposite.
-- **`circuitBreaker`** rolls back to the previous release if the new task never becomes healthy.
-- **`idleTimeout`** keeps quiet WebSocket sessions and streams open for up to an hour. The load balancer's default is 60 seconds.
-- **The health check** asks `/ready`, and the short deregistration delay stops the load balancer from waiting five minutes before ECS sends SIGTERM.
-- **`grantReadWrite`** lets the task's role use the bucket. The server leaves `AWS_ACCESS_KEY_ID` unset and the AWS SDK picks the role up by itself.
-- **The network** is a new VPC with public subnets and no NAT gateways, which cost money every hour. The task gets a public IP to reach S3 and pull its image, and its security group only lets the load balancer in.
+- **`Store`** is the bucket, and **`StoreAccess`** lets the task read, write, list and delete in it and nowhere else. The server finds its credentials through the role, so it needs no `AKTER_STORAGE_ENDPOINT` or keys.
+- **`Network`** is a VPC with public subnets and no NAT gateway. The task gets a public address to pull its image and reach S3, but only the load balancer can reach port 8080.
+- **The load balancer** checks `/ready` and sends traffic only to a task that answers `200`. Its idle timeout is an hour, so WebSockets and long streams stay open, and its deregistration delay is 5 seconds, so a release doesn't wait half a minute before stopping the old task.
+- **`deploymentConfiguration`** is what makes releases safe. `maximumPercent: 100` never lets ECS run a second task, and `minimumHealthyPercent: 0` lets it stop the old task before starting the new one. Without them, ECS starts the new task first.
+- **`stopTimeout: 30`** gives the server 30 seconds after SIGTERM. `initProcessEnabled` runs a small init process that passes the signal on to Bun.
+- **`availabilityZoneRebalancing: "DISABLED"`** is required with `maximumPercent: 100`.
+- **The target group's ARN waits for the listener**, because ECS refuses a target group that isn't attached to a load balancer yet.
+- **`AWS.state()`** keeps Alchemy's state in an S3 bucket in your account.
 
 ## Deploy
 
-```sh
-bunx cdk bootstrap
-bunx cdk deploy
-```
-
-`cdk bootstrap` prepares the account and region once. `cdk deploy` builds the image, pushes it, creates everything, and prints the load balancer's URL as `ServiceURL` along with the bucket's name. Check the server:
+Connect your AWS account once:
 
 ```sh
-curl http://<ServiceURL>/ready
+bun alchemy profile edit --add AWS
 ```
 
-Check the bucket from your machine. With no keys set, the check uses your AWS login:
+It offers SSO, the console login, or access keys, and asks for a region. In CI, Alchemy reads `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_REGION`; run `bun alchemy state bootstrap --backend aws` once first. Then deploy:
 
 ```sh
-bunx akter storage check --bucket <Bucket> --region <your region>
+bun alchemy deploy --stage prod
 ```
+
+Alchemy creates the network, the bucket and the load balancer, builds and pushes the image, and waits until the task passes its health check. It prints the load balancer's URL. Check the server:
+
+```sh
+curl <url>/ready
+```
+
+To check the bucket, run `bunx akter storage check --bucket <bucket> --region <region>` with your own AWS credentials. See [Check it](overview.md#check-it).
 
 ## HTTPS
 
-The stack above serves plain HTTP. For HTTPS, add your domain's Route 53 zone, a name and the protocol to the service:
+For HTTPS, put the domain in a Route 53 hosted zone, allow port 443 on the load balancer's security group, and replace the listener with these:
 
 ```ts
-import { ApplicationProtocol } from "aws-cdk-lib/aws-elasticloadbalancingv2"
-import { HostedZone } from "aws-cdk-lib/aws-route53"
+const domain = yield * Config.String("DOMAIN")
+const { region } = yield * AWS.AWSEnvironment.current
+const certificate = yield * AWS.ACM.Certificate("Certificate", { domainName: domain, region })
 
-const zone = HostedZone.fromLookup(stack, "Zone", { domainName: "example.com" })
-
-new ApplicationLoadBalancedFargateService(stack, "Server", {
-  domainName: "api.example.com",
-  domainZone: zone,
-  protocol: ApplicationProtocol.HTTPS,
-  redirectHTTP: true,
-  // ...everything else as above
-})
+const listener =
+  yield *
+  AWS.ELBv2.Listener("HttpsListener", {
+    loadBalancerArn: loadBalancer.loadBalancerArn,
+    port: 443,
+    protocol: "HTTPS",
+    certificateArn: certificate.certificateArn,
+    sslPolicy: "ELBSecurityPolicy-TLS13-1-2-2021-06",
+    defaultActions: [
+      { type: "forward", targetGroups: [{ targetGroupArn: targetGroup.targetGroupArn }] },
+    ],
+  })
+yield *
+  AWS.ELBv2.Listener("HttpListener", {
+    loadBalancerArn: loadBalancer.loadBalancerArn,
+    port: 80,
+    protocol: "HTTP",
+    defaultActions: [{ type: "redirect", statusCode: "HTTP_301", protocol: "HTTPS", port: "443" }],
+  })
+yield *
+  AWS.Route53.Record("Domain", {
+    name: domain,
+    type: "A",
+    aliasTarget: {
+      hostedZoneId: loadBalancer.canonicalHostedZoneId,
+      dnsName: loadBalancer.dnsName,
+      evaluateTargetHealth: false,
+    },
+  })
 ```
 
-The CDK requests a certificate, validates it through the zone, and points the name at the load balancer. `fromLookup` needs the stack's account and region, so pass `env: { account, region }` to `new Stack`.
+Alchemy finds the hosted zone, validates the certificate through it, and points the name at the load balancer. The certificate's `region` has to be the load balancer's; it defaults to `us-east-1`, which is for CloudFront.
 
 ## Releases
 
-Run `bunx cdk deploy` again. ECS takes the old task out of the load balancer, sends it SIGTERM, waits up to 30 seconds for it to exit, then starts the new task. Fargate needs about a minute to start a task and pass the health check, so expect that much downtime per release. Clients retry through it.
+Run `bun alchemy deploy --stage prod` again. ECS takes the old task out of the load balancer, sends it SIGTERM, and starts the new task once the old one is stopping. ECS doesn't wait for the old task's process to exit before it starts provisioning the new one, but a new Fargate task takes far longer to get its network and pull its image than the server takes to drain. Expect about a minute without a server per release. Clients retry through it.
 
-`bunx cdk destroy` removes the stack but keeps the bucket, so your data survives. Delete the bucket yourself if you mean to.
+Every change to the service, even an environment variable, replaces the task.
+
+`bun alchemy destroy --stage prod` removes the stack. It keeps the bucket while it holds objects, so your data survives.

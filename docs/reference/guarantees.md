@@ -24,7 +24,7 @@ Each guarantee has failure tests that try to break it. The [failure matrix](../i
 
 ## Storage providers
 
-A provider works with Akter when `akter storage check` passes against it. MinIO passes in CI. AWS S3, Cloudflare R2 and Tigris have no recorded passing run in this repository yet. That means untested here, not broken: run the check on your provider, region and endpoint before you deploy, and keep its output.
+A provider works with Akter when `akter storage check` passes against it. MinIO passes in CI. Cloudflare R2 passed six of the seven probes on 2026-10-31 and failed `ordered listing with limit and start-after`: it lists a key after the longer keys that start with it, so `10` comes before `1`. AWS S3 and Tigris have no recorded run yet. That means untested here, not broken: run the check on your provider, region and endpoint before you deploy, and keep its output.
 
 Akter's performance hasn't been measured on a production storage provider. Command latency depends on your bucket's write latency.
 

@@ -90,7 +90,7 @@ Akter runs on Bun 1.4.2 or later and Node 24 or later. On Node, install `@effect
 - [Why Akter](docs/why-akter.md): the problem it solves and what it costs.
 - [Core concepts](docs/README.md#core-concepts): actors, commands, jobs, lists, realtime and access.
 - [Guides](docs/README.md#guides): calling actors, testing, operating and changing state.
-- [Deploying](docs/deploy/overview.md): Cloudflare, AWS, Google Cloud, Azure, Fly.io, Railway, Render, DigitalOcean, Kubernetes or your own server.
+- [Deploying](docs/deploy/overview.md): Cloudflare, AWS, Google Cloud, Fly.io, Railway, Hetzner, Kubernetes or your own server, each with [Alchemy](https://alchemy.run).
 - [Reference](docs/README.md#reference): the CLI, the server, errors, and guarantees and limits.
 
 ## Contributing

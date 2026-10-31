@@ -24,8 +24,6 @@ The Worker runs on Cloudflare's runtime, not Bun. Add its types to `tsconfig.jso
 }
 ```
 
-Add `.alchemy` to `.dockerignore` too.
-
 ## Describe the stack
 
 Create `alchemy.run.ts` in the project root:
@@ -42,7 +40,7 @@ export const Worker = Cloudflare.Worker("Worker", {
   main: "./src/worker.ts",
   crons: ["* * * * *"],
   env: {
-    SERVER: Cloudflare.Container<Server>("Server", {
+    Server: Cloudflare.Container<Server>("Server", {
       context: ".",
       instanceType: "basic",
       maxInstances: 1,
@@ -68,7 +66,7 @@ export default Alchemy.Stack(
 
 - **`Store`** is the R2 bucket.
 - **`S3Credentials`** creates an API token that can only use that bucket, and hands its S3 keys to the Worker as a secret.
-- **`Server`** is the container. Alchemy builds it from your `Dockerfile`. `maxInstances: 1` keeps it to one copy. `basic` gives it a quarter of a vCPU and 1 GiB of memory; pick a larger [instance type](https://developers.cloudflare.com/containers/platform-details/limits/) as you grow.
+- **`Server`** is the container. Its key in `env` names the class `src/worker.ts` exports for it, so keep the two the same. Alchemy builds it from your `Dockerfile`. `maxInstances: 1` keeps it to one copy. `basic` gives it a quarter of a vCPU and 1 GiB of memory; pick a larger [instance type](https://developers.cloudflare.com/containers/platform-details/limits/) as you grow.
 - **`crons`** runs the Worker every minute. The next section uses that to restart the container if it ever stops.
 - **`Cloudflare.state()`** keeps Alchemy's record of what it deployed in your Cloudflare account, so you can deploy from any machine.
 
@@ -104,15 +102,15 @@ export class Server extends Container<WorkerEnv> {
 
 export default {
   fetch(request: Request, env: WorkerEnv) {
-    return getContainer(env.SERVER).fetch(request)
+    return getContainer(env.Server).fetch(request)
   },
   async scheduled(_controller: unknown, env: WorkerEnv) {
-    await getContainer(env.SERVER).startAndWaitForPorts()
+    await getContainer(env.Server).startAndWaitForPorts()
   },
 }
 ```
 
-- **`getContainer(env.SERVER)`** always names the same instance, so every request reaches the one server.
+- **`getContainer(env.Server)`** always names the same instance, so every request reaches the one server.
 - **`envVars`** passes the bucket's keys and your auth settings to the server as environment variables.
 - **`onActivityExpired`** normally stops a container that hasn't had a request for 10 minutes. Akter has timers and jobs to run between requests, so this one does nothing and the container keeps running.
 - **`scheduled`** runs every minute and starts the container if it isn't running, for example after Cloudflare moved it to another machine.
@@ -120,10 +118,10 @@ export default {
 ## Deploy
 
 ```sh
-bun alchemy deploy
+bun alchemy deploy --stage prod
 ```
 
-The first time, Alchemy has you connect your Cloudflare account, and asks before it sets up its state store there. Then it shows the plan, builds and pushes the image, and prints the Worker's URL. The first deploy takes a few minutes. Check the server:
+The first time, Alchemy has you connect your Cloudflare account, with OAuth or an API token, and asks before it sets up its state store there. In CI it reads `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`. Then it shows the plan, builds and pushes the image, and prints the Worker's URL. The first deploy takes a few minutes. Check the server:
 
 ```sh
 curl https://<worker url>/ready
@@ -131,10 +129,10 @@ curl https://<worker url>/ready
 
 The container starts on the first request, or within a minute from the cron trigger, and opens the store. `/ready` then answers `{"ready":true}`. Point your client at the same URL, with `/rpc` on the end.
 
-To check the bucket, copy the keys from the R2 dashboard into the variables in [Check it](overview.md#check-it) and run `bunx akter storage check`.
+To check the bucket, follow [Check it](overview.md#check-it).
 
 ## Releases
 
-Run `bun alchemy deploy` again. Cloudflare sends SIGTERM to the running container, gives it up to 15 minutes to exit, and only then starts the new image, which is the order Akter needs. Requests that arrive in between wait or are retried by the client.
+Run `bun alchemy deploy --stage prod` again. Cloudflare sends SIGTERM to the running container, gives it up to 15 minutes to exit, and only then starts the new image, which is the order Akter needs. In a test release the swap took about seven seconds: the old server drained and exited, the new one opened the store, and requests in between got a 503 or a 500. Clients should retry them.
 
-`bun alchemy destroy` tears the stack down.
+`bun alchemy destroy --stage prod` tears the stack down. It leaves the bucket while it still holds objects.
